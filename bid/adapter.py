@@ -196,21 +196,21 @@ class WorkerAdapter:
                     f"\nTask T{self.task_number}: {task['description']}\n"
                     f"Output file: {output_path}\n"
                     f"{'Input files: ' + ', '.join(input_paths) if input_paths else ''}\n\n"
-                    "Commands:\n"
-                    "  READ <path>  — read a file\n"
-                    "  WRITE <path> — write content, ended by END WRITE on its own line\n"
-                    "  Done         — finish (after checking your task checkbox)\n\n"
-                    "Example: write your artifact then submit:\n"
-                    "WRITE docs/work/T1.md\n"
+                    "Only use these commands:\n"
+                    "  READ <path>     — read a file\n"
+                    "  WRITE <path>    — write content; end with END WRITE on its own line\n"
+                    "  Done            — finish (after checking T1 in docs/todo.md)\n\n"
+                    "Example:\n"
+                    f"WRITE {output_path}\n"
                     "Your artifact content here.\n"
                     "END WRITE\n"
-                    "WRITE docs/todo.md\n"
-                    "- [x] T1 — Task description\n"
+                    f"WRITE docs/todo.md\n"
+                    f"- [x] T{self.task_number} — {task['description']}\n"
                     "END WRITE\n"
                     "Done\n\n"
                     "Read inputs first. Write your artifact. "
-                    "To submit, write docs/todo.md with your checkbox set to [x]. "
-                    "Then output Done."
+                    "Then write docs/todo.md with your checkbox set to [x]. "
+                    "Finally output Done."
                 ),
             },
         ]
@@ -223,8 +223,12 @@ class WorkerAdapter:
         done_without_check = 0
         last_sig = None
         turn_repeat = 0
+        total_turns = 0
 
         while observer.elapsed() < hard_ceiling:
+            total_turns += 1
+            if total_turns > 20:
+                return {"status": "stalled", "reason": "too many turns without completion"}
             response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 8192))
             content = (response.get("content") or "").strip()
 
