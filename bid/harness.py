@@ -11,6 +11,35 @@ from .observer import Observer
 
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
 
+MANAGER_INSTRUCTIONS = """# Manager
+
+You manage the project but do not perform Worker tasks.
+
+Initialization:
+- Read docs/task.md.
+- Break the request into sequential numbered tasks.
+- Write the complete checklist to docs/todo.md.
+
+Review:
+- Read the original task, checklist, and relevant Worker artifacts.
+- Write DONE to docs/project-status.md only when the whole request is satisfied.
+- Otherwise uncheck inadequate tasks or add missing tasks in docs/todo.md.
+
+When the current Manager job is complete, output exactly `Done`.
+"""
+
+WORKER_INSTRUCTIONS = """# Worker
+
+You have one task.
+
+- Read docs/todo.md and the minimum other material needed.
+- Perform only your assigned task.
+- Create or repair its artifact.
+- To submit, rewrite docs/todo.md changing only your own checkbox from `[ ]` to `[x]`.
+- You may keep working after checking it, revise files, or uncheck it again while backtracking.
+- When the final submitted state is ready, keep your checkbox checked and output exactly `Done`.
+"""
+
 
 def get_config():
     return {
@@ -58,45 +87,12 @@ def write_file_content(path, content):
         file.write(content)
 
 
-MANAGER_INSTRUCTIONS = """# Manager
-
-You manage the project but do not perform Worker tasks.
-
-Initialization:
-- Read docs/task.md.
-- Break the request into sequential numbered tasks.
-- Write the complete checklist to docs/todo.md.
-
-Review:
-- Read the original task, checklist, and relevant Worker artifacts.
-- Write DONE to docs/project-status.md only when the whole request is satisfied.
-- Otherwise uncheck inadequate tasks or add missing tasks in docs/todo.md.
-
-When your current Manager job is complete, output exactly `Done`.
-"""
-
-WORKER_INSTRUCTIONS = """# Worker
-
-You have one task.
-
-- Read docs/todo.md and the minimum other material needed.
-- Perform only your assigned task.
-- Create or repair its artifact.
-- To submit, rewrite docs/todo.md changing only your own checkbox from `[ ]` to `[x]`.
-- You may keep working after checking it, revise files, or uncheck it again while backtracking.
-- When the final submitted state is ready, keep your checkbox checked and output exactly `Done`.
-"""
-
-
 def ensure_workspace(workspace):
+    """Install the current code-owned role policies into the workspace."""
     docs = os.path.join(workspace, "docs")
     os.makedirs(docs, exist_ok=True)
-    manager_path = os.path.join(docs, "manager.md")
-    worker_path = os.path.join(docs, "worker.md")
-    if not os.path.exists(manager_path):
-        write_file_content(manager_path, MANAGER_INSTRUCTIONS)
-    if not os.path.exists(worker_path):
-        write_file_content(worker_path, WORKER_INSTRUCTIONS)
+    write_file_content(os.path.join(docs, "manager.md"), MANAGER_INSTRUCTIONS)
+    write_file_content(os.path.join(docs, "worker.md"), WORKER_INSTRUCTIONS)
 
 
 def run_agent(messages, tools, backend, config, workspace, role, worker_number=None):
@@ -109,13 +105,7 @@ def run_agent(messages, tools, backend, config, workspace, role, worker_number=N
     while observer.elapsed() < hard_ceiling:
         try:
             result = session.run_turn(
-                messages,
-                tools,
-                backend,
-                config,
-                workspace,
-                role,
-                worker_number,
+                messages, tools, backend, config, workspace, role, worker_number
             )
         except Exception as exc:
             return {
@@ -178,76 +168,61 @@ def run_agent(messages, tools, backend, config, workspace, role, worker_number=N
     }
 
 
-def run_manager_init(config, backend=None):
+def _run_role(config, role, assignment, backend=None, worker_number=None):
     workspace = config["workspace"]
+    ensure_workspace(workspace)
+    prompt_name = "manager" if role == permissions.ROLE_MANAGER else "worker"
+    system_prompt = load_prompt(prompt_name)
+    if role == permissions.ROLE_WORKER:
+        system_prompt = f"/no_think\nBID Worker {worker_number}."
     messages = [
-        {"role": "system", "content": load_prompt("manager")},
-        {
-            "role": "user",
-            "content": (
-                "Read docs/manager.md and docs/task.md. Initialize docs/todo.md "
-                "with numbered sequential tasks. Then output exactly Done."
-            ),
-        },
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": assignment},
     ]
-    tools = tools_mod.get_tools_for_role(permissions.ROLE_MANAGER)
+    role_tools = tools_mod.get_tools_for_role(role, worker_number=worker_number)
     return run_agent(
         messages,
-        tools,
+        role_tools,
         backend or create_backend(config),
         config,
         workspace,
+        role,
+        worker_number,
+    )
+
+
+def run_manager_init(config, backend=None):
+    return _run_role(
+        config,
         permissions.ROLE_MANAGER,
+        "Read docs/manager.md and docs/task.md. Initialize docs/todo.md with numbered sequential tasks. Then output exactly Done.",
+        backend=backend,
     )
 
 
 def run_manager_review(config, backend=None):
-    workspace = config["workspace"]
-    messages = [
-        {"role": "system", "content": load_prompt("manager")},
-        {
-            "role": "user",
-            "content": (
-                "Read docs/manager.md, docs/task.md, docs/todo.md, and the relevant "
-                "Worker artifacts. Accept, reopen, repair, or extend the work. "
-                "Then output exactly Done."
-            ),
-        },
-    ]
-    tools = tools_mod.get_tools_for_role(permissions.ROLE_MANAGER)
-    return run_agent(
-        messages,
-        tools,
-        backend or create_backend(config),
+    return _run_role(
         config,
-        workspace,
         permissions.ROLE_MANAGER,
+        "Read docs/manager.md, docs/task.md, docs/todo.md, and relevant Worker artifacts. Accept, reopen, repair, or extend the work. Then output exactly Done.",
+        backend=backend,
     )
 
 
 def run_worker_session(number, config, backend=None):
     workspace = config["workspace"]
+    ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
     base_state = vc_system.get_current()
-    messages = [
-        {"role": "system", "content": f"/no_think\nBID Worker {number}."},
-        {
-            "role": "user",
-            "content": (
-                f"Read docs/worker.md and docs/todo.md. Perform only Task T{number}. "
-                f"When the final submitted state is ready, keep T{number} checked and output exactly Done."
-            ),
-        },
-    ]
-    tools = tools_mod.get_tools_for_role(permissions.ROLE_WORKER, worker_number=number)
-    result = run_agent(
-        messages,
-        tools,
-        backend or create_backend(config),
+    result = _run_role(
         config,
-        workspace,
         permissions.ROLE_WORKER,
-        number,
+        (
+            f"Read docs/worker.md and docs/todo.md. Perform only Task T{number}. "
+            f"When the final submitted state is ready, keep T{number} checked and output exactly Done."
+        ),
+        backend=backend,
+        worker_number=number,
     )
 
     checked = Observer(workspace, number).task_is_checked()
@@ -297,6 +272,7 @@ def init_project(user_task, config, backend=None):
 
 def run_project(config, backend=None):
     workspace = config["workspace"]
+    ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
     backend = backend or create_backend(config)
 
@@ -325,11 +301,7 @@ def run_project(config, backend=None):
         if result["status"] != "done":
             if base_state:
                 vc_system.restore(base_state)
-            return {
-                "status": "error",
-                "reason": "Manager review failed",
-                "detail": result,
-            }
+            return {"status": "error", "reason": "Manager review failed", "detail": result}
 
         review_state = vc_system.save_state("Manager (review)", "Review completed")
         todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
@@ -351,8 +323,7 @@ def show_status(config):
     if not os.path.exists(os.path.join(workspace, ".bid")):
         print("No BID project in workspace.")
         return
-    vc_system = vc_mod.VersionControl(workspace)
-    current = vc_system.get_current() or "?"
+    current = vc_mod.VersionControl(workspace).get_current() or "?"
     tasks = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
     checked = sum(1 for task in tasks if task["checked"])
     print(f"VC state: {current}")
