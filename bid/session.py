@@ -1,5 +1,7 @@
 import json
+import os
 from .tools import reset_write_tracking
+from . import todo as todo_mod
 
 
 def run_session(prompt_text, assignment, tools, backend, config, workspace, role, worker_number=None):
@@ -46,25 +48,32 @@ def run_session(prompt_text, assignment, tools, backend, config, workspace, role
                     if not tool_obj:
                         known = ", ".join(t["name"] for t in tools[:8])
                         result = f"unknown tool: {name}. Available: {known}"
-                else:
+
+                if tool_obj:
                     try:
                         result = tool_obj["handler"](args, workspace, role, worker_number)
                     except Exception as e:
                         result = f"error executing {name}: {e}"
-
-                finish_marker = "__FINISH__"
-                if isinstance(result, str) and result.startswith(finish_marker):
-                    return {
-                        "status": "success",
-                        "summary": result[len(finish_marker):],
-                        "turn_count": turn + 1,
-                    }
 
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "content": str(result),
                 })
+
+            # Check if Worker's task just became checked
+            if role != "manager" and worker_number is not None:
+                todo_path = os.path.join(workspace, "docs/todo.md")
+                if os.path.exists(todo_path):
+                    with open(todo_path) as f:
+                        tasks = todo_mod.parse_todo(f.read())
+                    task = todo_mod.get_task(tasks, worker_number)
+                    if task and task["checked"]:
+                        return {
+                            "status": "success",
+                            "summary": f"T{worker_number} submitted",
+                            "turn_count": turn + 1,
+                        }
 
             if had_finish:
                 return {

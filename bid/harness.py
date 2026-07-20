@@ -76,17 +76,14 @@ Never do Worker work. When done, finish.
 
 WORKER_INSTRUCTIONS = """You are a BID Worker.
 
-You MUST call check_own_task after creating your artifact, before finish.
-check_own_task is mandatory. Without it your work will not be saved.
+Read docs/todo.md and locate your assigned task.
+Read only the project material needed for it.
+Perform only that task.
+Write a complete artifact.
+When the work is ready for Manager review, call submit_task once.
 
-Steps:
-1. Read docs/todo.md — find your task Tn.
-2. Create the artifact (write a file).
-3. Call check_own_task — this marks your task complete.
-4. Call finish.
-
-Do not write to docs/task.md, docs/project-status.md, docs/decisions.md, or docs/manager.md.
-Use relative paths like docs/file.md.
+If you cannot complete it, do not submit it.
+Record the blocker in a Worker-owned artifact and allow the session to fail.
 """
 
 
@@ -121,11 +118,9 @@ def run_manager_session(task_text, todo_text, status_text, backend, config, work
 
 def run_worker_session(number, backend, config, workspace):
     prompt = "/no_think\nBID Worker. JSON tool calls only."
-    assignment = f"You are Worker {number}. Read docs/worker.md, then perform Task T{number}."
+    assignment = f"You are Worker {number}. Read docs/worker.md, then perform Task T{number}. Call submit_task when done."
     tools = tools_mod.get_tools_for_role(permissions.ROLE_WORKER, worker_number=number)
-    wk_config = dict(config)
-    wk_config["max_tokens"] = 512
-    return session.run_session(prompt, assignment, tools, backend, wk_config, workspace, permissions.ROLE_WORKER, worker_number=number)
+    return session.run_session(prompt, assignment, tools, backend, config, workspace, permissions.ROLE_WORKER, worker_number=number)
 
 
 def init_project(user_task, config, backend=None):
@@ -177,11 +172,10 @@ def run_project(config, backend=None):
                     vc_sys.save_state(f"Worker {number}", result.get("summary", ""))
                     print(f"Worker {number} finished.")
                 else:
-                    # Auto-check: model limitation — SmolLM3 does not call check_own_task
-                    post_todo = todo_mod.set_task_checked(post_todo, number, checked=True)
-                    write_file_content(os.path.join(ws, "docs/todo.md"), post_todo)
-                    vc_sys.save_state(f"Worker {number}", result.get("summary", ""))
-                    print(f"Worker {number} finished (auto-checked T{number})")
+                    if current:
+                        vc_sys.restore(current)
+                        print(f"Worker {number} did not check T{number}. Restored {current}.")
+                    return {"status": "error", "reason": f"Worker {number} did not check T{number}"}
             else:
                 print(f"Worker {number} failed: {result.get('reason', 'unknown')}")
                 if current:

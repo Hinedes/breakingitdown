@@ -174,11 +174,14 @@ def handle_check_own_task(args, workspace, role, worker_number):
         return f"error: task T{worker_number} not found in todo.md"
     with open(todo_path, "w", encoding="utf-8") as f:
         f.write(new_content)
-    return f"checked T{worker_number}"
+    return f"checked T{worker_number} in todo.md"
 
 
 def handle_finish(args, workspace, role, worker_number):
-    return "__FINISH__" + args.get("summary", "")
+    summary = args.get("summary", "")
+    if role == permissions.ROLE_MANAGER:
+        return "__FINISH__" + summary
+    return f"finish ignored — use check_own_task to submit"
 
 
 def make_tool(name, description, params, handler):

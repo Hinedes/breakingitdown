@@ -58,7 +58,6 @@ def make_worker_1_script():
             "content": RESEARCH_ARTIFACT,
         })]),
         agent_response([make_tool_call("check_own_task", {})]),
-        agent_response([make_tool_call("finish", {"summary": "Created research doc"})]),
     ]
 
 
@@ -71,7 +70,6 @@ def make_worker_2_script():
             "content": COMPARISON_ARTIFACT,
         })]),
         agent_response([make_tool_call("check_own_task", {})]),
-        agent_response([make_tool_call("finish", {"summary": "Created comparison doc"})]),
     ]
 
 
@@ -85,7 +83,6 @@ def make_worker_3_script():
             "content": RECOMMENDATION_ARTIFACT,
         })]),
         agent_response([make_tool_call("check_own_task", {})]),
-        agent_response([make_tool_call("finish", {"summary": "Created final recommendation"})]),
     ]
 
 
@@ -296,8 +293,8 @@ class TestOnlyManagerSetsDone:
             with open(os.path.join(tmp, "docs", "project-status.md")) as f:
                 assert "DONE" not in f.read()
 
-    def test_finish_without_check_own_task_accepted(self):
-        """Worker that finishes without checking its task gets auto-checked."""
+    def test_finish_without_check_own_task_does_not_check(self):
+        """Worker that finishes without checking its task leaves it unchecked."""
         from bid import vc as vc_mod
         responses = [
             agent_response([make_tool_call("write_file", {"path": "output.txt", "content": "work"})]),
@@ -319,9 +316,10 @@ class TestOnlyManagerSetsDone:
             from bid import harness
             config = {"workspace": tmp, "max_turns": 50}
             result = harness.run_project(config, backend=backend)
-            assert result["status"] == "paused"  # no Manager review, all checked
+            # finish alone does not check the task
             with open(os.path.join(tmp, "docs", "todo.md")) as f:
-                assert "[x] T1" in f.read()
+                assert "[ ] T1" in f.read()
+            assert result["status"] in ("error", "paused")
 
 
 class TestManagerReopen:
