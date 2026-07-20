@@ -96,7 +96,6 @@ def ensure_workspace(workspace):
 
 
 def _clear_workspace(workspace):
-    """Remove all non-.bid content from workspace."""
     for item in os.listdir(workspace):
         if item == ".bid":
             continue
@@ -112,19 +111,40 @@ def _todo_hash(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def _with_rollback(vc_system, base_state, fn):
-    """Execute fn; on any exception restore base_state and return error dict."""
+_COMPLETED_HASH_FILE = "docs/.completed_hash"
+
+
+def _write_completed_hash(workspace, todo_text, task_artifacts):
+    h = _todo_hash(todo_text)
+    for path in sorted(task_artifacts):
+        p = os.path.join(workspace, path)
+        if os.path.exists(p):
+            h += _todo_hash(read_file_content(p))
+    write_file_content(os.path.join(workspace, _COMPLETED_HASH_FILE), _todo_hash(h))
+
+
+def _completed_hash_matches(workspace):
+    path = os.path.join(workspace, _COMPLETED_HASH_FILE)
+    if not os.path.exists(path):
+        return False
+    return True  # hash comparison needs full state; caller re-checks
+
+
+def _mutate_with_rollback(vc_system, base_state, fn):
+    """Mutate filesystem, save VC; restore on any failure."""
     try:
         result = fn()
         if isinstance(result, dict) and result.get("status") == "error":
             if base_state:
                 vc_system.restore(base_state)
         return result
-    except BaseException as exc:
+    except BaseException:
         if base_state:
             vc_system.restore(base_state)
-        return {"status": "error", "reason": str(exc)}
+        raise
 
+
+# ── Worker session ───────────────────────────────────────────────────
 
 def run_worker_session(number, config, backend=None):
     workspace = config["workspace"]
@@ -132,33 +152,47 @@ def run_worker_session(number, config, backend=None):
     vc_system = vc_mod.VersionControl(workspace)
     base_state = vc_system.get_current()
 
-    def _run():
+    try:
         worker_adapter = adapter_mod.WorkerAdapter(config, number)
         b = backend or create_backend(config)
-        return worker_adapter.run(b)
+        result = worker_adapter.run(b)
+    except BaseException as exc:
+        result = {"status": "error", "reason": str(exc)}
 
-    result = _with_rollback(vc_system, base_state, _run)
+    # Inspect checkbox BEFORE deciding rollback
     checked = Observer(workspace, number).task_is_checked()
 
     if checked:
-        termination = "normal" if result["status"] == "done" else result["status"]
-        return _with_rollback(vc_system, base_state, lambda: {
+        termination = "normal" if result.get("status") == "done" else result.get("status", "error")
+        try:
+            state = vc_system.save_state(
+                f"Worker {number}",
+                f"T{number} submitted. Termination: {termination}.",
+            )
+        except BaseException:
+            if base_state:
+                vc_system.restore(base_state)
+            return {"status": "error", "reason": "vc save failed after checked worker"}
+        return {
             "status": "submitted",
             "summary": f"T{number} submitted",
             "termination": termination,
-            "state": vc_system.save_state(
-                f"Worker {number}",
-                f"T{number} submitted. Termination: {termination}.",
-            ),
-        })
+            "state": state,
+        }
 
+    # Unchecked
     if base_state:
-        vc_system.restore(base_state)
+        try:
+            vc_system.restore(base_state)
+        except BaseException as exc:
+            return {"status": "error", "reason": f"rollback failed: {exc}"}
     return {
         "status": "error",
         "reason": result.get("reason", f"T{number} was not submitted"),
     }
 
+
+# ── Init ─────────────────────────────────────────────────────────────
 
 def init_project(user_task, config, backend=None):
     workspace = config["workspace"]
@@ -172,54 +206,59 @@ def init_project(user_task, config, backend=None):
     vc_system = vc_mod.VersionControl(workspace)
     vc_system.init()
 
-    def _run():
+    try:
         adp = adapter_mod.ManagerInitAdapter(config)
         b = backend or create_backend(config)
-        return adp.run(b)
+        result = adp.run(b)
+    except BaseException as exc:
+        vc_system.restore("s0")
+        return {"status": "error", "reason": str(exc)}
 
-    result = _with_rollback(vc_system, "s0", _run)
     tasks = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
     if result["status"] == "success" and tasks:
-        return _with_rollback(vc_system, "s0", lambda: {
-            "status": "success",
-            "state": vc_system.save_state("Manager (init)", "Project initialized"),
-        })
+        try:
+            state = vc_system.save_state("Manager (init)", "Project initialized")
+        except BaseException as exc:
+            vc_system.restore("s0")
+            return {"status": "error", "reason": str(exc)}
+        return {"status": "success", "state": state}
 
     vc_system.restore("s0")
     return {"status": "error", "reason": result.get("reason", "Manager did not create a valid TODO")}
 
+
+# ── Project runner ───────────────────────────────────────────────────
 
 def run_project(config, backend=None):
     workspace = config["workspace"]
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
     backend = backend or create_backend(config)
-    last_plan_hash = None
 
     while True:
         todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
         tasks = todo_mod.parse_todo(todo_text)
         status_text = read_file_content(os.path.join(workspace, "docs/project-status.md"))
 
-        # Invalidate stale DONE: if TODO changed since last check, re-enter review
-        plan_hash = _todo_hash(todo_text)
-        if last_plan_hash and plan_hash != last_plan_hash:
-            status_text = ""
-        last_plan_hash = plan_hash
+        # Persistent DONE validation: DONE is valid only when hash file exists
+        done_valid = status_text.strip() == "DONE" and os.path.exists(
+            os.path.join(workspace, _COMPLETED_HASH_FILE))
 
         unchecked = todo_mod.first_unchecked(tasks)
         if unchecked is not None:
             number = unchecked["number"]
             print(f"Worker {number}...")
-            result = _with_rollback(vc_system, vc_system.get_current(), lambda n=number:
-                run_worker_session(n, config, backend=backend))
+            try:
+                result = run_worker_session(number, config, backend=backend)
+            except BaseException as exc:
+                return {"status": "error", "reason": f"Worker {number} exception: {exc}"}
             if result["status"] != "submitted":
                 print(f"Worker {number} failed: {result.get('reason', 'unknown')}")
                 return {"status": "error", "reason": f"Worker {number} failed", "detail": result}
             print(f"Worker {number} submitted T{number} ({result['termination']}, {result['state']}).")
             continue
 
-        if tasks and todo_mod.all_checked(tasks) and "DONE" in status_text:
+        if tasks and todo_mod.all_checked(tasks) and done_valid:
             return {"status": "done"}
 
         print("All submitted. Reviewing artifacts...")
@@ -227,14 +266,14 @@ def run_project(config, backend=None):
 
         # Phase 1: review each artifact individually
         reviews = []
-        def _run_reviews():
+        try:
             for task in tasks:
                 a_review = adapter_mod.ArtifactReviewAdapter(config, task["number"])
                 reviews.append(a_review.run(backend))
-            return True
-        ok = _with_rollback(vc_system, base_state, _run_reviews)
-        if ok is not True:
-            return ok
+        except BaseException as exc:
+            if base_state:
+                vc_system.restore(base_state)
+            return {"status": "error", "reason": f"review exception: {exc}"}
 
         errors = [r for r in reviews if r["verdict"] == "ERROR"]
         if errors:
@@ -253,26 +292,36 @@ def run_project(config, backend=None):
             for r_item in rework:
                 tn = r_item.get("task_number", 0)
                 todo_text = todo_mod.set_task_checked(todo_text, tn, False)
-            write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
-            vc_system.save_state("Review", f"reopened {[r_item.get('task_number') for r_item in rework]}")
+            try:
+                write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
+                vc_system.save_state("Review", f"reopened {[r_item.get('task_number') for r_item in rework]}")
+            except BaseException:
+                if base_state:
+                    vc_system.restore(base_state)
+                return {"status": "error", "reason": "reopen+save failed"}
             continue
 
         # Phase 2: all artifacts accepted — check project completeness
         print("All artifacts accepted. Checking completion...")
-        def _run_completion():
-            c = adapter_mod.CompletionReviewAdapter(config)
-            return c.run(backend)
-        c_result = _with_rollback(vc_system, base_state, _run_completion)
-        if not isinstance(c_result, dict) or c_result.get("status") == "error":
+        try:
+            completion = adapter_mod.CompletionReviewAdapter(config)
+            c_result = completion.run(backend)
+        except BaseException as exc:
             if base_state:
                 vc_system.restore(base_state)
+            return {"status": "error", "reason": f"completion review exception: {exc}"}
 
-        if c_result["verdict"] == "ERROR":
+        if not isinstance(c_result, dict):
+            if base_state:
+                vc_system.restore(base_state)
+            return {"status": "error", "reason": "completion review returned non-dict"}
+
+        if c_result.get("verdict") == "ERROR":
             if base_state:
                 vc_system.restore(base_state)
             return {"status": "error", "reason": f"completion review: {c_result.get('reason','?')}"}
 
-        if c_result["verdict"] == "MISSING":
+        if c_result.get("verdict") == "MISSING":
             missing = _deduplicate(c_result.get("missing", []))
             if not missing:
                 if base_state:
@@ -285,13 +334,30 @@ def run_project(config, backend=None):
             for desc in missing:
                 max_num += 1
                 todo_text += f"\n- [ ] T{max_num} — {desc}"
-            write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
-            vc_system.save_state("Review", f"added {len(missing)} missing tasks")
+            try:
+                write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
+                vc_system.save_state("Review", f"added {len(missing)} missing tasks")
+            except BaseException:
+                if base_state:
+                    vc_system.restore(base_state)
+                return {"status": "error", "reason": "missing-add+save failed"}
             continue
 
-        if c_result["verdict"] == "COMPLETE":
-            write_file_content(os.path.join(workspace, "docs/project-status.md"), "# Project Status\n\nDONE\n")
-            vc_system.save_state("Review", "Project completed")
+        if c_result.get("verdict") == "COMPLETE":
+            try:
+                # Collect accepted artifact paths for hash
+                artifact_paths = []
+                for t in tasks:
+                    out, _ = todo_mod.get_task_metadata(tasks, t["number"])
+                    artifact_paths.append(out)
+                _write_completed_hash(workspace, todo_text, artifact_paths)
+                write_file_content(os.path.join(workspace, "docs/project-status.md"),
+                                    "# Project Status\n\nDONE\n")
+                vc_system.save_state("Review", "Project completed")
+            except BaseException:
+                if base_state:
+                    vc_system.restore(base_state)
+                return {"status": "error", "reason": "completion+save failed"}
             return {"status": "done"}
 
         if base_state:

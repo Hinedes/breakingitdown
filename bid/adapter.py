@@ -44,7 +44,7 @@ def _clean_fences(text):
 def _hash_file(path):
     try:
         with open(path, "rb") as f:
-            return hashlib.sha256(f.read()).hexdigest()[:16]
+            return hashlib.sha256(f.read()).hexdigest()
     except OSError:
         return "?"
 
@@ -74,12 +74,18 @@ def _parse_content_into_turns(content):
             path = stripped[6:].strip()
             i += 1
             body_lines = []
+            terminated = False
             while i < len(lines):
                 if lines[i].strip() == "END WRITE":
+                    terminated = True
                     i += 1
                     break
                 body_lines.append(lines[i])
                 i += 1
+            if not terminated:
+                # Unterminated WRITE: reject, perform no write
+                commands.append({"type": "WRITE_UNTERMINATED"})
+                continue
             commands.append({"type": "WRITE", "path": path, "content": "\n".join(body_lines)})
             continue
 
@@ -117,7 +123,7 @@ _TASK_LINE_CHECK = re.compile(r"^\s*[-*]\s+\[([ x])\]\s+(T\d+)\b\s*(.*)")
 
 
 def validate_todo_tasks(tasks):
-    """Return (is_valid, reason).  Enforce T1..TN, unique, unchecked, nonempty."""
+    """Return (is_valid, reason).  Enforce T1..TN, unique, unchecked, nonempty, safe paths."""
     if not tasks:
         return False, "no tasks"
     numbers = [t["number"] for t in tasks]
@@ -132,7 +138,7 @@ def validate_todo_tasks(tasks):
         out, inputs = todo_mod.get_task_metadata(tasks, t["number"])
         for p in [out] + inputs:
             if not p:
-                continue
+                return False, f"{t['id']} has empty path"
             safe, err, rel = permissions.check_path_safety(p, "/dummy")
             if not safe:
                 return False, f"{t['id']} has unsafe path: {err}"
@@ -141,9 +147,11 @@ def validate_todo_tasks(tasks):
             if _is_reserved_control_path(rel):
                 return False, f"{t['id']} path targets a protected file: {rel}"
         if out:
-            if out in seen_outputs:
+            # Normalize for uniqueness check
+            _, _, norm_out = permissions.check_path_safety(out, "/dummy")
+            if norm_out in seen_outputs:
                 return False, f"duplicate output path: {out}"
-            seen_outputs.add(out)
+            seen_outputs.add(norm_out)
     return True, None
 
 
@@ -151,7 +159,7 @@ def _is_reserved_control_path(rel):
     parts = rel.split("/")
     if ".bid" in parts:
         return True
-    if any(p in ("docs/reviews",) for p in parts):
+    if "docs/reviews" in rel or rel.startswith("docs/reviews/"):
         return True
     if rel in ("docs/task.md", "docs/todo.md", "docs/project-status.md", "docs/decisions.md",
                "docs/manager.md", "docs/worker.md"):
@@ -304,6 +312,7 @@ class WorkerAdapter:
         done_without_check = 0
         last_sig = None
         turn_repeat = 0
+        _read_tracker = {}  # path → (useful_count, last_hash)
 
         while time.monotonic() - session_start < hard_ceiling:
             try:
@@ -353,7 +362,14 @@ class WorkerAdapter:
                                     result = f"not a file: {cmd['path']}"
                                 else:
                                     result = _read(self.workspace, rel)
-                                    useful = True
+                                    # Repeated identical READ is not progress
+                                    fhash = _hash_file(abs_path)
+                                    prev = _read_tracker.get(cmd["path"])
+                                    if prev and prev[0] > 0 and prev[1] == fhash:
+                                        pass  # not useful, repeat
+                                    else:
+                                        useful = True
+                                    _read_tracker[cmd["path"]] = (1 if not prev else prev[0] + 1, fhash)
                         except ValueError as e:
                             result = str(e)
                         sig = f"READ {cmd['path']}|{result[:50]}"
@@ -380,6 +396,11 @@ class WorkerAdapter:
                         else:
                             turn_repeat = 0
                         last_sig = sig
+                        messages.append({"role": "user", "content": result})
+                        continue
+
+                    if cmd["type"] == "WRITE_UNTERMINATED":
+                        result = "error: WRITE must end with END WRITE on its own line"
                         messages.append({"role": "user", "content": result})
                         continue
 
