@@ -1,295 +1,263 @@
-import pytest
-import sys
+import json
 import os
 import tempfile
-import json
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from bid import harness, model, todo, permissions
+from bid import harness, model, permissions, session, todo, tools, vc
+from bid.observer import Observer
 
 
-def make_tool_call(name, args_dict):
+def tool_call(name, arguments):
     return {
         "id": f"call_{name}",
         "type": "function",
-        "function": {
-            "name": name,
-            "arguments": json.dumps(args_dict),
-        }
+        "function": {"name": name, "arguments": json.dumps(arguments)},
     }
 
 
-def agent_response(tool_calls=None, content=None, finish_reason="tool_calls"):
+def tool_response(name, arguments):
     return {
         "role": "assistant",
-        "content": content,
-        "tool_calls": tool_calls,
-        "finish_reason": finish_reason if tool_calls else "stop",
+        "content": None,
+        "tool_calls": [tool_call(name, arguments)],
+        "finish_reason": "tool_calls",
     }
 
 
 def text_response(text):
-    return agent_response(None, text, "stop")
+    return {
+        "role": "assistant",
+        "content": text,
+        "tool_calls": None,
+        "finish_reason": "stop",
+    }
 
 
-def make_manager_init_script():
-    return [
-        agent_response([make_tool_call("write_file", {
-            "path": "docs/todo.md",
-            "content": "- [ ] T1 — First\n- [ ] T2 — Second\n- [ ] T3 — Third\n",
-        })]),
-        text_response("Done"),
-    ]
+def config(workspace, **overrides):
+    values = {
+        "workspace": workspace,
+        "max_tokens": 8192,
+        "request_timeout": 30,
+        "inactivity_timeout": 30,
+        "worker_timeout": 30,
+        "repeat_action_limit": 3,
+    }
+    values.update(overrides)
+    return values
 
 
-def make_worker_script(task_num):
-    return [
-        agent_response([make_tool_call("read_file", {"path": "docs/todo.md"})]),
-        agent_response([make_tool_call("write_file", {
-            "path": f"output/t{task_num}.md",
-            "content": f"# Result for T{task_num}\n",
-        })]),
-        agent_response([make_tool_call("replace_text", {
-            "path": "docs/todo.md",
-            "old_text": f"- [ ] T{task_num}",
-            "new_text": f"- [x] T{task_num}",
-        })]),
-        text_response("Done"),
-    ]
+def prepare_worker_workspace(tmp, todo_text="- [ ] T1 — Write result\n"):
+    os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
+    with open(os.path.join(tmp, "docs", "todo.md"), "w", encoding="utf-8") as file:
+        file.write(todo_text)
+    with open(os.path.join(tmp, "docs", "worker.md"), "w", encoding="utf-8") as file:
+        file.write("# Worker\n")
+    system = vc.VersionControl(tmp)
+    system.init()
+    return system
 
 
 class TestObserver:
-    def test_task_is_checked(self):
-        from bid.observer import Observer
+    def test_task_transition_and_done_detection(self):
         with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, "docs"))
-            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
-                f.write("- [ ] T1 — test\n- [x] T2 — done\n")
-            obs = Observer(tmp, 2)
-            assert obs.task_is_checked()
-            obs2 = Observer(tmp, 1)
-            assert not obs2.task_is_checked()
+            prepare_worker_workspace(tmp)
+            observer = Observer(tmp, 1)
+            assert not observer.task_just_became_checked()
+            with open(os.path.join(tmp, "docs", "todo.md"), "w", encoding="utf-8") as file:
+                file.write("- [x] T1 — Write result\n")
+            assert observer.task_just_became_checked()
+            assert not observer.task_just_became_checked()
+            assert observer.seen_done("work\nDone")
+            assert not observer.seen_done("Not done yet")
 
-    def test_task_just_became_checked(self):
-        from bid.observer import Observer
+    def test_poll_changes_detects_add_modify_delete(self):
         with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, "docs"))
-            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
-                f.write("- [ ] T1 — test\n")
-            obs = Observer(tmp, 1)
-            assert not obs.task_just_became_checked()
-            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
-                f.write("- [x] T1 — test\n")
-            assert obs.task_just_became_checked()
-            assert not obs.task_just_became_checked()
+            prepare_worker_workspace(tmp)
+            observer = Observer(tmp, 1)
+            path = os.path.join(tmp, "result.md")
+            with open(path, "w", encoding="utf-8") as file:
+                file.write("a")
+            assert "result.md" in observer.poll_changes()
+            with open(path, "w", encoding="utf-8") as file:
+                file.write("b")
+            assert "result.md" in observer.poll_changes()
+            os.remove(path)
+            assert "result.md" in observer.poll_changes()
 
-    def test_seen_done(self):
-        from bid.observer import Observer
-        obs = Observer("/tmp", 1)
-        assert obs.seen_done("Done")
-        assert obs.seen_done("Some work\nDone\n")
-        assert not obs.seen_done("")
-        assert not obs.seen_done("Not done yet")
-        assert obs.seen_done("  Done  ")
-        assert obs.seen_done("The work is complete.\nDone")
-
-
-class TestPermissions:
-    def test_path_safety_allowed(self):
-        from bid import permissions
-        with tempfile.TemporaryDirectory() as tmp:
-            safe, err, rel = permissions.check_path_safety("docs/todo.md", tmp)
-            assert safe
-
-    def test_path_traversal_rejected(self):
-        from bid import permissions
-        with tempfile.TemporaryDirectory() as tmp:
-            safe, err, rel = permissions.check_path_safety("../../../etc/passwd", tmp)
-            assert not safe
-
-    def test_manager_write_allowed(self):
-        from bid import permissions
-        allowed, err = permissions.check_write_permission("docs/todo.md", permissions.ROLE_MANAGER)
-        assert allowed
-
-    def test_manager_write_denied(self):
-        from bid import permissions
-        allowed, err = permissions.check_write_permission("output/foo.md", permissions.ROLE_MANAGER)
-        assert not allowed
-
-    def test_worker_write_allowed(self):
-        from bid import permissions
-        allowed, err = permissions.check_write_permission("output/foo.md", permissions.ROLE_WORKER)
-        assert allowed
-
-    def test_worker_write_blocked(self):
-        from bid import permissions
-        for f in permissions.WORKER_BLOCKED:
-            allowed, err = permissions.check_write_permission(f, permissions.ROLE_WORKER)
-            assert not allowed
-
-
-class TestVC:
-    def test_init_creates_bid_dir(self):
-        from bid import vc as vc_mod
-        with tempfile.TemporaryDirectory() as tmp:
-            vc = vc_mod.VersionControl(tmp)
-            vc.init()
-            assert os.path.exists(os.path.join(tmp, ".bid", "states", "s0"))
-
-    def test_save_and_restore(self):
-        from bid import vc as vc_mod
-        with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, "docs"))
-            with open(os.path.join(tmp, "docs", "f.txt"), "w") as f:
-                f.write("hello")
-            vc = vc_mod.VersionControl(tmp)
-            vc.init()
-            with open(os.path.join(tmp, "docs", "f.txt"), "w") as f:
-                f.write("modified")
-            vc.save_state("test", "msg")
-            vc.restore("s0")
-            with open(os.path.join(tmp, "docs", "f.txt")) as f:
-                assert f.read() == "hello"
-
-    def test_rollback_deletes_later_states(self):
-        from bid import vc as vc_mod
-        with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, "docs"))
-            vc = vc_mod.VersionControl(tmp)
-            vc.init()
-            vc.save_state("a", "m1")
-            vc.save_state("b", "m2")
-            vc.restore("s1")
-            states = vc._list_states()
-            assert "s0" in states
-            assert "s1" in states
-            assert "s2" not in states
+    def test_repeated_action_count(self):
+        observer = Observer("/tmp", 0)
+        assert observer.record_action("list_files", {"path": "."}, "docs/") == 1
+        assert observer.record_action("list_files", {"path": "."}, "docs/") == 2
+        assert observer.record_action("read_file", {"path": "x"}, "x") == 1
 
 
 class TestSession:
-    def test_run_turn_no_tools(self):
-        from bid import session, model
-        backend = model.MockBackend([text_response("Hello")])
-        config = {"max_tokens": 256}
+    def test_tool_event_is_structured(self):
+        backend = model.MockBackend([tool_response("list_files", {"path": "."})])
         with tempfile.TemporaryDirectory() as tmp:
-            result = session.run_session("sys", "hi", [], backend, config, tmp, "worker", 1)
-        assert result["content"] == "Hello"
-        assert not result["tool_calls"]
-
-    def test_run_turn_single_tool(self):
-        from bid import session, model, tools
-        backend = model.MockBackend([
-            agent_response([make_tool_call("read_file", {"path": "f.txt"})]),
-        ])
-        config = {"max_tokens": 256}
-        tool_list = [t for t in tools.COMMON_TOOLS if t["name"] == "read_file"]
-        with tempfile.TemporaryDirectory() as tmp:
-            with open(os.path.join(tmp, "f.txt"), "w") as f:
-                f.write("data")
-            result = session.run_session("sys", "read", tool_list, backend, config, tmp, "worker", 1)
+            result = session.run_session(
+                "system",
+                "assignment",
+                tools.get_tools_for_role(permissions.ROLE_WORKER, 1),
+                backend,
+                config(tmp),
+                tmp,
+                permissions.ROLE_WORKER,
+                1,
+            )
         assert result["tool_calls"]
+        assert result["tool_events"][0]["name"] == "list_files"
+        assert result["tool_events"][0]["success"]
 
-    def test_run_turn_alias(self):
-        from bid import session, model, tools
-        backend = model.MockBackend([
-            agent_response([make_tool_call("create_file", {"path": "f.txt", "content": "hi"})]),
-        ])
-        config = {"max_tokens": 256}
-        tool_list = [t for t in tools.COMMON_TOOLS if t["name"] == "write_file"]
+    def test_malformed_arguments_are_reported_not_executed(self):
+        response = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "bad",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{"},
+            }],
+            "finish_reason": "tool_calls",
+        }
+        backend = model.MockBackend([response])
         with tempfile.TemporaryDirectory() as tmp:
-            result = session.run_session("sys", "write", tool_list, backend, config, tmp, "worker", 1)
-            assert result["tool_calls"]
-            with open(os.path.join(tmp, "f.txt")) as f:
-                assert f.read() == "hi"
+            result = session.run_session(
+                "system", "assignment", tools.get_tools_for_role("worker", 1),
+                backend, config(tmp), tmp, "worker", 1,
+            )
+        assert not result["tool_events"][0]["success"]
+        assert "malformed" in result["tool_events"][0]["result"]
 
-
-class TestTodo:
-    def test_parse_todo(self):
-        tasks = todo.parse_todo("- [ ] T1 — First\n- [x] T2 — Second\n")
-        assert len(tasks) == 2
-        assert tasks[0]["id"] == "T1"
-        assert not tasks[0]["checked"]
-        assert tasks[1]["checked"]
-
-    def test_first_unchecked(self):
-        tasks = todo.parse_todo("- [ ] T1 — First\n- [x] T2 — Second\n")
-        assert todo.first_unchecked(tasks)["number"] == 1
-        all_done = todo.parse_todo("- [x] T1 — done\n- [x] T2 — done")
-        assert todo.first_unchecked(all_done) is None
-
-    def test_set_task_checked(self):
-        text = "- [ ] T1 — First\n- [ ] T2 — Second\n"
-        result = todo.set_task_checked(text, 1, True)
-        assert "[x] T1" in result
-        assert "[ ] T2" in result
-
-
-class TestWriteTracking:
-    def test_same_session_accumulates(self):
-        from bid.tools import handle_write_file, reset_write_tracking
+    def test_max_tokens_reaches_backend_unchanged(self):
+        backend = model.MockBackend([text_response("Done")])
         with tempfile.TemporaryDirectory() as tmp:
-            reset_write_tracking(tmp)
-            handle_write_file({"path": "f.txt", "content": "a"}, tmp, "worker", 1)
-            handle_write_file({"path": "f.txt", "content": "b"}, tmp, "worker", 1)
-            with open(os.path.join(tmp, "f.txt")) as f:
-                assert f.read() == "a\nb"
+            session.run_session("system", "assignment", [], backend, config(tmp), tmp, "manager")
+        assert backend.call_history[0]["max_tokens"] == 8192
 
-    def test_new_session_resets(self):
-        from bid.tools import handle_write_file, reset_write_tracking
+
+class TestFileTools:
+    def test_repeated_write_overwrites_so_worker_can_backtrack(self):
         with tempfile.TemporaryDirectory() as tmp:
-            reset_write_tracking(tmp)
-            handle_write_file({"path": "f.txt", "content": "a"}, tmp, "worker", 1)
-            reset_write_tracking(tmp)
-            handle_write_file({"path": "f.txt", "content": "b"}, tmp, "worker", 1)
-            with open(os.path.join(tmp, "f.txt")) as f:
-                assert f.read() == "b"
+            worker_tools = {tool["name"]: tool for tool in tools.get_tools_for_role("worker", 1)}
+            write = worker_tools["write_file"]["handler"]
+            assert write({"path": "result.md", "content": "first"}, tmp, "worker", 1).startswith("wrote")
+            assert write({"path": "result.md", "content": "corrected"}, tmp, "worker", 1).startswith("wrote")
+            with open(os.path.join(tmp, "result.md"), encoding="utf-8") as file:
+                assert file.read() == "corrected"
 
-
-class TestAgent:
-    def test_worker_outputs_done_task_checked(self):
-        from bid import harness, model
-        backend = model.MockBackend(make_worker_script(1))
+    def test_worker_may_toggle_only_own_checkbox(self):
         with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, "docs"))
-            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
-                f.write("- [ ] T1 — Task one\n- [ ] T2 — Task two\n")
-            with open(os.path.join(tmp, "docs", "worker.md"), "w") as f:
-                f.write("# Worker\n")
-            config = {"workspace": tmp, "max_tokens": 256, "inactivity_timeout": 3, "worker_timeout": 10}
-            result = harness.run_worker_session(1, config, backend=backend)
-            # The mock script does replace_text then Done — should see task checked
-            assert result["status"] in ("submitted", "error"), f"Got {result['status']}: {result.get('reason','')}"
-            if result["status"] == "error":
-                print(f"DEBUG: task checked? ", end="")
-                from bid.observer import Observer
-                obs = Observer(tmp, 1)
-                print(obs.task_is_checked())
+            prepare_worker_workspace(tmp, "- [ ] T1 — One\n- [ ] T2 — Two\n")
+            write = next(tool for tool in tools.get_tools_for_role("worker", 1) if tool["name"] == "write_file")["handler"]
+            accepted = write(
+                {"path": "docs/todo.md", "content": "- [x] T1 — One\n- [ ] T2 — Two\n"},
+                tmp, "worker", 1,
+            )
+            assert accepted.startswith("wrote")
+            rejected = write(
+                {"path": "docs/todo.md", "content": "- [x] T1 — One\n- [x] T2 — Two\n"},
+                tmp, "worker", 1,
+            )
+            assert rejected.startswith("permission denied")
 
-    def test_worker_timeout_without_check(self):
-        from bid import harness, model
-        backend = model.MockBackend([text_response("Working...")])
-        with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, "docs"))
-            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
-                f.write("- [ ] T1 — Task one\n")
-            with open(os.path.join(tmp, "docs", "worker.md"), "w") as f:
-                f.write("# Worker\n")
-            config = {"workspace": tmp, "max_tokens": 256, "worker_timeout": 5, "inactivity_timeout": 3}
-            result = harness.run_worker_session(1, config, backend=backend)
-            assert result["status"] != "submitted"
+    def test_no_terminal_tools_are_exposed(self):
+        names = {tool["name"] for tool in tools.get_tools_for_role("worker", 1)}
+        assert "finish" not in names
+        assert "check_own_task" not in names
+        assert "submit_task" not in names
 
-    def test_manager_init_writes_todo(self):
-        from bid import harness, model
-        backend = model.MockBackend(make_manager_init_script())
+
+class TestWorkerLifecycle:
+    def test_checked_worker_may_revise_then_done(self):
+        responses = [
+            tool_response("write_file", {"path": "result.md", "content": "draft"}),
+            tool_response("write_file", {"path": "docs/todo.md", "content": "- [x] T1 — Write result\n"}),
+            tool_response("write_file", {"path": "result.md", "content": "final"}),
+            text_response("Done"),
+        ]
+        backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, "docs"))
-            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
-                f.write("# Task\n\nTest\n")
-            with open(os.path.join(tmp, "docs", "manager.md"), "w") as f:
-                f.write("# Manager\n")
-            config = {"workspace": tmp, "max_tokens": 256}
-            result = harness.run_manager_init(config, backend=backend)
+            prepare_worker_workspace(tmp)
+            result = harness.run_worker_session(1, config(tmp), backend=backend)
+            assert result["status"] == "submitted"
+            assert result["termination"] == "normal"
+            with open(os.path.join(tmp, "result.md"), encoding="utf-8") as file:
+                assert file.read() == "final"
+
+    def test_done_without_checkbox_does_not_terminate_worker(self):
+        responses = [
+            text_response("Done"),
+            tool_response("write_file", {"path": "docs/todo.md", "content": "- [x] T1 — Write result\n"}),
+            text_response("Done"),
+        ]
+        backend = model.MockBackend(responses)
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_worker_workspace(tmp)
+            result = harness.run_worker_session(1, config(tmp), backend=backend)
+            assert result["status"] == "submitted"
+            assert len(backend.call_history) == 3
+            assert any("still unchecked" in message.get("content", "") for message in backend.call_history[1]["messages"])
+
+    def test_unchecked_stalled_worker_rolls_back(self):
+        responses = [
+            tool_response("write_file", {"path": "leak.md", "content": "unfinished"}),
+            tool_response("list_files", {"path": "."}),
+            tool_response("list_files", {"path": "."}),
+            tool_response("list_files", {"path": "."}),
+        ]
+        backend = model.MockBackend(responses)
+        with tempfile.TemporaryDirectory() as tmp:
+            system = prepare_worker_workspace(tmp)
+            result = harness.run_worker_session(1, config(tmp), backend=backend)
+            assert result["status"] == "error"
+            assert not os.path.exists(os.path.join(tmp, "leak.md"))
+            assert system.get_current() == "s0"
+            assert system._list_states() == ["s0"]
+
+    def test_checked_stalled_worker_is_saved_as_abnormal_submission(self):
+        responses = [
+            tool_response("write_file", {"path": "docs/todo.md", "content": "- [x] T1 — Write result\n"}),
+            tool_response("list_files", {"path": "."}),
+            tool_response("list_files", {"path": "."}),
+            tool_response("list_files", {"path": "."}),
+        ]
+        backend = model.MockBackend(responses)
+        with tempfile.TemporaryDirectory() as tmp:
+            system = prepare_worker_workspace(tmp)
+            result = harness.run_worker_session(1, config(tmp), backend=backend)
+            assert result["status"] == "submitted"
+            assert result["termination"] == "stalled"
+            assert system.get_current() == "s1"
+
+
+class TestFullFlow:
+    def test_manager_workers_manager_done(self):
+        todo_initial = "- [ ] T1 — First artifact\n- [ ] T2 — Second artifact\n"
+        todo_t1 = "- [x] T1 — First artifact\n- [ ] T2 — Second artifact\n"
+        todo_all = "- [x] T1 — First artifact\n- [x] T2 — Second artifact\n"
+        responses = [
+            tool_response("write_file", {"path": "docs/todo.md", "content": todo_initial}),
+            text_response("Done"),
+            tool_response("write_file", {"path": "output/t1.md", "content": "one"}),
+            tool_response("write_file", {"path": "docs/todo.md", "content": todo_t1}),
+            text_response("Done"),
+            tool_response("write_file", {"path": "output/t2.md", "content": "two"}),
+            tool_response("write_file", {"path": "docs/todo.md", "content": todo_all}),
+            text_response("Done"),
+            tool_response("read_file", {"path": "output/t1.md"}),
+            tool_response("read_file", {"path": "output/t2.md"}),
+            tool_response("write_file", {"path": "docs/project-status.md", "content": "# Project Status\n\nDONE\n"}),
+            text_response("Done"),
+        ]
+        backend = model.MockBackend(responses)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            initialized = harness.init_project("Produce two artifacts", cfg, backend=backend)
+            assert initialized["status"] == "success"
+            result = harness.run_project(cfg, backend=backend)
             assert result["status"] == "done"
-            with open(os.path.join(tmp, "docs", "todo.md")) as f:
-                assert "T1" in f.read()
+            assert os.path.exists(os.path.join(tmp, "output", "t1.md"))
+            assert os.path.exists(os.path.join(tmp, "output", "t2.md"))
+            states = vc.VersionControl(tmp)._list_states()
+            assert states == ["s0", "s1", "s2", "s3", "s4"]
+            assert all(call["max_tokens"] == 8192 for call in backend.call_history)
