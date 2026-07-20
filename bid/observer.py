@@ -1,5 +1,7 @@
+import json
 import os
 import time
+
 from . import todo as todo_mod
 
 
@@ -7,67 +9,89 @@ class Observer:
     def __init__(self, workspace, task_number):
         self.workspace = workspace
         self.task_number = task_number
-        self.task_was_checked = False
-        self._snapshot = {}
+        self._snapshot = self._tree_state()
+        self.task_was_checked = self.task_is_checked()
         self.last_activity = time.time()
         self.start_time = time.time()
+        self._last_action = None
+        self._repeat_count = 0
+
+    def _tree_state(self):
+        state = {}
+        for root, dirs, files in os.walk(self.workspace):
+            dirs[:] = [directory for directory in dirs if directory != ".bid"]
+            for filename in files:
+                path = os.path.join(root, filename)
+                try:
+                    stat = os.stat(path)
+                except OSError:
+                    continue
+                relative = os.path.relpath(path, self.workspace).replace(os.sep, "/")
+                state[relative] = (stat.st_mtime_ns, stat.st_size)
+        return state
 
     def snapshot_tree(self):
-        self._snapshot = {}
-        for root, dirs, files in os.walk(self.workspace):
-            if ".bid" in root:
-                continue
-            for f in files:
-                path = os.path.join(root, f)
-                try:
-                    st = os.stat(path)
-                    self._snapshot[path] = (st.st_mtime, st.st_size)
-                except OSError:
-                    pass
+        self._snapshot = self._tree_state()
 
-    def changed_files(self):
-        changed = []
-        for root, dirs, files in os.walk(self.workspace):
-            if ".bid" in root:
-                continue
-            for f in files:
-                path = os.path.join(root, f)
-                try:
-                    st = os.stat(path)
-                    prev = self._snapshot.get(path)
-                    if prev is None or prev != (st.st_mtime, st.st_size):
-                        changed.append(os.path.relpath(path, self.workspace))
-                except OSError:
-                    pass
+    def poll_changes(self):
+        current = self._tree_state()
+        changed = sorted({
+            path
+            for path in set(self._snapshot) | set(current)
+            if self._snapshot.get(path) != current.get(path)
+        })
+        self._snapshot = current
+        if changed:
+            self.mark_activity()
         return changed
 
+    def changed_files(self):
+        current = self._tree_state()
+        return sorted({
+            path
+            for path in set(self._snapshot) | set(current)
+            if self._snapshot.get(path) != current.get(path)
+        })
+
     def task_is_checked(self):
+        if not self.task_number:
+            return False
         todo_path = os.path.join(self.workspace, "docs/todo.md")
         if not os.path.exists(todo_path):
             return False
-        with open(todo_path) as f:
-            tasks = todo_mod.parse_todo(f.read())
-        for t in tasks:
-            if t["number"] == self.task_number:
-                return t["checked"]
-        return False
+        with open(todo_path, encoding="utf-8") as file:
+            tasks = todo_mod.parse_todo(file.read())
+        task = todo_mod.get_task(tasks, self.task_number)
+        return bool(task and task["checked"])
 
     def task_just_became_checked(self):
         now = self.task_is_checked()
-        if now and not self.task_was_checked:
-            self.task_was_checked = True
-            return True
+        changed = now and not self.task_was_checked
         self.task_was_checked = now
-        return False
+        return changed
 
     def seen_done(self, text):
         if not text:
             return False
         lines = text.strip().split("\n")
-        for line in reversed(lines):
-            if line.strip() == "Done":
-                return True
-        return False
+        return bool(lines and lines[-1].strip() == "Done")
+
+    def record_action(self, name, arguments, result):
+        signature = json.dumps(
+            {"name": name, "arguments": arguments, "result": result},
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        if signature == self._last_action:
+            self._repeat_count += 1
+        else:
+            self._last_action = signature
+            self._repeat_count = 1
+        return self._repeat_count
+
+    def reset_action_loop(self):
+        self._last_action = None
+        self._repeat_count = 0
 
     def mark_activity(self):
         self.last_activity = time.time()
