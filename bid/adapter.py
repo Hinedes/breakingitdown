@@ -548,7 +548,10 @@ class ManagerReviewAdapter:
             parts.append(f"# Decision Log\n\n{decisions}\n")
         parts.append(
             "# Instructions\n\n"
-            "Review the completed work. Return only:\n\n"
+            "Evaluate each artifact against its task description. "
+            "An artifact that is too short, merely restates the task, "
+            "or is empty must be reopened.\n\n"
+            "Return only:\n\n"
             "```\n"
             "# Verdict\n"
             "\n"
@@ -571,6 +574,6 @@ class ManagerReviewAdapter:
             "\n"
             "- New task description.\n"
             "```\n\n"
-            "Existing task lines must be preserved verbatim when reopening."
+            "Do not include commentary. Only the verdict block."
         )
         return "\n".join(parts)
