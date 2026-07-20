@@ -2,23 +2,46 @@ import re
 
 
 _TASK_LINE_RE = re.compile(r'^(\s*[-*]\s+\[)([ x])(\]\s+T(\d+)\b.*)$')
+_META_RE = re.compile(r'^\s{2,}(Output|Inputs)\s*:\s*(.*)')
+_META_KEY_MAP = {"Output": "output", "Inputs": "inputs"}
 
 
 def parse_todo(text):
     tasks = []
+    current_task = None
     for line in text.split('\n'):
         match = re.match(r'^\s*[-*]\s+\[([ x])\]\s+(T\d*)\b\s*(.*)', line)
         if match and match.group(2) != 'T':
+            if current_task:
+                tasks.append(current_task)
             checked = match.group(1) == 'x'
             task_id = match.group(2)
             number_text = task_id[1:]
-            tasks.append({
+            current_task = {
                 "checked": checked,
                 "id": task_id,
                 "number": int(number_text) if number_text.isdigit() else 0,
                 "description": match.group(3).strip().lstrip('—–-').strip(),
-            })
+            }
+            continue
+        meta = _META_RE.match(line)
+        if meta and current_task is not None:
+            key = _META_KEY_MAP[meta.group(1)]
+            current_task[key] = meta.group(2).strip()
+    if current_task:
+        tasks.append(current_task)
     return tasks
+
+
+def get_task_metadata(tasks, number):
+    """Return (output_path, input_paths) for a task, or defaults."""
+    task = get_task(tasks, number)
+    if not task:
+        return f"docs/work/T{number}.md", []
+    output = task.get("output", f"docs/work/T{number}.md")
+    inputs_raw = task.get("inputs", "")
+    inputs = [p.strip() for p in inputs_raw.replace(",", "\n").split("\n") if p.strip()]
+    return output, inputs
 
 
 def get_task(tasks, number):

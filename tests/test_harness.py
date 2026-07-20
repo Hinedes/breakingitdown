@@ -253,10 +253,9 @@ class TestFileTools:
 class TestWorkerLifecycle:
     def test_checked_worker_may_revise_then_done(self):
         responses = [
-            tool_response("write_file", {"path": "result.md", "content": "draft"}),
-            tool_response("write_file", {"path": "docs/todo.md", "content": "- [x] T1 — Write result\n"}),
-            tool_response("write_file", {"path": "result.md", "content": "final"}),
-            text_response("Done"),
+            text_response("WRITE result.md\ndraft\nEND WRITE"),
+            text_response("WRITE docs/todo.md\n- [x] T1 — Write result\nEND WRITE"),
+            text_response("WRITE result.md\nfinal\nEND WRITE\n\nDone"),
         ]
         backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
@@ -270,7 +269,7 @@ class TestWorkerLifecycle:
     def test_done_without_checkbox_does_not_terminate_worker(self):
         responses = [
             text_response("Done"),
-            tool_response("write_file", {"path": "docs/todo.md", "content": "- [x] T1 — Write result\n"}),
+            text_response("WRITE docs/todo.md\n- [x] T1 — Write result\nEND WRITE"),
             text_response("Done"),
         ]
         backend = model.MockBackend(responses)
@@ -283,10 +282,11 @@ class TestWorkerLifecycle:
 
     def test_unchecked_stalled_worker_rolls_back(self):
         responses = [
-            tool_response("write_file", {"path": "leak.md", "content": "unfinished"}),
-            tool_response("read_file", {"path": "."}),
-            tool_response("read_file", {"path": "."}),
-            tool_response("read_file", {"path": "."}),
+            text_response("WRITE leak.md\nunfinished\nEND WRITE"),
+            text_response("READ nonexistent.md"),
+            text_response("READ nonexistent.md"),
+            text_response("READ nonexistent.md"),
+            text_response("READ nonexistent.md"),
         ]
         backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
@@ -299,10 +299,11 @@ class TestWorkerLifecycle:
 
     def test_checked_stalled_worker_is_saved_as_abnormal_submission(self):
         responses = [
-            tool_response("write_file", {"path": "docs/todo.md", "content": "- [x] T1 — Write result\n"}),
-            tool_response("read_file", {"path": "nonexistent.md"}),
-            tool_response("read_file", {"path": "nonexistent.md"}),
-            tool_response("read_file", {"path": "nonexistent.md"}),
+            text_response("WRITE docs/todo.md\n- [x] T1 — Write result\nEND WRITE"),
+            text_response("READ nonexistent.md"),
+            text_response("READ nonexistent.md"),
+            text_response("READ nonexistent.md"),
+            text_response("READ nonexistent.md"),
         ]
         backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
@@ -322,12 +323,10 @@ class TestFullFlow:
         todo_all = "- [x] T1 — First artifact\n- [x] T2 — Second artifact\n"
         responses = [
             text_response(todo_initial),
-            tool_response("write_file", {"path": "output/t1.md", "content": "one"}),
-            tool_response("write_file", {"path": "docs/todo.md", "content": todo_t1}),
-            text_response("Done"),
-            tool_response("write_file", {"path": "output/t2.md", "content": "two"}),
-            tool_response("write_file", {"path": "docs/todo.md", "content": todo_all}),
-            text_response("Done"),
+            text_response("WRITE output/t1.md\none\nEND WRITE"),
+            text_response("WRITE docs/todo.md\n- [x] T1 — First artifact\n- [ ] T2 — Second artifact\nEND WRITE\n\nDone"),
+            text_response("WRITE output/t2.md\ntwo\nEND WRITE"),
+            text_response("WRITE docs/todo.md\n- [x] T1 — First artifact\n- [x] T2 — Second artifact\nEND WRITE\n\nDone"),
             tool_response("read_file", {"path": "output/t1.md"}),
             tool_response("read_file", {"path": "output/t2.md"}),
             tool_response("write_file", {"path": "docs/project-status.md", "content": "# Project Status\n\nDONE\n"}),

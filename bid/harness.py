@@ -255,16 +255,9 @@ def run_worker_session(number, config, backend=None):
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
     base_state = vc_system.get_current()
-    result = _run_role(
-        config,
-        permissions.ROLE_WORKER,
-        (
-            f"Read docs/worker.md and docs/todo.md. Perform only Task T{number}. "
-            f"When the final submitted state is ready, keep T{number} checked and output exactly Done."
-        ),
-        backend=backend,
-        worker_number=number,
-    )
+    worker_adapter = adapter_mod.WorkerAdapter(config, number)
+    backend = backend or create_backend(config)
+    result = worker_adapter.run(backend)
 
     checked = Observer(workspace, number).task_is_checked()
     if checked:
