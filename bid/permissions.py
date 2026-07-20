@@ -3,14 +3,20 @@ import os
 ROLE_MANAGER = "manager"
 ROLE_WORKER = "worker"
 
-MANAGER_ONLY = [
+MANAGER_WRITABLE = {
     "docs/task.md",
     "docs/todo.md",
     "docs/project-status.md",
     "docs/decisions.md",
-]
+}
 
-WORKER_BLOCKED = set(MANAGER_ONLY)
+WORKER_BLOCKED = {
+    "docs/task.md",
+    "docs/project-status.md",
+    "docs/decisions.md",
+    "docs/manager.md",
+    "docs/worker.md",
+}
 
 
 def check_path_safety(path, workspace_root):
@@ -24,11 +30,15 @@ def check_path_safety(path, workspace_root):
 
 def check_write_permission(rel_path, role, worker_number=None):
     if role == ROLE_MANAGER:
-        if rel_path in MANAGER_ONLY:
+        if rel_path in MANAGER_WRITABLE:
             return True, None
         return False, f"manager cannot write {rel_path}"
+
     if role == ROLE_WORKER:
+        if rel_path == "docs/todo.md":
+            return True, None
         if rel_path in WORKER_BLOCKED:
             return False, f"worker cannot modify {rel_path}"
         return True, None
+
     return False, f"unknown role: {role}"
