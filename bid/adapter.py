@@ -393,3 +393,184 @@ class WorkerAdapter:
 
         _write(self.workspace, rel, content)
         return f"wrote {len(content)} bytes to {rel}"
+
+
+# ── Helpers for ManagerReviewAdapter ──────────────────────────────────
+
+_DEFAULT_OUTPUT_DIR = "docs/work"
+
+
+def _find_last_task_line(todo_text):
+    """Return the index of the last line matching a task marker."""
+    lines = todo_text.split("\n")
+    for i in range(len(lines) - 1, -1, -1):
+        if re.match(r"^\s*[-*]\s+\[[ x]\]\s+T\d+\b", lines[i]):
+            return i
+    return -1
+
+
+def _parse_verdict(content):
+    """Parse a review verdict from model output.
+
+    Returns {verdict: "DONE"|"REWORK"|None, reopen: [int], add: [str]}.
+    """
+    result = {"verdict": None, "reopen": [], "add": []}
+    v = re.search(r"# Verdict\s*\n\s*(DONE|REWORK)", content)
+    if v:
+        result["verdict"] = v.group(1)
+    reopen = re.search(r"# Reopen\s*(.*?)(?=#\s|\Z)", content, re.DOTALL)
+    if reopen:
+        for line in reopen.group(1).split("\n"):
+            m = re.match(r"^\s*[-*]\s+T(\d+)", line)
+            if m:
+                result["reopen"].append(int(m.group(1)))
+    add = re.search(r"# Add\s*(.*?)(?=#\s|\Z)", content, re.DOTALL)
+    if add:
+        for line in add.group(1).split("\n"):
+            m = re.match(r"^\s*[-*]\s+(.*)", line)
+            if m and not m.group(1).startswith("T") and m.group(1).strip():
+                result["add"].append(m.group(1).strip())
+    return result
+
+
+def _apply_rework(workspace, todo_text, verdict):
+    """Uncheck reopened tasks and append new tasks.  Return True if TO DO changed."""
+    tasks = todo_mod.parse_todo(todo_text)
+    changed = False
+    for tnum in verdict["reopen"]:
+        t = todo_mod.get_task(tasks, tnum)
+        if t and t["checked"]:
+            todo_text = todo_mod.set_task_checked(todo_text, tnum, False)
+            changed = True
+    max_num = max((t["number"] for t in tasks), default=0)
+    last_line = _find_last_task_line(todo_text)
+    for desc in verdict["add"]:
+        max_num += 1
+        line = f"\n- [ ] T{max_num} — {desc}"
+        if last_line >= 0:
+            lines = todo_text.split("\n")
+            lines.insert(last_line + 1, line.strip())
+            todo_text = "\n".join(lines)
+        else:
+            todo_text += line
+        last_line += 1
+        changed = True
+    if changed:
+        _write(workspace, "docs/todo.md", todo_text)
+    return changed
+
+
+def _collect_artifact_summaries(workspace, tasks):
+    """Return a compact Markdown summary of all task artifacts.
+
+    Uses declared output path or defaults to docs/work/T{N}.md.
+    """
+    lines = ["## Artifacts", ""]
+    for t in tasks:
+        out, _ = todo_mod.get_task_metadata(tasks, t["number"])
+        path = os.path.join(workspace, out)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                body = f.read()
+            preview = body[:200].replace("\n", " ")
+            lines.append(f"### T{t['number']} — {out} ({len(body)}b)")
+            lines.append(f"{preview}")
+            lines.append("")
+    return "\n".join(lines) if len(lines) > 2 else ""
+
+
+class ManagerReviewAdapter:
+    """Manager reviews artifacts and returns a plain-text verdict.
+
+    Verdict DONE → BID writes project-status.md.
+    Verdict REWORK → BID unchecks tasks and appends new tasks.
+    """
+
+    RETRY_LIMIT = 3
+
+    def __init__(self, config):
+        self.config = config
+        self.workspace = config["workspace"]
+
+    def run(self, backend):
+        task_md = _read(self.workspace, "docs/task.md")
+        todo_text = _read(self.workspace, "docs/todo.md")
+        tasks = todo_mod.parse_todo(todo_text)
+        decisions = _read(self.workspace, "docs/decisions.md")
+        artifacts = _collect_artifact_summaries(self.workspace, tasks)
+
+        prompt = self._build_prompt(task_md, todo_text, artifacts, decisions)
+        messages = [
+            {"role": "system", "content": _read(self.workspace, "docs/manager.md")},
+            {"role": "user", "content": prompt},
+        ]
+
+        for attempt in range(self.RETRY_LIMIT):
+            response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 8192))
+            content = (response.get("content") or "").strip()
+            content = _clean_fences(content)
+
+            verdict = _parse_verdict(content)
+            if verdict["verdict"] == "DONE":
+                if not todo_mod.all_checked(todo_mod.parse_todo(_read(self.workspace, "docs/todo.md"))):
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({"role": "user", "content": "Not all tasks are checked. Review again."})
+                    continue
+                _write(self.workspace, "docs/project-status.md", "# Project Status\n\nDONE\n")
+                return {"status": "done"}
+
+            if verdict["verdict"] == "REWORK":
+                changed = _apply_rework(self.workspace, _read(self.workspace, "docs/todo.md"), verdict)
+                if changed:
+                    reopened = verdict["reopen"]
+                    added = verdict["add"]
+                    return {"status": "rework", "reopened": reopened, "added": added}
+                messages.append({"role": "assistant", "content": content})
+                messages.append({"role": "user", "content": "No tasks were reopened or added. Specify which tasks need rework or which to add."})
+                continue
+
+            messages.append({"role": "assistant", "content": content})
+            messages.append({
+                "role": "user",
+                "content": "Return # Verdict with DONE or REWORK, optionally # Reopen and # Add sections."
+            })
+
+        return {"status": "error", "reason": "failed to produce valid review after 3 attempts"}
+
+    def _build_prompt(self, task_md, todo_text, artifacts, decisions):
+        parts = [
+            f"# Original Task\n\n{task_md}\n",
+            f"# Current TODO\n\n{todo_text}\n",
+        ]
+        if artifacts:
+            parts.append(artifacts)
+        if decisions.strip():
+            parts.append(f"# Decision Log\n\n{decisions}\n")
+        parts.append(
+            "# Instructions\n\n"
+            "Review the completed work. Return only:\n\n"
+            "```\n"
+            "# Verdict\n"
+            "\n"
+            "DONE\n"
+            "\n"
+            "# Reason\n"
+            "All tasks complete.\n"
+            "```\n\n"
+            "Or if rework is needed:\n\n"
+            "```\n"
+            "# Verdict\n"
+            "\n"
+            "REWORK\n"
+            "\n"
+            "# Reopen\n"
+            "\n"
+            "- T3 — Reason the artifact is inadequate.\n"
+            "\n"
+            "# Add\n"
+            "\n"
+            "- New task description.\n"
+            "```\n\n"
+            "Existing task lines must be preserved verbatim when reopening."
+        )
+        return "\n".join(parts)

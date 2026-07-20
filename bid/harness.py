@@ -332,25 +332,24 @@ def run_project(config, backend=None):
 
         print("All tasks submitted. Running Manager review...")
         base_state = vc_system.get_current()
-        result = run_manager_review(config, backend=backend)
-        if result["status"] != "done":
-            if base_state:
-                vc_system.restore(base_state)
-            return {"status": "error", "reason": "Manager review failed", "detail": result}
-
-        review_state = vc_system.save_state("Manager (review)", "Review completed")
-        todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
-        tasks = todo_mod.parse_todo(todo_text)
-        status_text = read_file_content(os.path.join(workspace, "docs/project-status.md"))
-
-        if tasks and todo_mod.all_checked(tasks) and "DONE" in status_text:
+        review = adapter_mod.ManagerReviewAdapter(config)
+        result = review.run(backend)
+        if result["status"] == "done":
+            review_state = vc_system.save_state("Manager (review)", "Project completed")
             return {"status": "done", "state": review_state}
-        if todo_mod.first_unchecked(tasks) is not None:
-            print("Manager reopened or added work. Continuing...")
-            continue
+        if result["status"] == "rework":
+            reopen_info = f"reopened {result.get('reopened', [])} added {result.get('added', [])}"
+            review_state = vc_system.save_state("Manager (review)", reopen_info)
+            todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
+            tasks = todo_mod.parse_todo(todo_text)
+            if todo_mod.first_unchecked(tasks) is not None:
+                print(f"Manager reopened or added work. {reopen_info}")
+                continue
+            return {"status": "paused", "state": review_state}
 
-        print("Manager produced no executable next state. Pausing.")
-        return {"status": "paused", "state": review_state}
+        if base_state:
+            vc_system.restore(base_state)
+        return {"status": "error", "reason": f"Manager review failed: {result.get('reason', 'unknown')}", "detail": result}
 
 
 def show_status(config):

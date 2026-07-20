@@ -2,7 +2,7 @@ import json
 import os
 import tempfile
 
-from bid import harness, model, permissions, session, todo, tools, vc
+from bid import adapter, harness, model, permissions, session, todo, tools, vc
 from bid.observer import Observer
 
 
@@ -319,18 +319,13 @@ class TestWorkerLifecycle:
 class TestFullFlow:
     def test_manager_workers_manager_done(self):
         todo_initial = "- [ ] T1 — First artifact\n- [ ] T2 — Second artifact\n"
-        todo_t1 = "- [x] T1 — First artifact\n- [ ] T2 — Second artifact\n"
-        todo_all = "- [x] T1 — First artifact\n- [x] T2 — Second artifact\n"
         responses = [
             text_response(todo_initial),
             text_response("WRITE output/t1.md\none\nEND WRITE"),
             text_response("WRITE docs/todo.md\n- [x] T1 — First artifact\n- [ ] T2 — Second artifact\nEND WRITE\n\nDone"),
             text_response("WRITE output/t2.md\ntwo\nEND WRITE"),
             text_response("WRITE docs/todo.md\n- [x] T1 — First artifact\n- [x] T2 — Second artifact\nEND WRITE\n\nDone"),
-            tool_response("read_file", {"path": "output/t1.md"}),
-            tool_response("read_file", {"path": "output/t2.md"}),
-            tool_response("write_file", {"path": "docs/project-status.md", "content": "# Project Status\n\nDONE\n"}),
-            text_response("Done"),
+            text_response("# Verdict\n\nDONE\n\n# Reason\n\nAll tasks complete."),
         ]
         backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
@@ -344,3 +339,94 @@ class TestFullFlow:
             states = vc.VersionControl(tmp)._list_states()
             assert states == ["s0", "s1", "s2", "s3", "s4"]
             assert all(call["max_tokens"] == 8192 for call in backend.call_history)
+
+
+class TestManagerReview:
+    def _prepare(self, tmp, todo_text, artifacts):
+        """Set up a workspace with TODO and artifacts as if Workers ran."""
+        os.makedirs(os.path.join(tmp, "docs", "work"), exist_ok=True)
+        with open(os.path.join(tmp, "docs/todo.md"), "w", encoding="utf-8") as f:
+            f.write(todo_text)
+        with open(os.path.join(tmp, "docs/task.md"), "w", encoding="utf-8") as f:
+            f.write("# Task\n\nDo the thing.\n")
+        with open(os.path.join(tmp, "docs/project-status.md"), "w", encoding="utf-8") as f:
+            f.write("# Project Status\n\nInitialized.\n")
+        with open(os.path.join(tmp, "docs/decisions.md"), "w", encoding="utf-8") as f:
+            f.write("# Decisions\n\n")
+        harness.ensure_workspace(tmp)
+        for path, content in artifacts.items():
+            full = os.path.join(tmp, path)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(content)
+
+    def test_review_done_when_all_complete(self):
+        todo = "- [x] T1 — First\n- [x] T2 — Second\n"
+        artifacts = {"docs/work/T1.md": "good", "docs/work/T2.md": "good"}
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, todo, artifacts)
+            backend = model.MockBackend([text_response("# Verdict\n\nDONE\n\n# Reason\n\nAll complete.")])
+            review = adapter.ManagerReviewAdapter(config(tmp))
+            r = review.run(backend)
+            assert r["status"] == "done"
+            with open(os.path.join(tmp, "docs/project-status.md")) as f:
+                assert "DONE" in f.read()
+
+    def test_review_reopens_weak_artifacts(self):
+        todo = "- [x] T1 — Good work\n- [x] T2 — Weak work\n- [x] T3 — Good work\n"
+        artifacts = {
+            "docs/work/T1.md": "Detailed implementation of T1.",
+            "docs/work/T2.md": "T2.",  # weak
+            "docs/work/T3.md": "Comprehensive analysis for T3.",
+        }
+        verdict = (
+            "# Verdict\n\nREWORK\n\n"
+            "# Reopen\n\n"
+            "- T2 — Artifact is only 3 bytes, does not fulfill the task.\n\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, todo, artifacts)
+            backend = model.MockBackend([text_response(verdict)])
+            review = adapter.ManagerReviewAdapter(config(tmp))
+            r = review.run(backend)
+            assert r["status"] == "rework"
+            assert r["reopened"] == [2]
+            with open(os.path.join(tmp, "docs/todo.md")) as f:
+                content = f.read()
+                assert "[ ] T2" in content, "T2 should be unchecked"
+                assert "[x] T1" in content, "T1 should stay checked"
+                assert "[x] T3" in content, "T3 should stay checked"
+
+    def test_review_adds_tasks(self):
+        todo = "- [x] T1 — First\n"
+        artifacts = {"docs/work/T1.md": "good"}
+        verdict = (
+            "# Verdict\n\nREWORK\n\n"
+            "# Add\n\n"
+            "- Write a final summary.\n\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, todo, artifacts)
+            backend = model.MockBackend([text_response(verdict)])
+            review = adapter.ManagerReviewAdapter(config(tmp))
+            r = review.run(backend)
+            assert r["status"] == "rework"
+            assert r["added"] == ["Write a final summary."]
+            with open(os.path.join(tmp, "docs/todo.md")) as f:
+                content = f.read()
+                assert "T2" in content
+                assert "Write a final summary" in content
+
+    def test_review_retries_on_invalid_output(self):
+        todo = "- [x] T1 — First\n"
+        artifacts = {"docs/work/T1.md": "good"}
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, todo, artifacts)
+            backend = model.MockBackend([
+                text_response("I'm not sure what to do."),
+                text_response("# Verdict\n\nDONE\n\n# Reason\n\nAll complete."),
+            ])
+            review = adapter.ManagerReviewAdapter(config(tmp))
+            r = review.run(backend)
+            assert r["status"] == "done"
+            assert len(backend.call_history) == 2
