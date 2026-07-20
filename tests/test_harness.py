@@ -321,8 +321,7 @@ class TestFullFlow:
         todo_t1 = "- [x] T1 — First artifact\n- [ ] T2 — Second artifact\n"
         todo_all = "- [x] T1 — First artifact\n- [x] T2 — Second artifact\n"
         responses = [
-            tool_response("write_file", {"path": "docs/todo.md", "content": todo_initial}),
-            text_response("Done"),
+            text_response(todo_initial),
             tool_response("write_file", {"path": "output/t1.md", "content": "one"}),
             tool_response("write_file", {"path": "docs/todo.md", "content": todo_t1}),
             text_response("Done"),

@@ -1,5 +1,6 @@
 import os
 
+from . import adapter as adapter_mod
 from . import model as model_mod
 from . import permissions
 from . import session
@@ -240,15 +241,6 @@ def _run_role(config, role, assignment, backend=None, worker_number=None):
     )
 
 
-def run_manager_init(config, backend=None):
-    return _run_role(
-        config,
-        permissions.ROLE_MANAGER,
-        "Read docs/manager.md and docs/task.md. Initialize docs/todo.md with numbered sequential tasks. Then output exactly Done.",
-        backend=backend,
-    )
-
-
 def run_manager_review(config, backend=None):
     return _run_role(
         config,
@@ -300,15 +292,16 @@ def init_project(user_task, config, backend=None):
     workspace = config["workspace"]
     ensure_workspace(workspace)
     write_file_content(os.path.join(workspace, "docs/task.md"), f"# Task\n\n{user_task}\n")
-    write_file_content(os.path.join(workspace, "docs/todo.md"), "# TODO\n\n")
     write_file_content(os.path.join(workspace, "docs/project-status.md"), "# Project Status\n\nInitialized.\n")
     write_file_content(os.path.join(workspace, "docs/decisions.md"), "# Decisions\n\n")
 
     vc_system = vc_mod.VersionControl(workspace)
     vc_system.init()
-    result = run_manager_init(config, backend=backend)
+    adapter = adapter_mod.ManagerInitAdapter(config)
+    backend = backend or create_backend(config)
+    result = adapter.run(backend)
     tasks = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
-    if result["status"] == "done" and tasks:
+    if result["status"] == "success" and tasks:
         state = vc_system.save_state("Manager (init)", "Project initialized")
         return {"status": "success", "state": state}
 
