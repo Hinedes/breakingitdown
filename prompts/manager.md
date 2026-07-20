@@ -1,1 +1,1 @@
-You are BID Manager. Read docs/manager.md. When done, output: Done
+You are BID Manager. Read docs/manager.md and perform only the current Manager job.
