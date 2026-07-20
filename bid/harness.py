@@ -3,9 +3,7 @@ import os
 from . import adapter as adapter_mod
 from . import model as model_mod
 from . import permissions
-from . import session
 from . import todo as todo_mod
-from . import tools as tools_mod
 from . import vc as vc_mod
 from .observer import Observer
 
@@ -89,165 +87,10 @@ def write_file_content(path, content):
 
 
 def ensure_workspace(workspace):
-    """Install the current code-owned role policies into the workspace."""
     docs = os.path.join(workspace, "docs")
     os.makedirs(docs, exist_ok=True)
     write_file_content(os.path.join(docs, "manager.md"), MANAGER_INSTRUCTIONS)
     write_file_content(os.path.join(docs, "worker.md"), WORKER_INSTRUCTIONS)
-
-
-def run_agent(messages, tools, backend, config, workspace, role, worker_number=None):
-    hard_ceiling = config.get("worker_timeout", 3600)
-    inactivity_timeout = config.get("inactivity_timeout", 600)
-    repeat_limit = config.get("repeat_action_limit", 5)
-    observer = Observer(workspace, worker_number or 0)
-    done_without_check = 0
-    soft_reset_count = 0
-    max_soft_resets = 3
-    config["_op_ledger"] = []
-
-    while observer.elapsed() < hard_ceiling:
-        try:
-            result = session.run_turn(
-                messages, tools, backend, config, workspace, role, worker_number
-            )
-        except Exception as exc:
-            return {
-                "status": "error",
-                "reason": f"model request failed: {exc}",
-                "messages": messages,
-            }
-
-        changed_files = observer.poll_changes()
-        repeated = 0
-        useful = False
-        for event in result["tool_events"]:
-            repeated = max(
-                repeated,
-                observer.record_action(event["name"], event["arguments"], event["result"]),
-            )
-            if event["success"]:
-                useful = True
-                observer.mark_activity()
-
-        if changed_files:
-            useful = True
-            observer.mark_activity()
-
-        # Persist operation ledger for the next turn
-        if "_op_ledger" in result:
-            config["_op_ledger"] = result["_op_ledger"]
-
-        if repeated >= repeat_limit and not changed_files and not useful:
-            soft_reset_count += 1
-            if soft_reset_count > max_soft_resets:
-                return {
-                    "status": "stalled",
-                    "reason": f"same operation repeated {repeated} times without project change",
-                    "messages": messages,
-                }
-            # Soft-reset: discard conversation, keep project state, restart fresh
-            system = messages[0]
-            manifest = build_environment_manifest(workspace)
-            assignment = messages[1]["content"]
-            if "\n\n[ERROR]" in assignment:
-                base = assignment[: assignment.index("\n\n[ERROR]")]
-            else:
-                base = assignment
-            messages = [
-                system,
-                {
-                    "role": "user",
-                    "content": (
-                        f"{manifest}{base}\n\n"
-                        f"[ERROR: repeated unsuccessful operation. "
-                        f"Tool name: {result['tool_events'][-1]['name']}. "
-                        f"Check your JSON format and try again.]"
-                    ),
-                },
-            ]
-            observer = Observer(workspace, worker_number or 0)
-            continue
-
-        if observer.seen_done(content := result["content"]):
-            if role == permissions.ROLE_WORKER and not observer.task_is_checked():
-                done_without_check += 1
-                if done_without_check >= repeat_limit:
-                    return {
-                        "status": "stalled",
-                        "reason": f"Worker {worker_number} repeatedly ended without submitting T{worker_number}",
-                        "messages": messages,
-                    }
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"T{worker_number} is still unchecked. Continue working. "
-                        f"Submit by rewriting docs/todo.md and changing only T{worker_number} to [x]."
-                    ),
-                })
-                continue
-            return {"status": "done", "messages": messages}
-
-        if observer.inactive_for() > inactivity_timeout:
-            return {
-                "status": "timeout",
-                "reason": f"inactive for {observer.inactive_for():.0f}s",
-                "messages": messages,
-            }
-
-    return {
-        "status": "timeout",
-        "reason": f"hard ceiling reached after {hard_ceiling}s",
-        "messages": messages,
-    }
-
-
-def build_environment_manifest(workspace):
-    """Return a markdown block listing every non-.bid file in the workspace."""
-    lines = ["# BID Environment", ""]
-    root = os.path.realpath(workspace)
-    for cur, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d != ".bid"]
-        rel_dir = os.path.relpath(cur, root)
-        if rel_dir == ".":
-            rel_dir = ""
-        for name in sorted(files):
-            rel = os.path.join(rel_dir, name) if rel_dir else name
-            lines.append(f"- {rel}")
-    return "\n".join(lines) + "\n"
-
-
-def _run_role(config, role, assignment, backend=None, worker_number=None):
-    workspace = config["workspace"]
-    ensure_workspace(workspace)
-    prompt_name = "manager" if role == permissions.ROLE_MANAGER else "worker"
-    system_prompt = load_prompt(prompt_name)
-    if role == permissions.ROLE_WORKER:
-        system_prompt = f"/no_think\nBID Worker {worker_number}."
-    manifest = build_environment_manifest(workspace)
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": manifest + assignment},
-    ]
-    role_tools = tools_mod.get_tools_for_role(role, worker_number=worker_number)
-    return run_agent(
-        messages,
-        role_tools,
-        backend or create_backend(config),
-        config,
-        workspace,
-        role,
-        worker_number,
-    )
-
-
-def run_manager_review(config, backend=None):
-    return _run_role(
-        config,
-        permissions.ROLE_MANAGER,
-        "Read docs/manager.md, docs/task.md, docs/todo.md, and relevant Worker artifacts. Accept, reopen, repair, or extend the work. Then output exactly Done.",
-        backend=backend,
-    )
 
 
 def run_worker_session(number, config, backend=None):
@@ -257,15 +100,21 @@ def run_worker_session(number, config, backend=None):
     base_state = vc_system.get_current()
     worker_adapter = adapter_mod.WorkerAdapter(config, number)
     backend = backend or create_backend(config)
-    result = worker_adapter.run(backend)
+    try:
+        result = worker_adapter.run(backend)
+    except Exception as exc:
+        result = {"status": "error", "reason": f"adapter exception: {exc}"}
 
     checked = Observer(workspace, number).task_is_checked()
     if checked:
         termination = "normal" if result["status"] == "done" else result["status"]
-        state = vc_system.save_state(
-            f"Worker {number}",
-            f"T{number} submitted. Termination: {termination}.",
-        )
+        try:
+            state = vc_system.save_state(
+                f"Worker {number}",
+                f"T{number} submitted. Termination: {termination}.",
+            )
+        except Exception as exc:
+            return {"status": "error", "reason": f"vc save failed: {exc}"}
         return {
             "status": "submitted",
             "summary": f"T{number} submitted",
@@ -274,7 +123,10 @@ def run_worker_session(number, config, backend=None):
         }
 
     if base_state:
-        vc_system.restore(base_state)
+        try:
+            vc_system.restore(base_state)
+        except Exception as exc:
+            return {"status": "error", "reason": f"vc rollback failed: {exc}"}
     return {
         "status": "error",
         "reason": result.get("reason", f"T{number} was not submitted"),
@@ -292,10 +144,19 @@ def init_project(user_task, config, backend=None):
     vc_system.init()
     adapter = adapter_mod.ManagerInitAdapter(config)
     backend = backend or create_backend(config)
-    result = adapter.run(backend)
+    try:
+        result = adapter.run(backend)
+    except Exception as exc:
+        vc_system.restore("s0")
+        return {"status": "error", "reason": f"init adapter exception: {exc}"}
+
     tasks = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
     if result["status"] == "success" and tasks:
-        state = vc_system.save_state("Manager (init)", "Project initialized")
+        try:
+            state = vc_system.save_state("Manager (init)", "Project initialized")
+        except Exception as exc:
+            vc_system.restore("s0")
+            return {"status": "error", "reason": f"vc save failed: {exc}"}
         return {"status": "success", "state": state}
 
     vc_system.restore("s0")
@@ -320,7 +181,10 @@ def run_project(config, backend=None):
         if unchecked is not None:
             number = unchecked["number"]
             print(f"Worker {number}...")
-            result = run_worker_session(number, config, backend=backend)
+            try:
+                result = run_worker_session(number, config, backend=backend)
+            except Exception as exc:
+                return {"status": "error", "reason": f"Worker {number} exception: {exc}"}
             if result["status"] != "submitted":
                 print(f"Worker {number} failed: {result.get('reason', 'unknown')}")
                 return {"status": "error", "reason": f"Worker {number} failed", "detail": result}
@@ -335,29 +199,60 @@ def run_project(config, backend=None):
 
         # Phase 1: review each artifact individually
         reviews = []
-        for task in tasks:
-            a_review = adapter_mod.ArtifactReviewAdapter(config, task["number"])
-            r = a_review.run(backend)
-            reviews.append(r)
+        try:
+            for task in tasks:
+                a_review = adapter_mod.ArtifactReviewAdapter(config, task["number"])
+                r = a_review.run(backend)
+                reviews.append(r)
+        except Exception as exc:
+            if base_state:
+                vc_system.restore(base_state)
+            return {"status": "error", "reason": f"review exception: {exc}"}
 
-        rework = [r for r in reviews if r["verdict"] == "REWORK" or r["verdict"] == "ERROR"]
+        # ERROR verdict means the review itself failed, not the artifact
+        errors = [r for r in reviews if r["verdict"] == "ERROR"]
+        if errors:
+            print(f"Review phase had {len(errors)} errors. Pausing.")
+            if base_state:
+                vc_system.restore(base_state)
+            return {
+                "status": "error",
+                "reason": f"review errors: {[e.get('reason','?')[:60] for e in errors]}",
+                "detail": reviews,
+            }
 
+        rework = [r for r in reviews if r["verdict"] == "REWORK"]
         if rework:
-            print(f"Reopening {len(rework)} tasks to repair: {[r['task_number'] for r in rework]}")
+            print(f"Reopening {len(rework)} tasks: {[r['task_number'] for r in rework]}")
             todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
             for r in rework:
-                todo_text = todo_mod.set_task_checked(todo_text, r.get("task_number", 0), False)
+                tn = r.get("task_number", 0)
+                todo_text = todo_mod.set_task_checked(todo_text, tn, False)
             write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
             vc_system.save_state("Review", f"reopened {[r.get('task_number') for r in rework]}")
             continue
 
         # Phase 2: all artifacts accepted — check project completeness
         print("All artifacts accepted. Checking completion...")
-        completion = adapter_mod.CompletionReviewAdapter(config)
-        c_result = completion.run(backend)
+        try:
+            completion = adapter_mod.CompletionReviewAdapter(config)
+            c_result = completion.run(backend)
+        except Exception as exc:
+            if base_state:
+                vc_system.restore(base_state)
+            return {"status": "error", "reason": f"completion review exception: {exc}"}
+
+        if c_result["verdict"] == "ERROR":
+            if base_state:
+                vc_system.restore(base_state)
+            return {"status": "error", "reason": f"completion review: {c_result.get('reason','?')}"}
 
         if c_result["verdict"] == "MISSING":
             missing = c_result.get("missing", [])
+            if not missing:
+                if base_state:
+                    vc_system.restore(base_state)
+                return {"status": "error", "reason": "MISSING verdict with no items"}
             print(f"Adding {len(missing)} missing tasks...")
             todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
             tasks_now = todo_mod.parse_todo(todo_text)
@@ -382,10 +277,9 @@ def run_project(config, backend=None):
             vc_system.save_state("Review", "Project completed")
             return {"status": "done"}
 
-        print("Completion review failed.")
         if base_state:
             vc_system.restore(base_state)
-        return {"status": "error", "reason": f"Completion review failed: {c_result.get('reason', 'unknown')}", "detail": c_result}
+        return {"status": "error", "reason": f"unexpected completion verdict: {c_result.get('verdict', '?')}"}
 
 
 def show_status(config):
