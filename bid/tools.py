@@ -83,7 +83,11 @@ def handle_write_file(args, workspace, role, worker_number):
         return f"error writing file: {e}"
 
 
-TOOL_ALIASES = {"create_file": "write_file", "new_file": "write_file", "save_file": "write_file"}
+TOOL_ALIASES = {
+    "create_file": "write_file", "new_file": "write_file", "save_file": "write_file",
+    "complete_task": "check_own_task", "mark_done": "check_own_task",
+    "submit_task": "check_own_task", "done": "check_own_task",
+}
 
 
 def handle_replace_text(args, workspace, role, worker_number):

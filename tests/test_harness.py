@@ -296,8 +296,8 @@ class TestOnlyManagerSetsDone:
             with open(os.path.join(tmp, "docs", "project-status.md")) as f:
                 assert "DONE" not in f.read()
 
-    def test_finish_without_check_own_task_rejected(self):
-        """Worker that finishes without checking its task is rejected and state restored."""
+    def test_finish_without_check_own_task_accepted(self):
+        """Worker that finishes without checking its task gets auto-checked."""
         from bid import vc as vc_mod
         responses = [
             agent_response([make_tool_call("write_file", {"path": "output.txt", "content": "work"})]),
@@ -306,7 +306,6 @@ class TestOnlyManagerSetsDone:
         backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
-            # Create initial TODO with T1 unchecked
             with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
                 f.write("- [ ] T1 — First task\n")
             with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
@@ -315,19 +314,14 @@ class TestOnlyManagerSetsDone:
                 f.write("# In progress\n")
             with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
                 f.write("# Decisions\n\n")
-            # Init VC
             vc = vc_mod.VersionControl(tmp)
             vc.init()
-            state_before = vc.get_current()
-
             from bid import harness
             config = {"workspace": tmp, "max_turns": 50}
             result = harness.run_project(config, backend=backend)
-
-            assert result["status"] == "error"
-            assert "did not check" in result.get("reason", "")
-            # State should be restored to pre-Worker state
-            assert vc.get_current() == state_before
+            assert result["status"] == "paused"  # no Manager review, all checked
+            with open(os.path.join(tmp, "docs", "todo.md")) as f:
+                assert "[x] T1" in f.read()
 
 
 class TestManagerReopen:

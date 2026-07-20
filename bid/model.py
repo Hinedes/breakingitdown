@@ -43,7 +43,8 @@ class LlamaCppBackend(ModelBackend):
 
     KNOWN_TOOLS = {"list_files", "read_file", "write_file", "replace_text",
                     "make_directory", "delete_file", "check_own_task", "finish",
-                    "create_file", "new_file", "save_file"}
+                    "create_file", "new_file", "save_file",
+                    "complete_task", "mark_done", "submit_task", "done"}
 
     def _parse_one_tool_obj(self, obj):
         if not isinstance(obj, dict):
@@ -143,7 +144,6 @@ class LlamaCppBackend(ModelBackend):
             "messages": messages,
             "max_tokens": max_tokens or self.max_tokens,
             "temperature": 0.01,
-            "chat_template_kwargs": {"enable_thinking": False},
         }
 
         if tools and self.text_tools:
