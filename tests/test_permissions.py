@@ -1,8 +1,5 @@
-import pytest
-import sys
 import os
 import tempfile
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from bid import permissions
 
@@ -38,19 +35,18 @@ def test_manager_write_denied():
     assert not allowed
 
 
-def test_worker_write_allowed():
-    allowed, err = permissions.check_write_permission("docs/research/foo.md", permissions.ROLE_WORKER)
-    assert allowed
-
-
-def test_worker_write_blocked():
-    for f in permissions.WORKER_BLOCKED:
-        allowed, err = permissions.check_write_permission(f, permissions.ROLE_WORKER)
-        assert not allowed, f"worker should not write {f}"
-
-
 def test_worker_can_write_artifacts():
-    allowed, err = permissions.check_write_permission("src/main.py", permissions.ROLE_WORKER)
+    for path in ("docs/research/foo.md", "src/main.py", "outputs/results.txt"):
+        allowed, err = permissions.check_write_permission(path, permissions.ROLE_WORKER, 1)
+        assert allowed
+
+
+def test_worker_can_request_todo_write_for_content_validation():
+    allowed, err = permissions.check_write_permission("docs/todo.md", permissions.ROLE_WORKER, 1)
     assert allowed
-    allowed, err = permissions.check_write_permission("outputs/results.txt", permissions.ROLE_WORKER)
-    assert allowed
+
+
+def test_worker_instruction_and_manager_files_blocked():
+    for path in permissions.WORKER_BLOCKED:
+        allowed, err = permissions.check_write_permission(path, permissions.ROLE_WORKER, 1)
+        assert not allowed, f"worker should not write {path}"
