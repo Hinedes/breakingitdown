@@ -7,17 +7,16 @@ _TASK_LINE_RE = re.compile(r'^(\s*[-*]\s+\[)([ x])(\]\s+T(\d+)\b.*)$')
 def parse_todo(text):
     tasks = []
     for line in text.split('\n'):
-        m = re.match(r'^\s*[-*]\s+\[([ x])\]\s+(T\d*)\b\s*(.*)', line)
-        if m and m.group(2) != 'T':
-            checked = m.group(1) == 'x'
-            task_id = m.group(2)
-            num_str = task_id[1:]
-            number = int(num_str) if num_str.isdigit() else 0
+        match = re.match(r'^\s*[-*]\s+\[([ x])\]\s+(T\d*)\b\s*(.*)', line)
+        if match and match.group(2) != 'T':
+            checked = match.group(1) == 'x'
+            task_id = match.group(2)
+            number_text = task_id[1:]
             tasks.append({
                 "checked": checked,
                 "id": task_id,
-                "number": number,
-                "description": m.group(3).strip().lstrip('—–-').strip(),
+                "number": int(number_text) if number_text.isdigit() else 0,
+                "description": match.group(3).strip().lstrip('—–-').strip(),
             })
     return tasks
 
@@ -54,12 +53,16 @@ def set_task_checked(text, task_number, checked=True):
 
 def validate_worker_todo_update(old_text, new_text, worker_number):
     """Allow a Worker to change only its own checkbox, in either direction."""
-    old_lines = old_text.split('\n')
-    new_lines = new_text.split('\n')
+    old_lines = old_text.splitlines()
+    new_lines = new_text.splitlines()
     if len(old_lines) != len(new_lines):
         return False, "worker may not add or remove TODO lines"
 
-    changed = [index for index, pair in enumerate(zip(old_lines, new_lines)) if pair[0] != pair[1]]
+    changed = [
+        index
+        for index, (old_line, new_line) in enumerate(zip(old_lines, new_lines))
+        if old_line != new_line
+    ]
     if len(changed) != 1:
         if not changed:
             return False, "TODO write made no checkbox transition"
