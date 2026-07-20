@@ -74,7 +74,10 @@ def _parse_content_into_turns(content):
                     break
                 body_lines.append(lines[i])
                 i += 1
-            commands.append({"type": "WRITE", "path": path, "content": "\n".join(body_lines)})
+            body = "\n".join(body_lines)
+            # Model sometimes serializes newlines as literal \n
+            body = body.replace("\\n", "\n")
+            commands.append({"type": "WRITE", "path": path, "content": body})
             continue
 
         i += 1
@@ -208,8 +211,9 @@ class WorkerAdapter:
                     f"- [x] T{self.task_number} — {task['description']}\n"
                     "END WRITE\n"
                     "Done\n\n"
-                    "Read inputs first. Write your artifact. "
-                    "Then write docs/todo.md with your checkbox set to [x]. "
+                    "First READ docs/todo.md to see the current task list. "
+                    "Preserve all existing task lines exactly, changing only T{self.task_number} from [ ] to [x]. "
+                    "Then write your artifact. "
                     "Finally output Done."
                 ),
             },
@@ -364,6 +368,21 @@ class WorkerAdapter:
             old_text = _read(self.workspace, "docs/todo.md")
             valid, reason = todo_mod.validate_worker_todo_update(old_text, content, self.task_number)
             if not valid:
+                # Fallback: merge checkbox into existing TODO
+                old_tasks = todo_mod.parse_todo(old_text)
+                new_tasks = todo_mod.parse_todo(content)
+                merged = old_text
+                toggled = False
+                for nt in new_tasks:
+                    if nt["number"] == self.task_number and nt["checked"]:
+                        ot = todo_mod.get_task(old_tasks, self.task_number)
+                        if ot and not ot["checked"]:
+                            merged = todo_mod.set_task_checked(merged, self.task_number, True)
+                            toggled = True
+                            break
+                if toggled:
+                    _write(self.workspace, rel, merged)
+                    return f"wrote {len(merged)} bytes to {rel}"
                 return f"permission denied: {reason}"
             _write(self.workspace, rel, content)
             return f"wrote {len(content)} bytes to {rel}"
