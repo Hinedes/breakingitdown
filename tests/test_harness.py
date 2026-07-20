@@ -321,11 +321,13 @@ class TestFullFlow:
         todo_initial = "- [ ] T1 — First artifact\n- [ ] T2 — Second artifact\n"
         responses = [
             text_response(todo_initial),
-            text_response("WRITE output/t1.md\none\nEND WRITE"),
+            text_response("WRITE docs/work/T1.md\none\nEND WRITE"),
             text_response("WRITE docs/todo.md\n- [x] T1 — First artifact\n- [ ] T2 — Second artifact\nEND WRITE\n\nDone"),
-            text_response("WRITE output/t2.md\ntwo\nEND WRITE"),
+            text_response("WRITE docs/work/T2.md\ntwo\nEND WRITE"),
             text_response("WRITE docs/todo.md\n- [x] T1 — First artifact\n- [x] T2 — Second artifact\nEND WRITE\n\nDone"),
-            text_response("# Verdict\n\nDONE\n\n# Reason\n\nAll tasks complete."),
+            text_response("ACCEPT\nReason: Good."),
+            text_response("ACCEPT\nReason: Good."),
+            text_response("COMPLETE\nReason: All done."),
         ]
         backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
@@ -334,8 +336,8 @@ class TestFullFlow:
             assert initialized["status"] == "success"
             result = harness.run_project(cfg, backend=backend)
             assert result["status"] == "done"
-            assert os.path.exists(os.path.join(tmp, "output", "t1.md"))
-            assert os.path.exists(os.path.join(tmp, "output", "t2.md"))
+            assert os.path.exists(os.path.join(tmp, "docs", "work", "T1.md"))
+            assert os.path.exists(os.path.join(tmp, "docs", "work", "T2.md"))
             states = vc.VersionControl(tmp)._list_states()
             assert states == ["s0", "s1", "s2", "s3", "s4"]
             assert all(call["max_tokens"] == 8192 for call in backend.call_history)
@@ -429,4 +431,118 @@ class TestManagerReview:
             review = adapter.ManagerReviewAdapter(config(tmp))
             r = review.run(backend)
             assert r["status"] == "done"
+            assert len(backend.call_history) == 2
+
+
+class TestArtifactReview:
+    def _prepare(self, tmp, task_desc, artifact_content, todo_text=None):
+        os.makedirs(os.path.join(tmp, "docs", "work"), exist_ok=True)
+        with open(os.path.join(tmp, "docs/todo.md"), "w", encoding="utf-8") as f:
+            f.write(todo_text or f"- [x] T1 — {task_desc}\n")
+        with open(os.path.join(tmp, "docs/task.md"), "w", encoding="utf-8") as f:
+            f.write(f"# Task\n\n{task_desc}\n")
+        with open(os.path.join(tmp, "docs/project-status.md"), "w", encoding="utf-8") as f:
+            f.write("# Project Status\n\nInitialized.\n")
+        with open(os.path.join(tmp, "docs/decisions.md"), "w", encoding="utf-8") as f:
+            f.write("# Decisions\n\n")
+        harness.ensure_workspace(tmp)
+        with open(os.path.join(tmp, "docs/work/T1.md"), "w", encoding="utf-8") as f:
+            f.write(artifact_content)
+
+    def test_accepts_good_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, "Write a poem.", "Roses are red.\nViolets are blue.\n")
+            backend = model.MockBackend([text_response("ACCEPT\nReason: Good poem.")])
+            r = adapter.ArtifactReviewAdapter(config(tmp), 1).run(backend)
+            assert r["verdict"] == "ACCEPT"
+            review_file = os.path.join(tmp, "docs/reviews/T1.md")
+            assert os.path.exists(review_file)
+            with open(review_file) as f:
+                assert "ACCEPT" in f.read()
+
+    def test_rejects_weak_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, "Write a 500-word essay.", "Short.")
+            backend = model.MockBackend([text_response("REWORK\nReason: Too short.")])
+            r = adapter.ArtifactReviewAdapter(config(tmp), 1).run(backend)
+            assert r["verdict"] == "REWORK"
+
+    def test_rejects_missing_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, "Do something.", "")
+            os.remove(os.path.join(tmp, "docs/work/T1.md"))
+            backend = model.MockBackend([])
+            r = adapter.ArtifactReviewAdapter(config(tmp), 1).run(backend)
+            assert r["verdict"] == "REWORK"
+            assert "not exist" in r["reason"]
+
+    def test_accepts_empty_artifact_with_proper_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, "Write nothing.", "")
+            backend = model.MockBackend([])
+            r = adapter.ArtifactReviewAdapter(config(tmp), 1).run(backend)
+            assert r["verdict"] == "REWORK"
+            assert "empty" in r["reason"]
+
+    def test_retries_on_malformed_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, "Write code.", "def foo(): pass")
+            backend = model.MockBackend([
+                text_response("I'm not sure."),
+                text_response("ACCEPT\nReason: Works."),
+            ])
+            r = adapter.ArtifactReviewAdapter(config(tmp), 1).run(backend)
+            assert r["verdict"] == "ACCEPT"
+            assert len(backend.call_history) == 2
+
+
+class TestCompletionReview:
+    def _prepare(self, tmp, task, todo_text, artifacts):
+        os.makedirs(os.path.join(tmp, "docs", "work"), exist_ok=True)
+        with open(os.path.join(tmp, "docs/todo.md"), "w", encoding="utf-8") as f:
+            f.write(todo_text)
+        with open(os.path.join(tmp, "docs/task.md"), "w", encoding="utf-8") as f:
+            f.write(f"# Task\n\n{task}\n")
+        with open(os.path.join(tmp, "docs/project-status.md"), "w", encoding="utf-8") as f:
+            f.write("# Project Status\n\nInitialized.\n")
+        with open(os.path.join(tmp, "docs/decisions.md"), "w", encoding="utf-8") as f:
+            f.write("# Decisions\n\n")
+        harness.ensure_workspace(tmp)
+        for path, content in artifacts.items():
+            full = os.path.join(tmp, path)
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, "w", encoding="utf-8") as f:
+                f.write(content)
+
+    def test_complete_when_all_done(self):
+        todo = "- [x] T1 — Write code\n- [x] T2 — Write tests\n"
+        artifacts = {"docs/work/T1.md": "def foo(): pass", "docs/work/T2.md": "def test_foo(): pass"}
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, "Build a library.", todo, artifacts)
+            backend = model.MockBackend([text_response("COMPLETE\nReason: All done.")])
+            r = adapter.CompletionReviewAdapter(config(tmp)).run(backend)
+            assert r["verdict"] == "COMPLETE"
+
+    def test_missing_when_incomplete(self):
+        todo = "- [x] T1 — Write code\n"
+        artifacts = {"docs/work/T1.md": "def foo(): pass"}
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, "Build a library with tests and docs.", todo, artifacts)
+            backend = model.MockBackend([text_response("MISSING\n- Write tests\n- Write documentation")])
+            r = adapter.CompletionReviewAdapter(config(tmp)).run(backend)
+            assert r["verdict"] == "MISSING"
+            assert "Write tests" in r["missing"]
+            assert "Write documentation" in r["missing"]
+
+    def test_retries_on_malformed(self):
+        todo = "- [x] T1 — Write code\n"
+        artifacts = {"docs/work/T1.md": "def foo(): pass"}
+        with tempfile.TemporaryDirectory() as tmp:
+            self._prepare(tmp, "Build a library.", todo, artifacts)
+            backend = model.MockBackend([
+                text_response("Not sure."),
+                text_response("COMPLETE\nReason: Done."),
+            ])
+            r = adapter.CompletionReviewAdapter(config(tmp)).run(backend)
+            assert r["verdict"] == "COMPLETE"
             assert len(backend.call_history) == 2

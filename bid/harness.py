@@ -330,26 +330,62 @@ def run_project(config, backend=None):
         if tasks and todo_mod.all_checked(tasks) and "DONE" in status_text:
             return {"status": "done"}
 
-        print("All tasks submitted. Running Manager review...")
+        print("All submitted. Reviewing artifacts...")
         base_state = vc_system.get_current()
-        review = adapter_mod.ManagerReviewAdapter(config)
-        result = review.run(backend)
-        if result["status"] == "done":
-            review_state = vc_system.save_state("Manager (review)", "Project completed")
-            return {"status": "done", "state": review_state}
-        if result["status"] == "rework":
-            reopen_info = f"reopened {result.get('reopened', [])} added {result.get('added', [])}"
-            review_state = vc_system.save_state("Manager (review)", reopen_info)
-            todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
-            tasks = todo_mod.parse_todo(todo_text)
-            if todo_mod.first_unchecked(tasks) is not None:
-                print(f"Manager reopened or added work. {reopen_info}")
-                continue
-            return {"status": "paused", "state": review_state}
 
+        # Phase 1: review each artifact individually
+        reviews = []
+        for task in tasks:
+            a_review = adapter_mod.ArtifactReviewAdapter(config, task["number"])
+            r = a_review.run(backend)
+            reviews.append(r)
+
+        rework = [r for r in reviews if r["verdict"] == "REWORK" or r["verdict"] == "ERROR"]
+
+        if rework:
+            print(f"Reopening {len(rework)} tasks to repair: {[r['task_number'] for r in rework]}")
+            todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
+            for r in rework:
+                todo_text = todo_mod.set_task_checked(todo_text, r.get("task_number", 0), False)
+            write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
+            vc_system.save_state("Review", f"reopened {[r.get('task_number') for r in rework]}")
+            continue
+
+        # Phase 2: all artifacts accepted — check project completeness
+        print("All artifacts accepted. Checking completion...")
+        completion = adapter_mod.CompletionReviewAdapter(config)
+        c_result = completion.run(backend)
+
+        if c_result["verdict"] == "MISSING":
+            missing = c_result.get("missing", [])
+            print(f"Adding {len(missing)} missing tasks...")
+            todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
+            tasks_now = todo_mod.parse_todo(todo_text)
+            max_num = max((t["number"] for t in tasks_now), default=0)
+            last_task = adapter_mod._find_last_task_line(todo_text)
+            for desc in missing:
+                max_num += 1
+                line = f"- [ ] T{max_num} — {desc}"
+                if last_task >= 0:
+                    lines = todo_text.split("\n")
+                    lines.insert(last_task + 1, line)
+                    todo_text = "\n".join(lines)
+                else:
+                    todo_text += "\n" + line
+                last_task += 1
+            write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
+            vc_system.save_state("Review", f"added {len(missing)} missing tasks")
+            continue
+
+        if c_result["verdict"] == "COMPLETE":
+            write_file_content(os.path.join(workspace, "docs/project-status.md"), "# Project Status\n\nDONE\n")
+            vc_system.save_state("Review", "Project completed")
+            return {"status": "done"}
+
+        print("Completion review failed.")
         if base_state:
             vc_system.restore(base_state)
-        return {"status": "error", "reason": f"Manager review failed: {result.get('reason', 'unknown')}", "detail": result}
+        return {"status": "error", "reason": f"Completion review failed: {c_result.get('reason', 'unknown')}", "detail": c_result}
 
 
 def show_status(config):

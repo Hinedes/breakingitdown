@@ -601,3 +601,165 @@ class ManagerReviewAdapter:
             "Do not include commentary. Only the verdict block."
         )
         return "\n".join(parts)
+
+
+# ── Decomposed review adapters ───────────────────────────────────────
+
+
+class ArtifactReviewAdapter:
+    """Judge one complete artifact against its one task.
+
+    Returns {"verdict": "ACCEPT"|"REWORK"|"ERROR", "reason": str, "task_number": int}.
+    """
+
+    RETRY_LIMIT = 3
+
+    def __init__(self, config, task_number):
+        self.config = config
+        self.workspace = config["workspace"]
+        self.task_number = task_number
+
+    def run(self, backend):
+        todo_text = _read(self.workspace, "docs/todo.md")
+        tasks = todo_mod.parse_todo(todo_text)
+        task = todo_mod.get_task(tasks, self.task_number)
+        if not task:
+            return {"verdict": "ERROR", "reason": "task not found", "task_number": self.task_number}
+
+        output_path, _ = todo_mod.get_task_metadata(tasks, self.task_number)
+        artifact_path = os.path.join(self.workspace, output_path)
+        if not os.path.exists(artifact_path):
+            return {"verdict": "REWORK", "reason": "artifact file does not exist", "task_number": self.task_number}
+
+        with open(artifact_path, encoding="utf-8") as f:
+            artifact_content = f.read()
+
+        if not artifact_content.strip():
+            return {"verdict": "REWORK", "reason": "artifact is empty", "task_number": self.task_number}
+
+        prompt = (
+            "# Review Assignment\n\n"
+            f"Task:\n{task['description']}\n\n"
+            f"Required output:\n{output_path}\n\n"
+            f"Artifact:\n{artifact_content}\n\n"
+            "Judge only whether this artifact materially fulfills its task.\n\n"
+            "Return exactly one of:\n\n"
+            "ACCEPT\n"
+            "Reason: ...\n\n"
+            "REWORK\n"
+            "Reason: ..."
+        )
+
+        messages = [
+            {"role": "system", "content": _read(self.workspace, "docs/manager.md")},
+            {"role": "user", "content": prompt},
+        ]
+
+        for attempt in range(self.RETRY_LIMIT):
+            response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 8192))
+            content = (response.get("content") or "").strip()
+            raw = content
+            content = _clean_fences(content)
+
+            result = self._parse(content)
+            if result:
+                self._save_review(content)
+                return result
+
+            messages.append({"role": "assistant", "content": raw or "[no output]"})
+            messages.append({"role": "user", "content": "Return ACCEPT or REWORK with Reason."})
+
+        return {"verdict": "ERROR", "reason": "failed to produce valid review", "task_number": self.task_number}
+
+    @staticmethod
+    def _parse(content):
+        for verdict in ("ACCEPT", "REWORK"):
+            if content.startswith(verdict):
+                reason = ""
+                m = re.search(r"Reason:\s*(.*)", content, re.DOTALL)
+                if m:
+                    reason = m.group(1).strip()
+                return {"verdict": verdict, "reason": reason}
+        return None
+
+    def _save_review(self, content):
+        path = os.path.join(self.workspace, "docs/reviews", f"T{self.task_number}.md")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content.rstrip() + "\n")
+
+
+class CompletionReviewAdapter:
+    """After individual artifacts are accepted, check whether the original request is covered.
+
+    Returns {"verdict": "COMPLETE"|"MISSING"|"ERROR", "missing": [str]}.
+    """
+
+    RETRY_LIMIT = 3
+
+    def __init__(self, config):
+        self.config = config
+        self.workspace = config["workspace"]
+
+    def run(self, backend):
+        task_md = _read(self.workspace, "docs/task.md")
+        todo_text = _read(self.workspace, "docs/todo.md")
+        tasks = todo_mod.parse_todo(todo_text)
+
+        summaries = []
+        for t in tasks:
+            out, _ = todo_mod.get_task_metadata(tasks, t["number"])
+            path = os.path.join(self.workspace, out)
+            if os.path.exists(path):
+                with open(path, encoding="utf-8") as f:
+                    body = f.read()
+                summaries.append(f"- T{t['number']} ({out}, {len(body)}b)")
+
+        summary_text = "\n".join(summaries) if summaries else "(no artifacts)"
+
+        prompt = (
+            "# Completion Review\n\n"
+            f"Original request:\n{task_md}\n\n"
+            f"Completed tasks:\n{todo_text}\n\n"
+            f"Artifacts:\n{summary_text}\n\n"
+            "Does the completed work fully satisfy the original request?\n\n"
+            "Return exactly one of:\n\n"
+            "COMPLETE\n"
+            "Reason: ...\n\n"
+            "MISSING\n"
+            "- description of missing deliverable\n"
+            "- description of missing deliverable"
+        )
+
+        messages = [
+            {"role": "system", "content": _read(self.workspace, "docs/manager.md")},
+            {"role": "user", "content": prompt},
+        ]
+
+        for attempt in range(self.RETRY_LIMIT):
+            response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 8192))
+            content = (response.get("content") or "").strip()
+            raw = content
+            content = _clean_fences(content)
+
+            result = self._parse(content)
+            if result:
+                return result
+
+            messages.append({"role": "assistant", "content": raw or "[no output]"})
+            messages.append({"role": "user", "content": "Return COMPLETE or MISSING with details."})
+
+        return {"verdict": "ERROR", "reason": "failed to produce valid completion review"}
+
+    @staticmethod
+    def _parse(content):
+        if content.startswith("COMPLETE"):
+            return {"verdict": "COMPLETE", "missing": []}
+        if content.startswith("MISSING"):
+            missing = []
+            for line in content.split("\n"):
+                m = re.match(r"^\s*[-*]\s+(.*)", line)
+                if m:
+                    missing.append(m.group(1).strip())
+            return {"verdict": "MISSING", "missing": missing}
+        return None
