@@ -412,18 +412,39 @@ def _find_last_task_line(todo_text):
 def _parse_verdict(content):
     """Parse a review verdict from model output.
 
+    If the model mentions reopening or rework anywhere in the body,
+    the verdict is forced to REWORK (the model often starts with DONE
+    then contradicts itself).
+
     Returns {verdict: "DONE"|"REWORK"|None, reopen: [int], add: [str]}.
     """
     result = {"verdict": None, "reopen": [], "add": []}
-    v = re.search(r"# Verdict\s*\n\s*(DONE|REWORK)", content)
-    if v:
-        result["verdict"] = v.group(1)
+
+    # Check for explicit # Reopen section or REWORK mention in body
+    has_reopen_section = bool(re.search(r"# Reopen\s", content))
+    has_rework_body = "REWORK" in content
+
+    if has_reopen_section or has_rework_body:
+        result["verdict"] = "REWORK"
+    else:
+        v = re.search(r"# Verdict\s*\n\s*(DONE|REWORK)", content)
+        if v:
+            result["verdict"] = v.group(1)
+
     reopen = re.search(r"# Reopen\s*(.*?)(?=#\s|\Z)", content, re.DOTALL)
     if reopen:
         for line in reopen.group(1).split("\n"):
             m = re.match(r"^\s*[-*]\s+T(\d+)", line)
             if m:
                 result["reopen"].append(int(m.group(1)))
+
+    # If no explicit # Reopen section, search for T{N} references when verdict is REWORK
+    if not result["reopen"] and result["verdict"] == "REWORK":
+        for m in re.finditer(r"T(\d+)", content):
+            tnum = int(m.group(1))
+            if tnum not in result["reopen"]:
+                result["reopen"].append(tnum)
+
     add = re.search(r"# Add\s*(.*?)(?=#\s|\Z)", content, re.DOTALL)
     if add:
         for line in add.group(1).split("\n"):
