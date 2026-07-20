@@ -182,7 +182,7 @@ class MockBackend(ModelBackend):
         self.responses.append(response)
 
     def run(self, messages, tools, max_tokens=None):
-        self.call_history.append({"messages": list(messages), "tools": tools})
+        self.call_history.append({"messages": list(messages), "tools": tools, "max_tokens": max_tokens})
         if self.call_index < len(self.responses):
             resp = self.responses[self.call_index]
             self.call_index += 1

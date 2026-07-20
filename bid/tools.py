@@ -46,6 +46,12 @@ def handle_read_file(args, workspace, role, worker_number):
 
 _last_write_paths = {}
 
+def reset_write_tracking(workspace):
+    for key in list(_last_write_paths.keys()):
+        if key[0] == workspace:
+            del _last_write_paths[key]
+
+
 def handle_write_file(args, workspace, role, worker_number):
     path = args.get("path", "")
     content = args.get("content", "")

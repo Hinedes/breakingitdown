@@ -180,13 +180,16 @@ class TestWorkerPermissions:
         config = {"max_turns": 50}
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
+            original = "# Project Status\n\nIn progress.\n"
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write(original)
             from bid import session as session_mod, tools as tools_mod
             tool_list = tools_mod.get_tools_for_role(permissions.ROLE_WORKER, worker_number=1)
             result = session_mod.run_session("prompt", "do it", tool_list, backend, config, tmp, permissions.ROLE_WORKER, 1)
-            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
-                pass  # just checking it wasn't modified
-            # Write should have been rejected
-            assert True
+            with open(os.path.join(tmp, "docs", "project-status.md")) as f:
+                content = f.read()
+            # Write should have been rejected — content must remain unchanged
+            assert content == original, f"Expected unchanged, got: {content}"
 
     def test_worker_cannot_check_other_task(self):
         # Worker 2 tries to check T1
@@ -292,6 +295,39 @@ class TestOnlyManagerSetsDone:
             assert result["status"] == "success"
             with open(os.path.join(tmp, "docs", "project-status.md")) as f:
                 assert "DONE" not in f.read()
+
+    def test_finish_without_check_own_task_rejected(self):
+        """Worker that finishes without checking its task is rejected and state restored."""
+        from bid import vc as vc_mod
+        responses = [
+            agent_response([make_tool_call("write_file", {"path": "output.txt", "content": "work"})]),
+            agent_response([make_tool_call("finish", {"summary": "done"})]),
+        ]
+        backend = model.MockBackend(responses)
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            # Create initial TODO with T1 unchecked
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — First task\n")
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# In progress\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            # Init VC
+            vc = vc_mod.VersionControl(tmp)
+            vc.init()
+            state_before = vc.get_current()
+
+            from bid import harness
+            config = {"workspace": tmp, "max_turns": 50}
+            result = harness.run_project(config, backend=backend)
+
+            assert result["status"] == "error"
+            assert "did not check" in result.get("reason", "")
+            # State should be restored to pre-Worker state
+            assert vc.get_current() == state_before
 
 
 class TestManagerReopen:

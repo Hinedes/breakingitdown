@@ -1,4 +1,5 @@
 import json
+from .tools import reset_write_tracking
 
 
 def run_session(prompt_text, assignment, tools, backend, config, workspace, role, worker_number=None):
@@ -9,12 +10,19 @@ def run_session(prompt_text, assignment, tools, backend, config, workspace, role
     tool_defs = [t["definition"] for t in tools]
     max_turns = config.get("max_turns", 50)
     max_tokens = config.get("max_tokens")
+    reset_write_tracking(workspace)
 
     for turn in range(max_turns):
         response = backend.run(messages, tool_defs, max_tokens=max_tokens)
         tool_calls = response.get("tool_calls")
+        content = response.get("content")
 
         if tool_calls:
+            raw_assistant = {"role": "assistant", "content": content}
+            if tool_calls:
+                raw_assistant["tool_calls"] = tool_calls
+            messages.append(raw_assistant)
+
             had_finish = False
             finish_summary = ""
             for tc in tool_calls:
@@ -64,17 +72,13 @@ def run_session(prompt_text, assignment, tools, backend, config, workspace, role
                     "summary": finish_summary or "completed",
                     "turn_count": turn + 1,
                 }
-
-            if turn == 0:
-                messages.append({"role": "user", "content": assignment})
             continue
 
-        text = (response.get("content") or "").strip()
+        text = (content or "").strip()
         if not text:
             break
 
-        messages.append({"role": "assistant", "content": response["content"]})
-        if turn == 0:
-            messages.append({"role": "user", "content": "Use tools. Output JSON only."})
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user", "content": "Use tools. Output JSON only."})
 
     return {"status": "error", "reason": "turn limit exceeded"}

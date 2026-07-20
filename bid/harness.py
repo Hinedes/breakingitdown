@@ -105,14 +105,12 @@ def ensure_workspace(workspace):
 def run_manager_session(task_text, todo_text, status_text, backend, config, workspace, mode="init"):
     prompt = load_prompt("manager")
     if mode == "init":
-        assignment = f"Create docs/todo.md with T1,T2,T3... for:\n{task_text}\nEach: - [ ] T1 — description\nThen finish."
+        assignment = "Read docs/manager.md and docs/task.md. Initialize docs/todo.md, then finish."
     else:
         assignment = (
-            f"Review. TODO items are submitted.\n"
-            f"Task: {task_text}\n"
-            f"TODO:\n{todo_text}\n"
-            f"Status:\n{status_text}\n"
-            f"Accept (write DONE to docs/project-status.md), or uncheck/repair tasks, or add new ones."
+            "Read docs/manager.md, docs/task.md, docs/todo.md and "
+            "docs/project-status.md. Inspect the relevant Worker artifacts. "
+            "Accept, reopen, repair, or extend the work, then finish."
         )
     tools = tools_mod.get_tools_for_role(permissions.ROLE_MANAGER)
     return session.run_session(prompt, assignment, tools, backend, config, workspace, permissions.ROLE_MANAGER)
@@ -169,16 +167,17 @@ def run_project(config, backend=None):
             print(f"Running Worker {number}...")
             result = run_worker_session(number, backend, config, ws)
             if result["status"] == "success":
-                vc_sys.save_state(f"Worker {number}", result.get("summary", ""))
-                print(f"Worker {number} finished.")
-                # Verify the Worker checked its own task; force-check if not
                 post_todo = read_file_content(os.path.join(ws, "docs/todo.md"))
                 post_tasks = todo_mod.parse_todo(post_todo)
                 post_task = todo_mod.get_task(post_tasks, number)
-                if not post_task or not post_task["checked"]:
-                    post_todo = todo_mod.set_task_checked(post_todo, number, checked=True)
-                    write_file_content(os.path.join(ws, "docs/todo.md"), post_todo)
-                    print(f"  (forced check T{number} - Worker did not check it)")
+                if post_task and post_task["checked"]:
+                    vc_sys.save_state(f"Worker {number}", result.get("summary", ""))
+                    print(f"Worker {number} finished.")
+                else:
+                    if current:
+                        vc_sys.restore(current)
+                        print(f"Worker {number} did not check task T{number}. Restored {current}.")
+                    return {"status": "error", "reason": f"Worker {number} did not check its task"}
             else:
                 print(f"Worker {number} failed: {result.get('reason', 'unknown')}")
                 if current:
