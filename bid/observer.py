@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import time
@@ -23,11 +24,12 @@ class Observer:
             for filename in files:
                 path = os.path.join(root, filename)
                 try:
-                    stat = os.stat(path)
+                    with open(path, "rb") as file:
+                        digest = hashlib.sha256(file.read()).hexdigest()
                 except OSError:
                     continue
                 relative = os.path.relpath(path, self.workspace).replace(os.sep, "/")
-                state[relative] = (stat.st_mtime_ns, stat.st_size)
+                state[relative] = digest
         return state
 
     def snapshot_tree(self):
