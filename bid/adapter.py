@@ -475,7 +475,7 @@ def _collect_artifact_summaries(workspace, tasks):
                 body = f.read()
             size = len(body)
             preview = body[:150].replace("\n", " ")
-            warning = " ⚠️ WARNING: too small, likely inadequate" if size < 50 else ""
+            warning = " [TOO SMALL]" if size < 50 else ""
             lines.append(f"### T{t['number']} — {out} ({size}b){warning}")
             lines.append(f"{preview}")
             lines.append("")
