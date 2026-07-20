@@ -1,4 +1,6 @@
+import hashlib
 import os
+import time
 
 from . import adapter as adapter_mod
 from . import model as model_mod
@@ -93,40 +95,65 @@ def ensure_workspace(workspace):
     write_file_content(os.path.join(docs, "worker.md"), WORKER_INSTRUCTIONS)
 
 
+def _clear_workspace(workspace):
+    """Remove all non-.bid content from workspace."""
+    for item in os.listdir(workspace):
+        if item == ".bid":
+            continue
+        path = os.path.join(workspace, item)
+        if os.path.isdir(path):
+            import shutil
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+
+
+def _todo_hash(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _with_rollback(vc_system, base_state, fn):
+    """Execute fn; on any exception restore base_state and return error dict."""
+    try:
+        result = fn()
+        if isinstance(result, dict) and result.get("status") == "error":
+            if base_state:
+                vc_system.restore(base_state)
+        return result
+    except BaseException as exc:
+        if base_state:
+            vc_system.restore(base_state)
+        return {"status": "error", "reason": str(exc)}
+
+
 def run_worker_session(number, config, backend=None):
     workspace = config["workspace"]
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
     base_state = vc_system.get_current()
-    worker_adapter = adapter_mod.WorkerAdapter(config, number)
-    backend = backend or create_backend(config)
-    try:
-        result = worker_adapter.run(backend)
-    except Exception as exc:
-        result = {"status": "error", "reason": f"adapter exception: {exc}"}
 
+    def _run():
+        worker_adapter = adapter_mod.WorkerAdapter(config, number)
+        b = backend or create_backend(config)
+        return worker_adapter.run(b)
+
+    result = _with_rollback(vc_system, base_state, _run)
     checked = Observer(workspace, number).task_is_checked()
+
     if checked:
         termination = "normal" if result["status"] == "done" else result["status"]
-        try:
-            state = vc_system.save_state(
-                f"Worker {number}",
-                f"T{number} submitted. Termination: {termination}.",
-            )
-        except Exception as exc:
-            return {"status": "error", "reason": f"vc save failed: {exc}"}
-        return {
+        return _with_rollback(vc_system, base_state, lambda: {
             "status": "submitted",
             "summary": f"T{number} submitted",
             "termination": termination,
-            "state": state,
-        }
+            "state": vc_system.save_state(
+                f"Worker {number}",
+                f"T{number} submitted. Termination: {termination}.",
+            ),
+        })
 
     if base_state:
-        try:
-            vc_system.restore(base_state)
-        except Exception as exc:
-            return {"status": "error", "reason": f"vc rollback failed: {exc}"}
+        vc_system.restore(base_state)
     return {
         "status": "error",
         "reason": result.get("reason", f"T{number} was not submitted"),
@@ -135,6 +162,8 @@ def run_worker_session(number, config, backend=None):
 
 def init_project(user_task, config, backend=None):
     workspace = config["workspace"]
+    os.makedirs(workspace, exist_ok=True)
+    _clear_workspace(workspace)
     ensure_workspace(workspace)
     write_file_content(os.path.join(workspace, "docs/task.md"), f"# Task\n\n{user_task}\n")
     write_file_content(os.path.join(workspace, "docs/project-status.md"), "# Project Status\n\nInitialized.\n")
@@ -142,28 +171,22 @@ def init_project(user_task, config, backend=None):
 
     vc_system = vc_mod.VersionControl(workspace)
     vc_system.init()
-    adapter = adapter_mod.ManagerInitAdapter(config)
-    backend = backend or create_backend(config)
-    try:
-        result = adapter.run(backend)
-    except Exception as exc:
-        vc_system.restore("s0")
-        return {"status": "error", "reason": f"init adapter exception: {exc}"}
 
+    def _run():
+        adp = adapter_mod.ManagerInitAdapter(config)
+        b = backend or create_backend(config)
+        return adp.run(b)
+
+    result = _with_rollback(vc_system, "s0", _run)
     tasks = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
     if result["status"] == "success" and tasks:
-        try:
-            state = vc_system.save_state("Manager (init)", "Project initialized")
-        except Exception as exc:
-            vc_system.restore("s0")
-            return {"status": "error", "reason": f"vc save failed: {exc}"}
-        return {"status": "success", "state": state}
+        return _with_rollback(vc_system, "s0", lambda: {
+            "status": "success",
+            "state": vc_system.save_state("Manager (init)", "Project initialized"),
+        })
 
     vc_system.restore("s0")
-    return {
-        "status": "error",
-        "reason": result.get("reason", "Manager did not create a valid TODO"),
-    }
+    return {"status": "error", "reason": result.get("reason", "Manager did not create a valid TODO")}
 
 
 def run_project(config, backend=None):
@@ -171,20 +194,25 @@ def run_project(config, backend=None):
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
     backend = backend or create_backend(config)
+    last_plan_hash = None
 
     while True:
         todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
         tasks = todo_mod.parse_todo(todo_text)
         status_text = read_file_content(os.path.join(workspace, "docs/project-status.md"))
 
+        # Invalidate stale DONE: if TODO changed since last check, re-enter review
+        plan_hash = _todo_hash(todo_text)
+        if last_plan_hash and plan_hash != last_plan_hash:
+            status_text = ""
+        last_plan_hash = plan_hash
+
         unchecked = todo_mod.first_unchecked(tasks)
         if unchecked is not None:
             number = unchecked["number"]
             print(f"Worker {number}...")
-            try:
-                result = run_worker_session(number, config, backend=backend)
-            except Exception as exc:
-                return {"status": "error", "reason": f"Worker {number} exception: {exc}"}
+            result = _with_rollback(vc_system, vc_system.get_current(), lambda n=number:
+                run_worker_session(n, config, backend=backend))
             if result["status"] != "submitted":
                 print(f"Worker {number} failed: {result.get('reason', 'unknown')}")
                 return {"status": "error", "reason": f"Worker {number} failed", "detail": result}
@@ -199,20 +227,17 @@ def run_project(config, backend=None):
 
         # Phase 1: review each artifact individually
         reviews = []
-        try:
+        def _run_reviews():
             for task in tasks:
                 a_review = adapter_mod.ArtifactReviewAdapter(config, task["number"])
-                r = a_review.run(backend)
-                reviews.append(r)
-        except Exception as exc:
-            if base_state:
-                vc_system.restore(base_state)
-            return {"status": "error", "reason": f"review exception: {exc}"}
+                reviews.append(a_review.run(backend))
+            return True
+        ok = _with_rollback(vc_system, base_state, _run_reviews)
+        if ok is not True:
+            return ok
 
-        # ERROR verdict means the review itself failed, not the artifact
         errors = [r for r in reviews if r["verdict"] == "ERROR"]
         if errors:
-            print(f"Review phase had {len(errors)} errors. Pausing.")
             if base_state:
                 vc_system.restore(base_state)
             return {
@@ -225,22 +250,22 @@ def run_project(config, backend=None):
         if rework:
             print(f"Reopening {len(rework)} tasks: {[r['task_number'] for r in rework]}")
             todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
-            for r in rework:
-                tn = r.get("task_number", 0)
+            for r_item in rework:
+                tn = r_item.get("task_number", 0)
                 todo_text = todo_mod.set_task_checked(todo_text, tn, False)
             write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
-            vc_system.save_state("Review", f"reopened {[r.get('task_number') for r in rework]}")
+            vc_system.save_state("Review", f"reopened {[r_item.get('task_number') for r_item in rework]}")
             continue
 
         # Phase 2: all artifacts accepted — check project completeness
         print("All artifacts accepted. Checking completion...")
-        try:
-            completion = adapter_mod.CompletionReviewAdapter(config)
-            c_result = completion.run(backend)
-        except Exception as exc:
+        def _run_completion():
+            c = adapter_mod.CompletionReviewAdapter(config)
+            return c.run(backend)
+        c_result = _with_rollback(vc_system, base_state, _run_completion)
+        if not isinstance(c_result, dict) or c_result.get("status") == "error":
             if base_state:
                 vc_system.restore(base_state)
-            return {"status": "error", "reason": f"completion review exception: {exc}"}
 
         if c_result["verdict"] == "ERROR":
             if base_state:
@@ -248,7 +273,7 @@ def run_project(config, backend=None):
             return {"status": "error", "reason": f"completion review: {c_result.get('reason','?')}"}
 
         if c_result["verdict"] == "MISSING":
-            missing = c_result.get("missing", [])
+            missing = _deduplicate(c_result.get("missing", []))
             if not missing:
                 if base_state:
                     vc_system.restore(base_state)
@@ -257,17 +282,9 @@ def run_project(config, backend=None):
             todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
             tasks_now = todo_mod.parse_todo(todo_text)
             max_num = max((t["number"] for t in tasks_now), default=0)
-            last_task = adapter_mod._find_last_task_line(todo_text)
             for desc in missing:
                 max_num += 1
-                line = f"- [ ] T{max_num} — {desc}"
-                if last_task >= 0:
-                    lines = todo_text.split("\n")
-                    lines.insert(last_task + 1, line)
-                    todo_text = "\n".join(lines)
-                else:
-                    todo_text += "\n" + line
-                last_task += 1
+                todo_text += f"\n- [ ] T{max_num} — {desc}"
             write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
             vc_system.save_state("Review", f"added {len(missing)} missing tasks")
             continue
@@ -280,6 +297,17 @@ def run_project(config, backend=None):
         if base_state:
             vc_system.restore(base_state)
         return {"status": "error", "reason": f"unexpected completion verdict: {c_result.get('verdict', '?')}"}
+
+
+def _deduplicate(items):
+    seen = set()
+    out = []
+    for item in items:
+        s = item.strip().lower()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(item.strip())
+    return out
 
 
 def show_status(config):

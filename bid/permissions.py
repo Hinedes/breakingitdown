@@ -19,6 +19,16 @@ WORKER_BLOCKED = {
 }
 
 
+def _path_blocked(rel_path):
+    """Return True if a relative path is a protected control path."""
+    parts = rel_path.split("/")
+    if ".bid" in parts:
+        return True
+    if "docs/reviews" in parts or rel_path.startswith("docs/reviews/"):
+        return True
+    return False
+
+
 def check_path_safety(path, workspace_root):
     abs_path = os.path.realpath(os.path.join(workspace_root, path))
     abs_workspace = os.path.realpath(workspace_root)
@@ -35,6 +45,8 @@ def check_write_permission(rel_path, role, worker_number=None):
         return False, f"manager cannot write {rel_path}"
 
     if role == ROLE_WORKER:
+        if _path_blocked(rel_path):
+            return False, f"worker cannot write control path {rel_path}"
         if rel_path == "docs/todo.md":
             return True, None
         if rel_path in WORKER_BLOCKED:

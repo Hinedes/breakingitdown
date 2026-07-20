@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 from datetime import date
 
@@ -29,13 +30,26 @@ class VersionControl:
         states = self._list_states()
         next_number = max((int(state[1:]) for state in states), default=-1) + 1
         name = f"s{next_number}"
+        return self._commit_state(name, agent_name, description)
+
+    def _commit_state(self, name, agent_name, description):
+        self._validate_state_name(name)
         self._save_snapshot(name)
         self._set_current(name)
         self._append_log(name, f"{agent_name} completed.\n{description}")
         return name
 
+    @staticmethod
+    def _validate_state_name(name):
+        if not re.fullmatch(r"s\d+", name):
+            raise ValueError(f"invalid state name: {name!r}")
+
     def restore(self, state_name):
-        snapshot = os.path.join(self.states_dir, state_name)
+        if not re.fullmatch(r"s\d+", state_name):
+            raise ValueError(f"invalid state name: {state_name!r}")
+        snapshot = os.path.realpath(os.path.join(self.states_dir, state_name))
+        if not snapshot.startswith(os.path.realpath(self.states_dir) + os.sep):
+            raise ValueError(f"state path traversal denied: {state_name!r}")
         if not os.path.isdir(snapshot):
             raise ValueError(f"state {state_name} not found")
 
