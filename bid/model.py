@@ -167,6 +167,10 @@ class LlamaCppBackend(ModelBackend):
 
         with httpx.Client(timeout=self.timeout) as client:
             response = client.post(self.endpoint, json=payload)
+            if response.status_code == 400:
+                import sys
+                body = response.text[:2000]
+                print(f"  [LLAMACPP 400] {body}", file=sys.stderr, flush=True)
             response.raise_for_status()
             data = response.json()
 
@@ -179,6 +183,9 @@ class LlamaCppBackend(ModelBackend):
             if tool_calls:
                 message["tool_calls"] = tool_calls
                 message["finish_reason"] = "tool_calls"
+                message["tool_transport"] = "text"
+        elif not self.text_tools:
+            message["tool_transport"] = "native"
         return message
 
 

@@ -32,6 +32,18 @@ def text_response(text):
     }
 
 
+def text_tool_response(name, arguments, raw_text=None):
+    """Simulate a text-transport tool call as LlamaCppBackend would produce."""
+    text = raw_text or json.dumps({"tool_calls": [{"tool": name, "arguments": arguments}]})
+    return {
+        "role": "assistant",
+        "content": text,
+        "tool_calls": [tool_call(name, arguments)],
+        "finish_reason": "tool_calls",
+        "tool_transport": "text",
+    }
+
+
 def config(workspace, **overrides):
     values = {
         "workspace": workspace,
@@ -136,6 +148,74 @@ class TestSession:
         with tempfile.TemporaryDirectory() as tmp:
             session.run_session("system", "assignment", [], backend, config(tmp), tmp, "manager")
         assert backend.call_history[0]["max_tokens"] == 8192
+
+
+class TestTranscript:
+    def _run_two_reads(self, tmp, transport):
+        """Helper: run two consecutive read_file tools, return call_history."""
+        t1 = transport("read_file", {"path": "f1.txt"})
+        t2 = transport("read_file", {"path": "f2.txt"})
+        t3 = text_response("Done")
+        backend = model.MockBackend([t1, t2, t3])
+        with open(os.path.join(tmp, "f1.txt"), "w") as f: f.write("a")
+        with open(os.path.join(tmp, "f2.txt"), "w") as f: f.write("b")
+        cfg = config(tmp)
+        cfg["max_tokens"] = 256
+        # Run three turns: read, read, Done
+        from bid import session as sess
+        msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "do it"}]
+        tools_list = [t for t in tools.get_tools_for_role("worker", 1) if t["name"] == "read_file"]
+        for _ in range(3):
+            r = sess.run_turn(msgs, tools_list, backend, cfg, tmp, "worker", 1)
+            msgs = r["messages"]
+        return backend.call_history
+
+    def test_text_transport_never_uses_tool_role(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            history = self._run_two_reads(tmp, text_tool_response)
+            for req in history:
+                for msg in req["messages"]:
+                    assert msg["role"] != "tool", f"found role=tool in {msg}"
+                    if msg["role"] == "assistant":
+                        assert "tool_calls" not in msg, f"found tool_calls in assistant msg"
+
+    def test_text_transport_roles_are_system_user_assistant_user(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            history = self._run_two_reads(tmp, text_tool_response)
+            for req in history:
+                roles = [m["role"] for m in req["messages"]]
+                for r in roles:
+                    assert r in ("system", "user", "assistant"), f"unexpected role {r}"
+
+    def test_native_transport_uses_openai_format(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            history = self._run_two_reads(tmp, tool_response)
+            # At least one request should have tool role or tool_calls
+            has_tool = any(
+                msg.get("tool_calls") or msg["role"] == "tool"
+                for req in history for msg in req["messages"]
+            )
+            assert has_tool, "native transport should include tool role or tool_calls"
+
+    def test_three_ops_reach_fourth_request(self):
+        """Three text-tool operations should produce four backend requests (3 ops + Done)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t1 = text_tool_response("read_file", {"path": "f1.txt"})
+            t2 = text_tool_response("read_file", {"path": "f2.txt"})
+            t3 = text_tool_response("write_file", {"path": "f3.txt", "content": "c"})
+            t4 = text_response("Done")
+            backend = model.MockBackend([t1, t2, t3, t4])
+            with open(os.path.join(tmp, "f1.txt"), "w") as f: f.write("a")
+            with open(os.path.join(tmp, "f2.txt"), "w") as f: f.write("b")
+            cfg = config(tmp)
+            cfg["max_tokens"] = 256
+            from bid import session as sess
+            msgs = [{"role": "system", "content": "sys"}, {"role": "user", "content": "do it"}]
+            tools_list = [t for t in tools.get_tools_for_role("worker", 1) if t["name"] in ("read_file", "write_file")]
+            for _ in range(4):
+                r = sess.run_turn(msgs, tools_list, backend, cfg, tmp, "worker", 1)
+                msgs = r["messages"]
+            assert len(backend.call_history) == 4, f"expected 4 requests, got {len(backend.call_history)}"
 
 
 class TestFileTools:

@@ -103,6 +103,7 @@ def run_agent(messages, tools, backend, config, workspace, role, worker_number=N
     done_without_check = 0
     soft_reset_count = 0
     max_soft_resets = 3
+    config["_op_ledger"] = []
 
     while observer.elapsed() < hard_ceiling:
         try:
@@ -131,6 +132,10 @@ def run_agent(messages, tools, backend, config, workspace, role, worker_number=N
         if changed_files:
             useful = True
             observer.mark_activity()
+
+        # Persist operation ledger for the next turn
+        if "_op_ledger" in result:
+            config["_op_ledger"] = result["_op_ledger"]
 
         if repeated >= repeat_limit and not changed_files and not useful:
             soft_reset_count += 1
