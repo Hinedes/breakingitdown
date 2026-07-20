@@ -31,20 +31,41 @@ def handle_list_files(args, workspace, role, worker_number):
     return "\n".join(entries) if entries else "(empty)"
 
 
+def _normalize_paths(args):
+    """Accept single path, array, or comma-separated string.  Return list."""
+    raw = args.get("path") or args.get("paths") or ""
+    if isinstance(raw, list):
+        return [str(p) for p in raw]
+    if isinstance(raw, str):
+        parts = [p.strip() for p in raw.replace(",", "\n").split("\n") if p.strip()]
+        if parts:
+            return parts
+    return []
+
+
 def handle_read_file(args, workspace, role, worker_number):
-    path, rel, error = _safe_path(args, workspace)
-    if error:
-        return error
-    abs_path = os.path.join(workspace, rel)
-    if not os.path.exists(abs_path):
-        return f"file not found: {path}"
-    if not os.path.isfile(abs_path):
-        return f"not a file: {path}"
-    try:
-        with open(abs_path, "r", encoding="utf-8") as file:
-            return file.read()
-    except Exception as exc:
-        return f"error reading file: {exc}"
+    paths = _normalize_paths(args)
+    if not paths:
+        return "error: path required. Use: {\"path\": \"docs/file.md\"} or {\"paths\": [\"a.md\", \"b.md\"]}"
+    results = []
+    for path in paths:
+        safe, err, rel = permissions.check_path_safety(path, workspace)
+        if not safe:
+            results.append(f"error: {err}")
+            continue
+        abs_path = os.path.join(workspace, rel)
+        if not os.path.exists(abs_path):
+            results.append(f"file not found: {path}")
+            continue
+        if not os.path.isfile(abs_path):
+            results.append(f"not a file: {path}")
+            continue
+        try:
+            with open(abs_path, "r", encoding="utf-8") as file:
+                results.append(f"--- {rel} ---\n{file.read()}")
+        except Exception as exc:
+            results.append(f"error reading {rel}: {exc}")
+    return "\n\n".join(results)
 
 
 def handle_write_file(args, workspace, role, worker_number):
@@ -135,12 +156,6 @@ def param(kind, description, required=True):
 
 
 BASIC_TOOLS = [
-    make_tool(
-        "list_files",
-        "List a directory inside the workspace.",
-        {"path": param("string", "Workspace-relative directory path", required=False)},
-        handle_list_files,
-    ),
     make_tool(
         "read_file",
         "Read a UTF-8 text file inside the workspace.",

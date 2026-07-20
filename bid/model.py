@@ -203,9 +203,13 @@ class MockBackend(ModelBackend):
             return response
         return {
             "role": "assistant",
-            "content": "Done",
-            "tool_calls": None,
-            "finish_reason": "stop",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_fallback",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": '{"path": "nonexistent"}'},
+            }],
+            "finish_reason": "tool_calls",
         }
 
     def reset(self):

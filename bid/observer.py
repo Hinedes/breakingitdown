@@ -76,7 +76,13 @@ class Observer:
         if not text:
             return False
         lines = text.strip().split("\n")
-        return bool(lines and lines[-1].strip() == "Done")
+        for line in reversed(lines):
+            stripped = line.strip()
+            if stripped == "Done":
+                return True
+            if stripped and not stripped.startswith("```"):
+                return False
+        return False
 
     def record_action(self, name, arguments, result):
         signature = json.dumps(

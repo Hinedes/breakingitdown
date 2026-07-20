@@ -85,15 +85,18 @@ class TestObserver:
 
     def test_repeated_action_count(self):
         observer = Observer("/tmp", 0)
-        assert observer.record_action("list_files", {"path": "."}, "docs/") == 1
-        assert observer.record_action("list_files", {"path": "."}, "docs/") == 2
+        assert observer.record_action("read_file", {"path": "."}, "docs/") == 1
+        assert observer.record_action("read_file", {"path": "."}, "docs/") == 2
         assert observer.record_action("read_file", {"path": "x"}, "x") == 1
 
 
 class TestSession:
     def test_tool_event_is_structured(self):
-        backend = model.MockBackend([tool_response("list_files", {"path": "."})])
         with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "f.txt"), "w") as f:
+                f.write("data")
+            backend = model.MockBackend([tool_response("read_file", {"path": "docs/f.txt"})])
             result = session.run_session(
                 "system",
                 "assignment",
@@ -105,7 +108,7 @@ class TestSession:
                 1,
             )
         assert result["tool_calls"]
-        assert result["tool_events"][0]["name"] == "list_files"
+        assert result["tool_events"][0]["name"] == "read_file"
         assert result["tool_events"][0]["success"]
 
     def test_malformed_arguments_are_reported_not_executed(self):
@@ -201,9 +204,9 @@ class TestWorkerLifecycle:
     def test_unchecked_stalled_worker_rolls_back(self):
         responses = [
             tool_response("write_file", {"path": "leak.md", "content": "unfinished"}),
-            tool_response("list_files", {"path": "."}),
-            tool_response("list_files", {"path": "."}),
-            tool_response("list_files", {"path": "."}),
+            tool_response("read_file", {"path": "."}),
+            tool_response("read_file", {"path": "."}),
+            tool_response("read_file", {"path": "."}),
         ]
         backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
@@ -217,14 +220,16 @@ class TestWorkerLifecycle:
     def test_checked_stalled_worker_is_saved_as_abnormal_submission(self):
         responses = [
             tool_response("write_file", {"path": "docs/todo.md", "content": "- [x] T1 — Write result\n"}),
-            tool_response("list_files", {"path": "."}),
-            tool_response("list_files", {"path": "."}),
-            tool_response("list_files", {"path": "."}),
+            tool_response("read_file", {"path": "nonexistent.md"}),
+            tool_response("read_file", {"path": "nonexistent.md"}),
+            tool_response("read_file", {"path": "nonexistent.md"}),
         ]
         backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
             system = prepare_worker_workspace(tmp)
-            result = harness.run_worker_session(1, config(tmp), backend=backend)
+            cfg = config(tmp)
+            cfg["repeat_action_limit"] = 3
+            result = harness.run_worker_session(1, cfg, backend=backend)
             assert result["status"] == "submitted"
             assert result["termination"] == "stalled"
             assert system.get_current() == "s1"

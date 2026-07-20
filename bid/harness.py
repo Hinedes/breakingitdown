@@ -101,6 +101,8 @@ def run_agent(messages, tools, backend, config, workspace, role, worker_number=N
     repeat_limit = config.get("repeat_action_limit", 5)
     observer = Observer(workspace, worker_number or 0)
     done_without_check = 0
+    soft_reset_count = 0
+    max_soft_resets = 3
 
     while observer.elapsed() < hard_ceiling:
         try:
@@ -116,26 +118,52 @@ def run_agent(messages, tools, backend, config, workspace, role, worker_number=N
 
         changed_files = observer.poll_changes()
         repeated = 0
+        useful = False
         for event in result["tool_events"]:
             repeated = max(
                 repeated,
                 observer.record_action(event["name"], event["arguments"], event["result"]),
             )
             if event["success"]:
+                useful = True
                 observer.mark_activity()
 
-        content = result["content"]
-        if content:
+        if changed_files:
+            useful = True
             observer.mark_activity()
 
-        if repeated >= repeat_limit and not changed_files:
-            return {
-                "status": "stalled",
-                "reason": f"same operation repeated {repeated} times without project change",
-                "messages": messages,
-            }
+        if repeated >= repeat_limit and not changed_files and not useful:
+            soft_reset_count += 1
+            if soft_reset_count > max_soft_resets:
+                return {
+                    "status": "stalled",
+                    "reason": f"same operation repeated {repeated} times without project change",
+                    "messages": messages,
+                }
+            # Soft-reset: discard conversation, keep project state, restart fresh
+            system = messages[0]
+            manifest = build_environment_manifest(workspace)
+            assignment = messages[1]["content"]
+            if "\n\n[ERROR]" in assignment:
+                base = assignment[: assignment.index("\n\n[ERROR]")]
+            else:
+                base = assignment
+            messages = [
+                system,
+                {
+                    "role": "user",
+                    "content": (
+                        f"{manifest}{base}\n\n"
+                        f"[ERROR: repeated unsuccessful operation. "
+                        f"Tool name: {result['tool_events'][-1]['name']}. "
+                        f"Check your JSON format and try again.]"
+                    ),
+                },
+            ]
+            observer = Observer(workspace, worker_number or 0)
+            continue
 
-        if observer.seen_done(content):
+        if observer.seen_done(content := result["content"]):
             if role == permissions.ROLE_WORKER and not observer.task_is_checked():
                 done_without_check += 1
                 if done_without_check >= repeat_limit:
@@ -168,6 +196,21 @@ def run_agent(messages, tools, backend, config, workspace, role, worker_number=N
     }
 
 
+def build_environment_manifest(workspace):
+    """Return a markdown block listing every non-.bid file in the workspace."""
+    lines = ["# BID Environment", ""]
+    root = os.path.realpath(workspace)
+    for cur, dirs, files in os.walk(root):
+        dirs[:] = [d for d in dirs if d != ".bid"]
+        rel_dir = os.path.relpath(cur, root)
+        if rel_dir == ".":
+            rel_dir = ""
+        for name in sorted(files):
+            rel = os.path.join(rel_dir, name) if rel_dir else name
+            lines.append(f"- {rel}")
+    return "\n".join(lines) + "\n"
+
+
 def _run_role(config, role, assignment, backend=None, worker_number=None):
     workspace = config["workspace"]
     ensure_workspace(workspace)
@@ -175,9 +218,10 @@ def _run_role(config, role, assignment, backend=None, worker_number=None):
     system_prompt = load_prompt(prompt_name)
     if role == permissions.ROLE_WORKER:
         system_prompt = f"/no_think\nBID Worker {worker_number}."
+    manifest = build_environment_manifest(workspace)
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": assignment},
+        {"role": "user", "content": manifest + assignment},
     ]
     role_tools = tools_mod.get_tools_for_role(role, worker_number=worker_number)
     return run_agent(
