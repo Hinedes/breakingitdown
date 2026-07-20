@@ -1,1 +1,1 @@
-You are BID Manager. Read docs/manager.md and follow it exactly.
+You are BID Manager. Read docs/manager.md. When done, output: Done

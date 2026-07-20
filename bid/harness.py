@@ -1,4 +1,5 @@
 import os
+import json
 
 from . import model as model_mod
 from . import todo as todo_mod
@@ -6,7 +7,7 @@ from . import vc as vc_mod
 from . import permissions
 from . import tools as tools_mod
 from . import session
-
+from .observer import Observer
 
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
 
@@ -15,10 +16,12 @@ def get_config():
     return {
         "endpoint": os.environ.get("BID_MODEL_ENDPOINT", "http://127.0.0.1:8080/v1/chat/completions"),
         "model_name": os.environ.get("BID_MODEL_NAME", "smollm3-3b"),
-        "max_turns": int(os.environ.get("BID_MAX_AGENT_TURNS", "50")),
         "max_tokens": int(os.environ.get("BID_MAX_TOKENS", "8192")),
         "workspace": os.environ.get("BID_WORKSPACE", os.path.join(os.getcwd(), "workspace")),
         "timeout": int(os.environ.get("BID_REQUEST_TIMEOUT", "120")),
+        "request_timeout": int(os.environ.get("BID_REQUEST_TIMEOUT", "300")),
+        "inactivity_timeout": int(os.environ.get("BID_INACTIVITY_TIMEOUT", "600")),
+        "worker_timeout": int(os.environ.get("BID_WORKER_TIMEOUT", "3600")),
     }
 
 
@@ -59,31 +62,34 @@ def write_file_content(path, content):
 
 MANAGER_INSTRUCTIONS = """You are the BID Manager.
 
-Call write_file ONCE with the full content of docs/todo.md containing all tasks:
+Break the user's task into numbered items and write them ALL to docs/todo.md in a single write_file call.
 
-- [ ] T1 — First task
-- [ ] T2 — Second task
-- [ ] T3 — Third task
+Format (write all tasks at once):
+- [ ] T1 — description
+- [ ] T2 — description
+- [ ] T3 — description
 
-ONE write_file call with all tasks in the content. Do not call write_file multiple times.
+Each task must be a single focused unit. Keep descriptions concise.
 
-When reviewing: read artifacts, check requirements, accept (DONE) or uncheck/repair.
+When reviewing completed work: read the artifacts, compare against requirements, accept (write DONE to docs/project-status.md) or uncheck inadequate tasks with repair notes.
 
-Write only: docs/task.md, docs/todo.md, docs/project-status.md, docs/decisions.md.
+You may read all files. Write only: docs/task.md, docs/todo.md, docs/project-status.md, docs/decisions.md.
 
-Never do Worker work. When done, finish.
+Never perform Worker work. When done, call finish.
 """
 
-WORKER_INSTRUCTIONS = """You are a BID Worker.
+WORKER_INSTRUCTIONS = """# Worker
 
-Read docs/todo.md and locate your assigned task.
-Read only the project material needed for it.
-Perform only that task.
-Write a complete artifact.
-When the work is ready for Manager review, call submit_task once.
+You have one task.
 
-If you cannot complete it, do not submit it.
-Record the blocker in a Worker-owned artifact and allow the session to fail.
+Read only what is needed.
+Create or repair the required artifact.
+Do not perform other tasks.
+You may revise your work after checking your task.
+When no further correction is needed, output `Done`.
+
+You check your task box by editing docs/todo.md with write_file.
+Only change your own task checkbox.
 """
 
 
@@ -98,29 +104,87 @@ def ensure_workspace(workspace):
         write_file_content(wrk_path, WORKER_INSTRUCTIONS)
 
 
-def run_manager_session(task_text, todo_text, status_text, backend, config, workspace, mode="init"):
+def run_agent(messages, tools, backend, config, workspace, role, worker_number=None):
+    reset = getattr(tools_mod, "reset_write_tracking", lambda w: None)
+    reset(workspace)
+    hard_ceiling = config.get("worker_timeout", 3600)
+    inactivity_sec = config.get("inactivity_timeout", 600)
+    obs = Observer(workspace, worker_number or 0)
+    obs.snapshot_tree()
+    obs.mark_activity()
+
+    while obs.elapsed() < hard_ceiling:
+        result = session.run_turn(messages, tools, backend, config, workspace, role, worker_number)
+        content = result["content"]
+
+        if content:
+            obs.mark_activity()
+        if result["tool_calls"]:
+            obs.mark_activity()
+
+        if obs.seen_done(content):
+            return {"status": "done", "messages": messages}
+
+        if obs.inactive_for() > inactivity_sec:
+            return {"status": "timeout", "reason": f"inactive {obs.inactive_for():.0f}s", "messages": messages}
+
+    return {"status": "timeout", "reason": f"hard ceiling {hard_ceiling}s", "messages": messages}
+
+
+def run_manager_init(config, backend=None):
+    ws = config["workspace"]
     prompt = load_prompt("manager")
-    if mode == "init":
-        assignment = (
-            "Read docs/manager.md and docs/task.md. "
-            "Then write docs/todo.md with numbered tasks T1, T2, T3,... "
-            "Each line: - [ ] T1 — description. Then finish."
-        )
-    else:
-        assignment = (
-            "Read docs/manager.md, docs/task.md, docs/todo.md and "
-            "docs/project-status.md. Inspect the relevant Worker artifacts. "
-            "Accept, reopen, repair, or extend the work, then finish."
-        )
-    tools = tools_mod.get_tools_for_role(permissions.ROLE_MANAGER)
-    return session.run_session(prompt, assignment, tools, backend, config, workspace, permissions.ROLE_MANAGER)
+    task_text = read_file_content(os.path.join(ws, "docs/task.md"))
+    assignment = (
+        "Read docs/manager.md and docs/task.md. "
+        "Then write docs/todo.md with numbered tasks T1, T2, T3,... "
+        "Each line: - [ ] T1 — description. Then output: Done"
+    )
+    tools = tools_mod.get_tools_for_role("manager")
+    messages = [{"role": "system", "content": prompt}, {"role": "user", "content": assignment}]
+    if backend is None:
+        backend = create_backend(config)
+    return run_agent(messages, tools, backend, config, ws, "manager")
 
 
-def run_worker_session(number, backend, config, workspace):
-    prompt = "/no_think\nBID Worker. JSON tool calls only."
-    assignment = f"You are Worker {number}. Read docs/worker.md, then perform Task T{number}. Call submit_task when done."
-    tools = tools_mod.get_tools_for_role(permissions.ROLE_WORKER, worker_number=number)
-    return session.run_session(prompt, assignment, tools, backend, config, workspace, permissions.ROLE_WORKER, worker_number=number)
+def run_manager_review(config, backend=None):
+    ws = config["workspace"]
+    prompt = load_prompt("manager")
+    assignment = (
+        "Read docs/manager.md, docs/task.md, docs/todo.md and "
+        "docs/project-status.md. Inspect the relevant Worker artifacts. "
+        "Accept, reopen, repair, or extend the work, then output: Done"
+    )
+    tools = tools_mod.get_tools_for_role("manager")
+    messages = [{"role": "system", "content": prompt}, {"role": "user", "content": assignment}]
+    if backend is None:
+        backend = create_backend(config)
+    return run_agent(messages, tools, backend, config, ws, "manager")
+
+
+def run_worker_session(number, config, backend=None):
+    ws = config["workspace"]
+    prompt = f"/no_think\nBID Worker {number}."
+    assignment = (
+        f"Read docs/worker.md. Perform Task T{number} from docs/todo.md. "
+        f"When ready, ensure T{number} is checked in docs/todo.md and output: Done"
+    )
+    tools = tools_mod.get_tools_for_role("worker", worker_number=number)
+    messages = [{"role": "system", "content": prompt}, {"role": "user", "content": assignment}]
+    if backend is None:
+        backend = create_backend(config)
+    result = run_agent(messages, tools, backend, config, ws, "worker", number)
+
+    if result["status"] != "done":
+        return result
+
+    obs = Observer(ws, number)
+    if obs.task_is_checked():
+        vc_sys = vc_mod.VersionControl(ws)
+        vc_sys.save_state(f"Worker {number}", f"T{number} submitted")
+        return {"status": "submitted", "summary": f"T{number} submitted"}
+
+    return {"status": "error", "reason": f"T{number} not checked"}
 
 
 def init_project(user_task, config, backend=None):
@@ -135,14 +199,11 @@ def init_project(user_task, config, backend=None):
     vc_sys = vc_mod.VersionControl(ws)
     vc_sys.init()
 
-    if backend is None:
-        backend = create_backend(config)
-
-    result = run_manager_session(user_task, "", "", backend, config, ws, mode="init")
-    if result["status"] == "success":
-        vc_sys.save_state("Manager (init)", result.get("summary", ""))
-
-    return result
+    result = run_manager_init(config, backend=backend)
+    if result["status"] == "done":
+        vc_sys.save_state("Manager (init)", "Project initialized")
+        return {"status": "success"}
+    return {"status": "error", "reason": "Manager init failed"}
 
 
 def run_project(config, backend=None):
@@ -153,53 +214,32 @@ def run_project(config, backend=None):
         backend = create_backend(config)
 
     while True:
-        task_text = read_file_content(os.path.join(ws, "docs/task.md"))
         todo_text = read_file_content(os.path.join(ws, "docs/todo.md"))
-        status_text = read_file_content(os.path.join(ws, "docs/project-status.md"))
         tasks = todo_mod.parse_todo(todo_text)
+        status_text = read_file_content(os.path.join(ws, "docs/project-status.md"))
 
         unchecked = todo_mod.first_unchecked(tasks)
         if unchecked is not None:
-            current = vc_sys.get_current()
             number = unchecked["number"]
-            print(f"Running Worker {number}...")
-            result = run_worker_session(number, backend, config, ws)
-            if result["status"] == "success":
-                post_todo = read_file_content(os.path.join(ws, "docs/todo.md"))
-                post_tasks = todo_mod.parse_todo(post_todo)
-                post_task = todo_mod.get_task(post_tasks, number)
-                if post_task and post_task["checked"]:
-                    vc_sys.save_state(f"Worker {number}", result.get("summary", ""))
-                    print(f"Worker {number} finished.")
-                else:
-                    if current:
-                        vc_sys.restore(current)
-                        print(f"Worker {number} did not check T{number}. Restored {current}.")
-                    return {"status": "error", "reason": f"Worker {number} did not check T{number}"}
+            print(f"Worker {number}...")
+            result = run_worker_session(number, config, backend=backend)
+            if result["status"] == "submitted":
+                print(f"Worker {number} submitted T{number}.")
             else:
                 print(f"Worker {number} failed: {result.get('reason', 'unknown')}")
+                current = vc_sys.get_current()
                 if current:
                     vc_sys.restore(current)
-                    print(f"Restored state {current}.")
-                return {"status": "error", "reason": f"Worker {number} failed", "detail": result}
+                return {"status": "error", "reason": f"Worker {number} failed"}
             continue
 
-        print("All tasks checked. Running Manager review...")
-        result = run_manager_session(task_text, todo_text, status_text, backend, config, ws, mode="review")
-        if result["status"] != "success":
-            print(f"Manager review failed: {result.get('reason', 'unknown')}")
-            return {"status": "error", "reason": "Manager review failed", "detail": result}
-
-        vc_sys.save_state("Manager (review)", result.get("summary", ""))
-
-        status_text = read_file_content(os.path.join(ws, "docs/project-status.md"))
         if "DONE" in status_text:
-            return {"status": "done", "summary": result.get("summary", "")}
+            return {"status": "done"}
 
-        todo_text = read_file_content(os.path.join(ws, "docs/todo.md"))
-        tasks = todo_mod.parse_todo(todo_text)
-        if todo_mod.first_unchecked(tasks) is not None:
-            print("Manager created new or reopened tasks. Continuing...")
+        print("All tasks checked. Running Manager review...")
+        result = run_manager_review(config, backend=backend)
+        if result["status"] != "done":
+            vc_sys.save_state("Manager (review)", "Review completed")
             continue
 
         print("Manager produced no further action. Pausing.")
@@ -211,24 +251,14 @@ def show_status(config):
     if not os.path.exists(os.path.join(ws, ".bid")):
         print("No BID project in workspace.")
         return
-
     vc_sys = vc_mod.VersionControl(ws)
     current = vc_sys.get_current() or "?"
     todo_text = read_file_content(os.path.join(ws, "docs/todo.md"))
-    status_text = read_file_content(os.path.join(ws, "docs/project-status.md"))
-    task_text = read_file_content(os.path.join(ws, "docs/task.md"))
-
     tasks = todo_mod.parse_todo(todo_text) if todo_text else []
     checked = sum(1 for t in tasks if t["checked"])
     total = len(tasks)
-
     print(f"VC state: {current}")
     print(f"Tasks:    {checked}/{total} checked")
     for t in tasks:
         mark = "x" if t["checked"] else " "
         print(f"  [{mark}] {t['id']} — {t['description']}")
-    print()
-    lines = status_text.strip().split("\n") if status_text.strip() else ["(empty)"]
-    print("Project status:")
-    for l in lines[:5]:
-        print(f"  {l}")

@@ -85,8 +85,6 @@ def handle_write_file(args, workspace, role, worker_number):
 
 TOOL_ALIASES = {
     "create_file": "write_file", "new_file": "write_file", "save_file": "write_file",
-    "complete_task": "check_own_task", "mark_done": "check_own_task",
-    "submit_task": "check_own_task", "done": "check_own_task",
 }
 
 
@@ -161,27 +159,10 @@ def handle_delete_file(args, workspace, role, worker_number):
         return f"error deleting: {e}"
 
 
-def handle_check_own_task(args, workspace, role, worker_number):
-    if role != permissions.ROLE_WORKER:
-        return "permission denied: only workers can check own task"
-    todo_path = os.path.join(workspace, "docs/todo.md")
-    if not os.path.exists(todo_path):
-        return "error: todo.md not found"
-    with open(todo_path, "r", encoding="utf-8") as f:
-        content = f.read()
-    new_content = todo_mod.set_task_checked(content, worker_number, checked=True)
-    if new_content == content:
-        return f"error: task T{worker_number} not found in todo.md"
-    with open(todo_path, "w", encoding="utf-8") as f:
-        f.write(new_content)
-    return f"checked T{worker_number} in todo.md"
-
-
 def handle_finish(args, workspace, role, worker_number):
-    summary = args.get("summary", "")
-    if role == permissions.ROLE_MANAGER:
-        return "__FINISH__" + summary
-    return f"finish ignored — use check_own_task to submit"
+    if role == "manager":
+        return "__FINISH__" + args.get("summary", "")
+    return "finish is not a Worker tool"
 
 
 def make_tool(name, description, params, handler):
@@ -223,19 +204,15 @@ COMMON_TOOLS = [
                "old_text": param("string", "Text to find"),
                "new_text": param("string", "Replacement text")},
               handle_replace_text),
-    make_tool("finish", "Signal that work is complete. Provide a summary of what was accomplished.",
+]
+
+MANAGER_ONLY_TOOLS = [
+    make_tool("finish", "Signal that work is complete. Provide a summary.",
               {"summary": param("string", "Summary of accomplishments")},
               handle_finish),
 ]
 
-MANAGER_ONLY_TOOLS = [
-    list(COMMON_TOOLS),
-]
-
 WORKER_TOOLS = [
-    make_tool("check_own_task", "Mark your own task as completed in docs/todo.md.",
-              {},
-              handle_check_own_task),
     make_tool("make_directory", "Create a directory relative to workspace root.",
               {"path": param("string", "Directory path relative to workspace root")},
               handle_make_directory),
@@ -247,6 +224,8 @@ WORKER_TOOLS = [
 
 def get_tools_for_role(role, worker_number=None):
     result = list(COMMON_TOOLS)
-    if role == permissions.ROLE_WORKER:
+    if role == "manager":
+        result.extend(MANAGER_ONLY_TOOLS)
+    else:
         result.extend(WORKER_TOOLS)
     return result

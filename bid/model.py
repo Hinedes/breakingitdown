@@ -42,9 +42,8 @@ class LlamaCppBackend(ModelBackend):
         return new_messages
 
     KNOWN_TOOLS = {"list_files", "read_file", "write_file", "replace_text",
-                    "make_directory", "delete_file", "check_own_task", "finish",
-                    "create_file", "new_file", "save_file",
-                    "complete_task", "mark_done", "submit_task", "done"}
+                    "make_directory", "delete_file", "finish",
+                    "create_file", "new_file", "save_file"}
 
     def _parse_one_tool_obj(self, obj):
         if not isinstance(obj, dict):
