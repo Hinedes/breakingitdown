@@ -8,9 +8,10 @@ def run_session(prompt_text, assignment, tools, backend, config, workspace, role
     ]
     tool_defs = [t["definition"] for t in tools]
     max_turns = config.get("max_turns", 50)
+    max_tokens = config.get("max_tokens")
 
     for turn in range(max_turns):
-        response = backend.run(messages, tool_defs)
+        response = backend.run(messages, tool_defs, max_tokens=max_tokens)
         tool_calls = response.get("tool_calls")
 
         if tool_calls:
@@ -64,7 +65,8 @@ def run_session(prompt_text, assignment, tools, backend, config, workspace, role
                     "turn_count": turn + 1,
                 }
 
-            messages.append({"role": "user", "content": assignment})
+            if turn == 0:
+                messages.append({"role": "user", "content": assignment})
             continue
 
         text = (response.get("content") or "").strip()
@@ -72,6 +74,7 @@ def run_session(prompt_text, assignment, tools, backend, config, workspace, role
             break
 
         messages.append({"role": "assistant", "content": response["content"]})
-        messages.append({"role": "user", "content": assignment})
+        if turn == 0:
+            messages.append({"role": "user", "content": "Use tools. Output JSON only."})
 
     return {"status": "error", "reason": "turn limit exceeded"}

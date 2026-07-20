@@ -2,7 +2,7 @@ import json
 import re
 
 class ModelBackend:
-    def run(self, messages, tools):
+    def run(self, messages, tools, max_tokens=None):
         raise NotImplementedError
 
 
@@ -135,14 +135,15 @@ class LlamaCppBackend(ModelBackend):
             for i, c in enumerate(calls)
         ]
 
-    def run(self, messages, tools):
+    def run(self, messages, tools, max_tokens=None):
         import httpx
 
         payload = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens or self.max_tokens,
             "temperature": 0.01,
+            "chat_template_kwargs": {"enable_thinking": False},
         }
 
         if tools and self.text_tools:
@@ -180,7 +181,7 @@ class MockBackend(ModelBackend):
     def add_response(self, response):
         self.responses.append(response)
 
-    def run(self, messages, tools):
+    def run(self, messages, tools, max_tokens=None):
         self.call_history.append({"messages": list(messages), "tools": tools})
         if self.call_index < len(self.responses):
             resp = self.responses[self.call_index]

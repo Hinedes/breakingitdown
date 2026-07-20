@@ -119,13 +119,12 @@ def run_manager_session(task_text, todo_text, status_text, backend, config, work
 
 
 def run_worker_session(number, backend, config, workspace):
-    prompt = "/no_think\n\n" + load_prompt("worker").replace("{worker_number}", str(number))
-    instructions = read_file_content(os.path.join(workspace, "docs/worker.md"))
-    assignment = f"Task T{number}. Read todo.md. Do the work. check_own_task. finish.\n\n{instructions}\n"
+    prompt = "/no_think\nBID Worker. JSON tool calls only."
+    assignment = f"You are Worker {number}. Read docs/worker.md, then perform Task T{number}."
     tools = tools_mod.get_tools_for_role(permissions.ROLE_WORKER, worker_number=number)
     wk_config = dict(config)
     wk_config["max_tokens"] = 256
-    return session.run_session(prompt, assignment, tools, wk_config, workspace, permissions.ROLE_WORKER, worker_number=number)
+    return session.run_session(prompt, assignment, tools, backend, wk_config, workspace, permissions.ROLE_WORKER, worker_number=number)
 
 
 def init_project(user_task, config, backend=None):
