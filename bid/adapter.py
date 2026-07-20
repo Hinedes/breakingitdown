@@ -464,6 +464,7 @@ def _collect_artifact_summaries(workspace, tasks):
     """Return a compact Markdown summary of all task artifacts.
 
     Uses declared output path or defaults to docs/work/T{N}.md.
+    Flags artifacts that are suspiciously small.
     """
     lines = ["## Artifacts", ""]
     for t in tasks:
@@ -472,8 +473,10 @@ def _collect_artifact_summaries(workspace, tasks):
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
                 body = f.read()
-            preview = body[:200].replace("\n", " ")
-            lines.append(f"### T{t['number']} — {out} ({len(body)}b)")
+            size = len(body)
+            preview = body[:150].replace("\n", " ")
+            warning = " ⚠️ WARNING: too small, likely inadequate" if size < 50 else ""
+            lines.append(f"### T{t['number']} — {out} ({size}b){warning}")
             lines.append(f"{preview}")
             lines.append("")
     return "\n".join(lines) if len(lines) > 2 else ""
