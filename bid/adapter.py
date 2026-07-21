@@ -302,13 +302,16 @@ class WorkerAdapter:
 
                 if kind == "READ":
                     raw_path = command["path"]
-                    safe, err, rel = permissions.check_path_safety(raw_path, self.workspace)
-                    if not safe:
-                        result = f"error: {err}"
-                        signature = f"READ-ERROR:{raw_path}:{err}"
+                    absolute = None
+                    rel = raw_path
+                    safe, err, normalized = permissions.check_path_safety(raw_path, self.workspace)
+                    if not safe or normalized in (None, "."):
+                        result = f"error: {err or 'workspace root denied'}"
+                        signature = f"READ-ERROR:{raw_path}:{result}"
                     else:
-                        allowed, reason = permissions.check_read_permission(rel, permissions.ROLE_WORKER)
+                        rel = normalized
                         absolute = os.path.join(self.workspace, rel)
+                        allowed, reason = permissions.check_read_permission(rel, permissions.ROLE_WORKER)
                         if not allowed:
                             result = f"error: permission denied: {reason}"
                         elif not os.path.exists(absolute):
@@ -321,7 +324,8 @@ class WorkerAdapter:
                             if read_hashes.get(rel) != file_hash:
                                 useful = True
                             read_hashes[rel] = file_hash
-                        signature = f"READ:{rel}:{_hash_file(absolute) if os.path.isfile(absolute) else result[:80]}"
+                        identity = _hash_file(absolute) if absolute and os.path.isfile(absolute) else result[:80]
+                        signature = f"READ:{rel}:{identity}"
                     repeat_count = self._repeat(last_signature, signature, repeat_count)
                     last_signature = signature
                     messages.append({"role": "user", "content": result})
@@ -333,7 +337,6 @@ class WorkerAdapter:
                     cached = self._search_cache.get(query, self.task_number)
                     if cached is None and self._search_requests >= self._search_limit:
                         result = f"error: search request limit ({self._search_limit}) reached"
-                        is_cache = False
                     else:
                         if cached is None:
                             self._search_requests += 1
@@ -351,8 +354,7 @@ class WorkerAdapter:
                             result = f"Search cache hit. Evidence at {path}. READ that file."
                         else:
                             result = f"Search completed. {count} source(s) saved to {path}. READ that file."
-                    filesystem_changes = observer.poll_changes()
-                    if filesystem_changes:
+                    if observer.poll_changes():
                         changed = True
                         useful = True
                     signature = f"SEARCH:{canonical_hash}:{result[:80]}"
@@ -372,7 +374,11 @@ class WorkerAdapter:
                         changed = True
                     if write_changed:
                         useful = True
-                    signature = f"WRITE:{normalized}:{_hash_file(os.path.join(self.workspace, normalized)) if write_changed else result[:80]}"
+                    identity = (
+                        _hash_file(os.path.join(self.workspace, normalized))
+                        if write_changed else result[:80]
+                    )
+                    signature = f"WRITE:{normalized}:{identity}"
                     repeat_count = self._repeat(last_signature, signature, repeat_count)
                     last_signature = signature
                     messages.append({"role": "user", "content": result})
@@ -593,8 +599,6 @@ class ArtifactReviewAdapter:
         return result
 
     def _save_review(self, result):
-        review_path = os.path.join(self.workspace, "docs", "reviews", f"T{self.task_number}.md")
-        os.makedirs(os.path.dirname(review_path), exist_ok=True)
         try:
             tasks = todo_mod.parse_todo(_read(self.workspace, "docs/todo.md"))
             output, _ = todo_mod.get_task_metadata(tasks, self.task_number)
