@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -18,6 +19,7 @@ from .observer import Observer
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
 _RUN_LOCK_TIMEOUT = 30.0
 _RUN_LOCK_STALE = 120.0
+_ACTIVE_SESSION_FILE = ".bid/active-session.json"
 
 MANAGER_INSTRUCTIONS = """# Manager
 
@@ -105,6 +107,39 @@ def write_file_content(path, content):
         handle.write(content)
 
 
+def _write_json_atomic(path, value):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".tmp-", dir=os.path.dirname(path))
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.remove(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _remove_file(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 def ensure_workspace(workspace):
     docs = os.path.join(workspace, "docs")
     os.makedirs(docs, exist_ok=True)
@@ -134,13 +169,12 @@ def _workspace_lock_path(workspace):
     return os.path.join(parent, f".{name}.bid-run-{identity}.lock")
 
 
+def _init_journal_path(workspace):
+    return _workspace_lock_path(workspace) + ".init.json"
+
+
 def _read_lock_metadata(path):
-    try:
-        with open(path, encoding="utf-8") as handle:
-            value = json.load(handle)
-        return value if isinstance(value, dict) else {}
-    except (OSError, json.JSONDecodeError):
-        return {}
+    return _read_json(path) or {}
 
 
 def _run_lock_is_stale(path):
@@ -182,10 +216,7 @@ def _project_run_lock(workspace):
             break
         except FileExistsError:
             if _run_lock_is_stale(path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+                _remove_file(path)
                 continue
             if time.monotonic() >= deadline:
                 raise RuntimeError("another BID process is already running this workspace")
@@ -193,12 +224,68 @@ def _project_run_lock(workspace):
     try:
         yield
     finally:
+        metadata = _read_lock_metadata(path)
+        if metadata.get("token") == token:
+            _remove_file(path)
+
+
+def _active_session_path(workspace):
+    return os.path.join(workspace, _ACTIVE_SESSION_FILE)
+
+
+def _begin_active_session(workspace, kind, base_state, task_number=None):
+    marker = {
+        "kind": kind,
+        "base_state": base_state,
+        "task_number": task_number,
+        "pid": os.getpid(),
+        "started": time.time(),
+    }
+    _write_json_atomic(_active_session_path(workspace), marker)
+
+
+def _clear_active_session(workspace):
+    _remove_file(_active_session_path(workspace))
+
+
+def _recover_active_session(workspace):
+    path = _active_session_path(workspace)
+    marker = _read_json(path)
+    if marker is None:
+        if os.path.exists(path):
+            return {"status": "error", "reason": "active-session journal is corrupt"}
+        return {"status": "none"}
+
+    system = vc_mod.VersionControl(workspace)
+    base_state = marker.get("base_state")
+    current_state = system.get_current()
+    if base_state and current_state and current_state != base_state:
+        _clear_active_session(workspace)
+        return {"status": "already-committed", "state": current_state}
+
+    kind = marker.get("kind")
+    if kind == "worker":
+        number = marker.get("task_number")
+        if not isinstance(number, int) or number <= 0:
+            return {"status": "error", "reason": "active Worker journal has invalid task number"}
+        if Observer(workspace, number).task_is_checked():
+            try:
+                state = system.save_state(
+                    f"Worker {number}",
+                    f"T{number} recovered after process interruption.",
+                )
+            except Exception as exc:
+                return {"status": "error", "reason": f"failed to commit recovered Worker: {exc}"}
+            _clear_active_session(workspace)
+            return {"status": "submitted", "task_number": number, "state": state}
+
+    if base_state:
         try:
-            metadata = _read_lock_metadata(path)
-            if metadata.get("token") == token:
-                os.remove(path)
-        except OSError:
-            pass
+            system.restore(base_state)
+        except Exception as exc:
+            return {"status": "error", "reason": f"failed to restore interrupted session: {exc}"}
+    _clear_active_session(workspace)
+    return {"status": "rolled-back", "kind": kind}
 
 
 def _safe_workspace_file(workspace, rel_path):
@@ -239,11 +326,11 @@ def _compute_plan_hash(workspace, tasks):
             for name in sorted(os.listdir(research_dir)):
                 if not re.fullmatch(r"search-\d+\.md", name):
                     continue
-                path = os.path.join(research_dir, name)
-                if not os.path.isfile(path):
+                evidence = os.path.join(research_dir, name)
+                if not os.path.isfile(evidence):
                     continue
                 digest.update(f"RESEARCH:T{task['number']}/{name}\0".encode("utf-8"))
-                with open(path, "rb") as handle:
+                with open(evidence, "rb") as handle:
                     digest.update(handle.read())
     return digest.hexdigest()
 
@@ -264,8 +351,13 @@ def _is_completed(workspace, tasks):
 def run_worker_session(number, config, backend=None):
     workspace = config["workspace"]
     ensure_workspace(workspace)
-    vc_system = vc_mod.VersionControl(workspace)
-    base_state = vc_system.get_current()
+    recovery = _recover_active_session(workspace)
+    if recovery.get("status") == "error":
+        return recovery
+
+    system = vc_mod.VersionControl(workspace)
+    base_state = system.get_current()
+    _begin_active_session(workspace, "worker", base_state, number)
     interrupted = False
 
     try:
@@ -280,14 +372,16 @@ def run_worker_session(number, config, backend=None):
     if checked:
         termination = "normal" if result.get("status") == "done" else result.get("status", "error")
         try:
-            state = vc_system.save_state(
+            state = system.save_state(
                 f"Worker {number}",
                 f"T{number} submitted. Termination: {termination}.",
             )
         except Exception as exc:
             if base_state:
-                vc_system.restore(base_state)
+                system.restore(base_state)
+            _clear_active_session(workspace)
             return {"status": "error", "reason": f"vc save failed after checked worker: {exc}"}
+        _clear_active_session(workspace)
         return {
             "status": "submitted",
             "summary": f"T{number} submitted",
@@ -298,12 +392,46 @@ def run_worker_session(number, config, backend=None):
 
     if base_state:
         try:
-            vc_system.restore(base_state)
+            system.restore(base_state)
         except Exception as exc:
             return {"status": "error", "reason": f"rollback failed: {exc}"}
+    _clear_active_session(workspace)
     if interrupted:
         return {"status": "interrupted", "reason": "interrupted; unchecked work rolled back"}
     return {"status": "error", "reason": result.get("reason", f"T{number} was not submitted")}
+
+
+def _recover_init_journal(workspace):
+    path = _init_journal_path(workspace)
+    journal = _read_json(path)
+    if journal is None:
+        if os.path.exists(path):
+            return {"status": "error", "reason": "initialization journal is corrupt"}
+        return {"status": "none"}
+
+    phase = journal.get("phase")
+    backup = journal.get("backup")
+    existed = bool(journal.get("workspace_existed"))
+    if backup and os.path.exists(backup):
+        backup = os.path.realpath(backup)
+    else:
+        backup = None
+
+    if phase == "committed":
+        if backup:
+            shutil.rmtree(backup, ignore_errors=True)
+        _remove_file(path)
+        return {"status": "kept-new"}
+
+    if phase == "planned" and existed and backup is None:
+        _remove_file(path)
+        return {"status": "old-untouched"}
+
+    shutil.rmtree(workspace, ignore_errors=True)
+    if existed and backup:
+        os.rename(backup, workspace)
+    _remove_file(path)
+    return {"status": "restored-old" if existed else "removed-partial"}
 
 
 def init_project(user_task, config, backend=None):
@@ -312,6 +440,9 @@ def init_project(user_task, config, backend=None):
         return {"status": "error", "reason": "cannot initialize while BID is running this workspace"}
     try:
         with _project_run_lock(workspace):
+            recovered = _recover_init_journal(workspace)
+            if recovered.get("status") == "error":
+                return recovered
             return _init_project_locked(user_task, config, backend)
     except RuntimeError as exc:
         return {"status": "error", "reason": str(exc)}
@@ -319,53 +450,88 @@ def init_project(user_task, config, backend=None):
 
 def _init_project_locked(user_task, config, backend=None):
     workspace = os.path.realpath(config["workspace"])
+    runtime_config = dict(config)
+    runtime_config["workspace"] = workspace
     parent = os.path.dirname(workspace)
     os.makedirs(parent, exist_ok=True)
     existed = os.path.exists(workspace)
-    backup = None
-
-    if existed:
-        backup = tempfile.mkdtemp(prefix=f".{os.path.basename(workspace)}-backup-", dir=parent)
-        os.rmdir(backup)
-        os.rename(workspace, backup)
+    backup = tempfile.mkdtemp(prefix=f".{os.path.basename(workspace)}-backup-", dir=parent)
+    os.rmdir(backup)
+    journal_path = _init_journal_path(workspace)
+    _write_json_atomic(journal_path, {
+        "phase": "planned",
+        "workspace": workspace,
+        "workspace_existed": existed,
+        "backup": backup,
+    })
 
     try:
+        if existed:
+            os.rename(workspace, backup)
+        _write_json_atomic(journal_path, {
+            "phase": "backed-up",
+            "workspace": workspace,
+            "workspace_existed": existed,
+            "backup": backup,
+        })
+
         os.makedirs(workspace, exist_ok=True)
         ensure_workspace(workspace)
         write_file_content(os.path.join(workspace, "docs/task.md"), f"# Task\n\n{user_task}\n")
         write_file_content(os.path.join(workspace, "docs/project-status.md"), "# Project Status\n\nInitialized.\n")
         write_file_content(os.path.join(workspace, "docs/decisions.md"), "# Decisions\n\n")
 
-        vc_system = vc_mod.VersionControl(workspace)
-        vc_system.init()
-        result = adapter_mod.ManagerInitAdapter(config).run(backend or create_backend(config))
+        system = vc_mod.VersionControl(workspace)
+        system.init()
+        result = adapter_mod.ManagerInitAdapter(runtime_config).run(backend or create_backend(runtime_config))
         tasks = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
         if result.get("status") != "success" or not tasks:
             raise RuntimeError(result.get("reason", "Manager did not create a valid TODO"))
-        state = vc_system.save_state("Manager (init)", "Project initialized")
+        state = system.save_state("Manager (init)", "Project initialized")
+        _write_json_atomic(journal_path, {
+            "phase": "committed",
+            "workspace": workspace,
+            "workspace_existed": existed,
+            "backup": backup,
+        })
     except BaseException as exc:
-        shutil.rmtree(workspace, ignore_errors=True)
-        if backup and os.path.exists(backup):
-            os.rename(backup, workspace)
+        _recover_init_journal(workspace)
         if isinstance(exc, KeyboardInterrupt):
             raise
         return {"status": "error", "reason": str(exc)}
 
-    if backup and os.path.exists(backup):
+    if existed and os.path.exists(backup):
         shutil.rmtree(backup, ignore_errors=True)
+    _remove_file(journal_path)
     return {"status": "success", "state": state}
 
 
 def run_project(config, backend=None):
-    workspace = config["workspace"]
+    workspace = os.path.realpath(config["workspace"])
+    runtime_config = dict(config)
+    runtime_config["workspace"] = workspace
     with _project_run_lock(workspace):
+        recovered_init = _recover_init_journal(workspace)
+        if recovered_init.get("status") == "error":
+            return recovered_init
+        if not os.path.isdir(os.path.join(workspace, ".bid")):
+            return {"status": "error", "reason": "no BID project found"}
         ensure_workspace(workspace)
-        return _run_project_locked(config, backend or create_backend(config))
+        recovered = _recover_active_session(workspace)
+        if recovered.get("status") == "error":
+            return recovered
+        return _run_project_locked(runtime_config, backend or create_backend(runtime_config))
+
+
+def _restore_and_clear(system, base_state, workspace):
+    if base_state:
+        system.restore(base_state)
+    _clear_active_session(workspace)
 
 
 def _run_project_locked(config, backend):
     workspace = config["workspace"]
-    vc_system = vc_mod.VersionControl(workspace)
+    system = vc_mod.VersionControl(workspace)
 
     while True:
         todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
@@ -389,24 +555,22 @@ def _run_project_locked(config, backend):
             continue
 
         print("All submitted. Reviewing artifacts...")
-        base_state = vc_system.get_current()
+        base_state = system.get_current()
+        _begin_active_session(workspace, "review", base_state)
         reviews = []
         try:
             for task in tasks:
                 reviews.append(adapter_mod.ArtifactReviewAdapter(config, task["number"]).run(backend))
         except KeyboardInterrupt:
-            if base_state:
-                vc_system.restore(base_state)
+            _restore_and_clear(system, base_state, workspace)
             return {"status": "paused", "reason": "interrupted during artifact review"}
         except Exception as exc:
-            if base_state:
-                vc_system.restore(base_state)
+            _restore_and_clear(system, base_state, workspace)
             return {"status": "error", "reason": f"review exception: {exc}"}
 
         errors = [review for review in reviews if review.get("verdict") == "ERROR"]
         if errors:
-            if base_state:
-                vc_system.restore(base_state)
+            _restore_and_clear(system, base_state, workspace)
             return {
                 "status": "error",
                 "reason": f"review errors: {[item.get('reason', '?')[:60] for item in errors]}",
@@ -421,40 +585,35 @@ def _run_project_locked(config, backend):
                 updated = todo_mod.set_task_checked(updated, item["task_number"], False)
             try:
                 write_file_content(os.path.join(workspace, "docs/todo.md"), updated)
-                vc_system.save_state("Review", f"reopened {[item['task_number'] for item in rework]}")
+                system.save_state("Review", f"reopened {[item['task_number'] for item in rework]}")
             except Exception as exc:
-                if base_state:
-                    vc_system.restore(base_state)
+                _restore_and_clear(system, base_state, workspace)
                 return {"status": "error", "reason": f"reopen+save failed: {exc}"}
+            _clear_active_session(workspace)
             continue
 
         print("All artifacts accepted. Checking completion...")
         try:
             completion = adapter_mod.CompletionReviewAdapter(config).run(backend)
         except KeyboardInterrupt:
-            if base_state:
-                vc_system.restore(base_state)
+            _restore_and_clear(system, base_state, workspace)
             return {"status": "paused", "reason": "interrupted during completion review"}
         except Exception as exc:
-            if base_state:
-                vc_system.restore(base_state)
+            _restore_and_clear(system, base_state, workspace)
             return {"status": "error", "reason": f"completion review exception: {exc}"}
 
         if not isinstance(completion, dict):
-            if base_state:
-                vc_system.restore(base_state)
+            _restore_and_clear(system, base_state, workspace)
             return {"status": "error", "reason": "completion review returned non-dict"}
         verdict = completion.get("verdict")
         if verdict == "ERROR":
-            if base_state:
-                vc_system.restore(base_state)
+            _restore_and_clear(system, base_state, workspace)
             return {"status": "error", "reason": f"completion review: {completion.get('reason', '?')}"}
 
         if verdict == "MISSING":
             missing = _deduplicate(completion.get("missing", []))
             if not missing:
-                if base_state:
-                    vc_system.restore(base_state)
+                _restore_and_clear(system, base_state, workspace)
                 return {"status": "error", "reason": "MISSING verdict with no items"}
             print(f"Adding {len(missing)} missing tasks...")
             updated = read_file_content(os.path.join(workspace, "docs/todo.md"))
@@ -465,11 +624,11 @@ def _run_project_locked(config, backend):
                 updated += f"\n- [ ] T{number} — {description}"
             try:
                 write_file_content(os.path.join(workspace, "docs/todo.md"), updated)
-                vc_system.save_state("Review", f"added {len(missing)} missing tasks")
+                system.save_state("Review", f"added {len(missing)} missing tasks")
             except Exception as exc:
-                if base_state:
-                    vc_system.restore(base_state)
+                _restore_and_clear(system, base_state, workspace)
                 return {"status": "error", "reason": f"missing-add+save failed: {exc}"}
+            _clear_active_session(workspace)
             continue
 
         if verdict == "COMPLETE":
@@ -485,15 +644,14 @@ def _run_project_locked(config, backend):
                     os.path.join(workspace, "docs/project-status.md"),
                     "# Project Status\n\nDONE\n",
                 )
-                vc_system.save_state("Review", "Project completed")
+                system.save_state("Review", "Project completed")
             except Exception as exc:
-                if base_state:
-                    vc_system.restore(base_state)
+                _restore_and_clear(system, base_state, workspace)
                 return {"status": "error", "reason": f"completion+save failed: {exc}"}
+            _clear_active_session(workspace)
             return {"status": "done"}
 
-        if base_state:
-            vc_system.restore(base_state)
+        _restore_and_clear(system, base_state, workspace)
         return {"status": "error", "reason": f"unexpected completion verdict: {verdict or '?'}"}
 
 
