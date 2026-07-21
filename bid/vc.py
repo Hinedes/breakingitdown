@@ -44,13 +44,14 @@ class VersionControl:
             return {}
 
     def _lock_is_stale(self):
-        try:
-            age = time.time() - os.path.getmtime(self.lock_file)
-        except OSError:
-            return True
         metadata = self._read_lock()
         pid = metadata.get("pid")
-        return age > _LOCK_STALE_SECONDS or not self._pid_is_alive(pid)
+        if isinstance(pid, int) and pid > 0:
+            return not self._pid_is_alive(pid)
+        try:
+            return time.time() - os.path.getmtime(self.lock_file) > _LOCK_STALE_SECONDS
+        except OSError:
+            return True
 
     def _acquire_lock(self):
         os.makedirs(self.bid_dir, exist_ok=True)
@@ -104,6 +105,22 @@ class VersionControl:
                 pass
             raise
 
+    @staticmethod
+    def _capture_file(path):
+        if not os.path.exists(path):
+            return False, ""
+        with open(path, encoding="utf-8") as handle:
+            return True, handle.read()
+
+    def _restore_file(self, path, existed, content):
+        if existed:
+            self._write_text_atomic(path, content)
+        else:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
     def init(self):
         if os.path.isdir(self.bid_dir):
             shutil.rmtree(self.bid_dir)
@@ -133,11 +150,15 @@ class VersionControl:
 
     def _commit_state(self, name, agent_name, description):
         self._validate_state_name(name)
+        current_existed, current_content = self._capture_file(self.current_file)
+        log_existed, log_content = self._capture_file(self.log_file)
         self._save_snapshot_atomic(name)
         try:
             self._set_current(name)
             self._append_log(name, f"{agent_name} completed.\n{description}")
         except BaseException:
+            self._restore_file(self.current_file, current_existed, current_content)
+            self._restore_file(self.log_file, log_existed, log_content)
             shutil.rmtree(os.path.join(self.states_dir, name), ignore_errors=True)
             raise
         return name
@@ -160,6 +181,8 @@ class VersionControl:
         restore_tree = tempfile.mkdtemp(dir=self.bid_dir, prefix="restore-new-")
         backup_tree = tempfile.mkdtemp(dir=self.bid_dir, prefix="restore-old-")
         moved_new = []
+        current_existed, current_content = self._capture_file(self.current_file)
+        log_existed, log_content = self._capture_file(self.log_file)
         try:
             for item in os.listdir(snapshot):
                 source = os.path.join(snapshot, item)
@@ -169,8 +192,7 @@ class VersionControl:
                 else:
                     shutil.copy2(source, target)
 
-            live_items = [item for item in os.listdir(self.workspace) if item != ".bid"]
-            for item in live_items:
+            for item in [entry for entry in os.listdir(self.workspace) if entry != ".bid"]:
                 shutil.move(os.path.join(self.workspace, item), os.path.join(backup_tree, item))
 
             try:
@@ -180,6 +202,8 @@ class VersionControl:
                 self._set_current(state_name)
                 self._truncate_log(state_name)
             except BaseException:
+                self._restore_file(self.current_file, current_existed, current_content)
+                self._restore_file(self.log_file, log_existed, log_content)
                 for item in moved_new:
                     path = os.path.join(self.workspace, item)
                     if os.path.isdir(path):
@@ -239,10 +263,8 @@ class VersionControl:
         if not os.path.isdir(self.states_dir):
             return []
         states = [
-            name
-            for name in os.listdir(self.states_dir)
-            if re.fullmatch(r"s\d+", name)
-            and os.path.isdir(os.path.join(self.states_dir, name))
+            name for name in os.listdir(self.states_dir)
+            if re.fullmatch(r"s\d+", name) and os.path.isdir(os.path.join(self.states_dir, name))
         ]
         return sorted(states, key=lambda name: int(name[1:]))
 
@@ -252,8 +274,10 @@ class VersionControl:
         if os.path.exists(self.log_file):
             with open(self.log_file, encoding="utf-8") as handle:
                 existing = handle.read()
-        updated = existing + f"\n## {today}\n\n### {name}\n{description}\n"
-        self._write_text_atomic(self.log_file, updated)
+        self._write_text_atomic(
+            self.log_file,
+            existing + f"\n## {today}\n\n### {name}\n{description}\n",
+        )
 
     def _truncate_log(self, state_name):
         if not os.path.exists(self.log_file):
@@ -266,7 +290,7 @@ class VersionControl:
             return
         next_state = content.find("\n### s", start + len(marker))
         next_date = content.find("\n## ", start + len(marker))
-        cut_candidates = [index for index in (next_state, next_date) if index >= 0]
-        if cut_candidates:
-            content = content[: min(cut_candidates)]
+        candidates = [index for index in (next_state, next_date) if index >= 0]
+        if candidates:
+            content = content[: min(candidates)]
         self._write_text_atomic(self.log_file, content.rstrip() + "\n")
