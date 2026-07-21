@@ -71,7 +71,7 @@ Initialization uses a sibling journal and backup so an interrupted reinitializat
 ## Quick start
 
 ```bash
-python -m pip install -e '.[test]'
+python -m pip install -e '.[dev]'
 
 ./llama-server -m smollm3-3b-q4_k_m.gguf --port 8080
 
@@ -95,7 +95,7 @@ BID_BACKEND=mock BID_SEARCH_MOCK=1 python bid.py run
 | `BID_MODEL_NAME` | `smollm3-3b` | Model identifier |
 | `BID_MAX_TOKENS` | `8192` | Per-response allowance |
 | `BID_REQUEST_TIMEOUT` | `300` | Maximum time for one backend request |
-| `BID_INACTIVITY_TIMEOUT` | `600` | Maximum time without useful state progress |
+| `BID_INACTIVITY_TIMEOUT` | `600` | Maximum period without useful state progress |
 | `BID_WORKER_TIMEOUT` | `3600` | Hard ceiling for one Worker session |
 | `BID_REPEAT_ACTION_LIMIT` | `5` | No-progress turns before a soft reset |
 | `BID_MAX_SEARCHES` | `10` | Maximum live provider requests per Worker; cache hits are free |
@@ -119,7 +119,7 @@ Snapshots and metadata updates are atomic. Rollback is serialized against active
 python -m pytest -q
 ```
 
-The suite covers decomposition, sequential Workers, review-and-repair, completion, search provenance, cache isolation, permissions, no-progress recovery, abnormal submission, crash journals, transactional initialization, concurrency locks, and VC fault injection.
+The same command runs in GitHub Actions on every push and pull request. The suite covers decomposition, sequential Workers, review-and-repair, completion, search provenance, cache isolation, permissions, no-progress recovery, abnormal submission, crash journals, transactional initialization, concurrency locks, and VC fault injection.
 
 ## Project tree
 
