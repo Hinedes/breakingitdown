@@ -400,6 +400,7 @@ class WorkerAdapter:
                         if self._search_count >= self._search_limit:
                             result = f"error: search limit ({self._search_limit}) reached"
                         else:
+                            self._search_count += 1  # all attempts count toward ceiling
                             path, n, err, is_cache = search_mod.execute_search(
                                 self.workspace, self.task_number, cmd["query"],
                                 self._search_cache, self._search_provider,
@@ -409,12 +410,11 @@ class WorkerAdapter:
                             else:
                                 if is_cache:
                                     self._cache_hits += 1
-                                    result = f"Search cache hit. Evidence at {path}. READ that file."
+                                    result = f"Search cache hit. Evidence at {path}."
                                 else:
-                                    self._search_count += 1
-                                    result = f"Search completed. {n} source(s) saved to {path}. READ that file."
+                                    result = f"Search completed. {n} source(s) saved to {path}."
                                     useful = True
-                        sig = f"SEARCH {cmd['query']}|{result[:50]}"
+                        sig = f"SEARCH {search_mod._query_hash(cmd['query'])}|{result[:50]}"
                         if sig == last_sig:
                             turn_repeat += 1
                         else:
@@ -621,7 +621,8 @@ class ArtifactReviewAdapter:
         # Collect research files for this task
         research_context = ""
         research_dir = search_mod._research_dir(self.workspace, self.task_number)
-        if os.path.isdir(research_dir):
+        has_research = os.path.isdir(research_dir)
+        if has_research:
             research_files = sorted(os.listdir(research_dir))
             parts = ["", "## Supporting research", ""]
             for fname in research_files:
@@ -638,6 +639,9 @@ class ArtifactReviewAdapter:
             if len(parts) > 3:
                 research_context = "\n".join(parts)
 
+        # Deterministic citation check
+        cited = search_mod.has_citations(artifact_content, research_dir) if has_research else True
+
         prompt = (
             "# Review Assignment\n\n"
             f"Task:\n{task['description']}\n\n"
@@ -645,8 +649,15 @@ class ArtifactReviewAdapter:
             f"Artifact:\n{artifact_content}\n"
             f"{research_context}\n"
             "Judge only whether this artifact materially fulfills its task.\n"
-            "If the task required research, verify that factual claims cite "
-            "specific sources from the supporting research. "
+        )
+        if has_research and not cited:
+            prompt += (
+                "WARNING: This artifact does not cite any evidence from the supporting research.\n"
+                "Factual claims must reference evidence file paths or source URLs.\n"
+            )
+            return self._make_result("REWORK",
+                "artifact does not cite supporting research evidence")
+        prompt += (
             "Return exactly one of:\n\n"
             "ACCEPT\n"
             "Reason: ...\n\n"

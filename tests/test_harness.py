@@ -708,7 +708,7 @@ class TestSearch:
             assert cache.get("test query") is not None
             p2, n2, _, is_cache = execute_search(tmp, 1, "test query", cache, provider)
             assert is_cache
-            assert n2 == 1
+            assert p2 == p1, "cache hit should return same path"
 
     def test_search_in_worker_adapter(self):
         from bid.search import MockSearchProvider, SearchResult
