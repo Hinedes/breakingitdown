@@ -1,6 +1,8 @@
 import hashlib
 import os
+import shutil
 import time
+import tempfile
 
 from . import adapter as adapter_mod
 from . import model as model_mod
@@ -95,18 +97,6 @@ def ensure_workspace(workspace):
     write_file_content(os.path.join(docs, "worker.md"), WORKER_INSTRUCTIONS)
 
 
-def _clear_workspace(workspace):
-    for item in os.listdir(workspace):
-        if item == ".bid":
-            continue
-        path = os.path.join(workspace, item)
-        if os.path.isdir(path):
-            import shutil
-            shutil.rmtree(path)
-        else:
-            os.remove(path)
-
-
 def _todo_hash(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -114,34 +104,29 @@ def _todo_hash(text):
 _COMPLETED_HASH_FILE = "docs/.completed_hash"
 
 
-def _write_completed_hash(workspace, todo_text, task_artifacts):
+def _compute_plan_hash(workspace, tasks):
+    """Return SHA-256 of (TODO + sorted artifact paths + each artifact content)."""
+    todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
     h = _todo_hash(todo_text)
-    for path in sorted(task_artifacts):
-        p = os.path.join(workspace, path)
+    for t in tasks:
+        out, _ = todo_mod.get_task_metadata(tasks, t["number"])
+        p = os.path.join(workspace, out)
         if os.path.exists(p):
             h += _todo_hash(read_file_content(p))
-    write_file_content(os.path.join(workspace, _COMPLETED_HASH_FILE), _todo_hash(h))
+    return _todo_hash(h)
 
 
-def _completed_hash_matches(workspace):
-    path = os.path.join(workspace, _COMPLETED_HASH_FILE)
-    if not os.path.exists(path):
+def _is_completed(workspace, tasks):
+    """DONE is valid only when persisted hash matches current state."""
+    status_raw = read_file_content(os.path.join(workspace, "docs/project-status.md")).strip()
+    if status_raw != "# Project Status\n\nDONE":
         return False
-    return True  # hash comparison needs full state; caller re-checks
-
-
-def _mutate_with_rollback(vc_system, base_state, fn):
-    """Mutate filesystem, save VC; restore on any failure."""
-    try:
-        result = fn()
-        if isinstance(result, dict) and result.get("status") == "error":
-            if base_state:
-                vc_system.restore(base_state)
-        return result
-    except BaseException:
-        if base_state:
-            vc_system.restore(base_state)
-        raise
+    hash_path = os.path.join(workspace, _COMPLETED_HASH_FILE)
+    if not os.path.exists(hash_path):
+        return False
+    stored = read_file_content(hash_path).strip()
+    current = _compute_plan_hash(workspace, tasks)
+    return stored == current
 
 
 # ── Worker session ───────────────────────────────────────────────────
@@ -159,7 +144,6 @@ def run_worker_session(number, config, backend=None):
     except BaseException as exc:
         result = {"status": "error", "reason": str(exc)}
 
-    # Inspect checkbox BEFORE deciding rollback
     checked = Observer(workspace, number).task_is_checked()
 
     if checked:
@@ -180,7 +164,6 @@ def run_worker_session(number, config, backend=None):
             "state": state,
         }
 
-    # Unchecked
     if base_state:
         try:
             vc_system.restore(base_state)
@@ -196,22 +179,34 @@ def run_worker_session(number, config, backend=None):
 
 def init_project(user_task, config, backend=None):
     workspace = config["workspace"]
-    os.makedirs(workspace, exist_ok=True)
-    _clear_workspace(workspace)
-    ensure_workspace(workspace)
-    write_file_content(os.path.join(workspace, "docs/task.md"), f"# Task\n\n{user_task}\n")
-    write_file_content(os.path.join(workspace, "docs/project-status.md"), "# Project Status\n\nInitialized.\n")
-    write_file_content(os.path.join(workspace, "docs/decisions.md"), "# Decisions\n\n")
+    parent = os.path.dirname(workspace)
+    backup_dir = os.path.join(parent, ".bid_backup") if parent else "/tmp/.bid_backup"
 
-    vc_system = vc_mod.VersionControl(workspace)
-    vc_system.init()
+    # Transactional: rename existing workspace to backup, restore on failure
+    ws_exists = os.path.exists(workspace)
+    if ws_exists:
+        if os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir)
+        os.rename(workspace, backup_dir)
 
     try:
+        os.makedirs(workspace, exist_ok=True)
+        ensure_workspace(workspace)
+        write_file_content(os.path.join(workspace, "docs/task.md"), f"# Task\n\n{user_task}\n")
+        write_file_content(os.path.join(workspace, "docs/project-status.md"), "# Project Status\n\nInitialized.\n")
+        write_file_content(os.path.join(workspace, "docs/decisions.md"), "# Decisions\n\n")
+
+        vc_system = vc_mod.VersionControl(workspace)
+        vc_system.init()
+
         adp = adapter_mod.ManagerInitAdapter(config)
         b = backend or create_backend(config)
         result = adp.run(b)
     except BaseException as exc:
-        vc_system.restore("s0")
+        # Restore backup
+        if ws_exists:
+            shutil.rmtree(workspace, ignore_errors=True)
+            os.rename(backup_dir, workspace)
         return {"status": "error", "reason": str(exc)}
 
     tasks = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
@@ -219,11 +214,19 @@ def init_project(user_task, config, backend=None):
         try:
             state = vc_system.save_state("Manager (init)", "Project initialized")
         except BaseException as exc:
-            vc_system.restore("s0")
+            if ws_exists:
+                shutil.rmtree(workspace, ignore_errors=True)
+                os.rename(backup_dir, workspace)
             return {"status": "error", "reason": str(exc)}
+        # Success - delete backup
+        if ws_exists and os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
         return {"status": "success", "state": state}
 
-    vc_system.restore("s0")
+    # Init failed but didn't raise
+    if ws_exists:
+        shutil.rmtree(workspace, ignore_errors=True)
+        os.rename(backup_dir, workspace)
     return {"status": "error", "reason": result.get("reason", "Manager did not create a valid TODO")}
 
 
@@ -240,9 +243,8 @@ def run_project(config, backend=None):
         tasks = todo_mod.parse_todo(todo_text)
         status_text = read_file_content(os.path.join(workspace, "docs/project-status.md"))
 
-        # Persistent DONE validation: DONE is valid only when hash file exists
-        done_valid = status_text.strip() == "DONE" and os.path.exists(
-            os.path.join(workspace, _COMPLETED_HASH_FILE))
+        if tasks and todo_mod.all_checked(tasks) and _is_completed(workspace, tasks):
+            return {"status": "done"}
 
         unchecked = todo_mod.first_unchecked(tasks)
         if unchecked is not None:
@@ -257,9 +259,6 @@ def run_project(config, backend=None):
                 return {"status": "error", "reason": f"Worker {number} failed", "detail": result}
             print(f"Worker {number} submitted T{number} ({result['termination']}, {result['state']}).")
             continue
-
-        if tasks and todo_mod.all_checked(tasks) and done_valid:
-            return {"status": "done"}
 
         print("All submitted. Reviewing artifacts...")
         base_state = vc_system.get_current()
@@ -345,12 +344,9 @@ def run_project(config, backend=None):
 
         if c_result.get("verdict") == "COMPLETE":
             try:
-                # Collect accepted artifact paths for hash
-                artifact_paths = []
-                for t in tasks:
-                    out, _ = todo_mod.get_task_metadata(tasks, t["number"])
-                    artifact_paths.append(out)
-                _write_completed_hash(workspace, todo_text, artifact_paths)
+                tasks_now = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
+                plan_hash = _compute_plan_hash(workspace, tasks_now)
+                write_file_content(os.path.join(workspace, _COMPLETED_HASH_FILE), plan_hash)
                 write_file_content(os.path.join(workspace, "docs/project-status.md"),
                                     "# Project Status\n\nDONE\n")
                 vc_system.save_state("Review", "Project completed")
@@ -384,8 +380,10 @@ def show_status(config):
     current = vc_mod.VersionControl(workspace).get_current() or "?"
     tasks = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
     checked = sum(1 for task in tasks if task["checked"])
+    completed = _is_completed(workspace, tasks)
     print(f"VC state: {current}")
     print(f"Tasks:    {checked}/{len(tasks)} checked")
+    print(f"Done:     {'yes' if completed else 'no'}")
     for task in tasks:
         mark = "x" if task["checked"] else " "
         print(f"  [{mark}] {task['id']} — {task['description']}")

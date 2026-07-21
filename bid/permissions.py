@@ -18,14 +18,17 @@ WORKER_BLOCKED = {
     "docs/worker.md",
 }
 
+_BLOCKED_PREFIXES = (".bid/", "docs/reviews/", "docs/.completed_hash")
+_BLOCKED_EXACT = {".bid", "docs/reviews", "docs/.completed_hash"}
+
 
 def _path_blocked(rel_path):
-    """Return True if a relative path is a protected control path."""
-    parts = rel_path.split("/")
-    if ".bid" in parts:
+    """Return True if rel_path is a protected control path (file or dir)."""
+    if rel_path in _BLOCKED_EXACT:
         return True
-    if "docs/reviews" in parts or rel_path.startswith("docs/reviews/"):
-        return True
+    for prefix in _BLOCKED_PREFIXES:
+        if rel_path.startswith(prefix):
+            return True
     return False
 
 

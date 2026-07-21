@@ -123,7 +123,6 @@ _TASK_LINE_CHECK = re.compile(r"^\s*[-*]\s+\[([ x])\]\s+(T\d+)\b\s*(.*)")
 
 
 def validate_todo_tasks(tasks):
-    """Return (is_valid, reason).  Enforce T1..TN, unique, unchecked, nonempty, safe paths."""
     if not tasks:
         return False, "no tasks"
     numbers = [t["number"] for t in tasks]
@@ -131,6 +130,8 @@ def validate_todo_tasks(tasks):
         return False, f"task numbers must be sequential T1..T{len(tasks)}, got {numbers}"
     seen_outputs = set()
     for t in tasks:
+        if t["id"] != f"T{t['number']}":
+            return False, f"{t['id']} has noncanonical format (expected T{t['number']})"
         if t["checked"]:
             return False, f"{t['id']} must start unchecked"
         if not t["description"].strip():
@@ -147,7 +148,6 @@ def validate_todo_tasks(tasks):
             if _is_reserved_control_path(rel):
                 return False, f"{t['id']} path targets a protected file: {rel}"
         if out:
-            # Normalize for uniqueness check
             _, _, norm_out = permissions.check_path_safety(out, "/dummy")
             if norm_out in seen_outputs:
                 return False, f"duplicate output path: {out}"
@@ -312,7 +312,7 @@ class WorkerAdapter:
         done_without_check = 0
         last_sig = None
         turn_repeat = 0
-        _read_tracker = {}  # path → (useful_count, last_hash)
+        _read_tracker = {}  # canonical_rel_path → (useful_count, last_hash)
 
         while time.monotonic() - session_start < hard_ceiling:
             try:
@@ -362,17 +362,15 @@ class WorkerAdapter:
                                     result = f"not a file: {cmd['path']}"
                                 else:
                                     result = _read(self.workspace, rel)
-                                    # Repeated identical READ is not progress
+                                    # Progress = first read of path or content change
                                     fhash = _hash_file(abs_path)
-                                    prev = _read_tracker.get(cmd["path"])
-                                    if prev and prev[0] > 0 and prev[1] == fhash:
-                                        pass  # not useful, repeat
-                                    else:
+                                    prev = _read_tracker.get(rel)
+                                    if not prev or prev[1] != fhash:
                                         useful = True
-                                    _read_tracker[cmd["path"]] = (1 if not prev else prev[0] + 1, fhash)
+                                    _read_tracker[rel] = (1 if not prev else prev[0] + 1, fhash)
                         except ValueError as e:
                             result = str(e)
-                        sig = f"READ {cmd['path']}|{result[:50]}"
+                        sig = f"READ {rel}|{result[:50]}"
                         if sig == last_sig:
                             turn_repeat += 1
                         else:
@@ -401,6 +399,12 @@ class WorkerAdapter:
 
                     if cmd["type"] == "WRITE_UNTERMINATED":
                         result = "error: WRITE must end with END WRITE on its own line"
+                        sig = f"WRITE_UNTERMINATED"
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
                         messages.append({"role": "user", "content": result})
                         continue
 

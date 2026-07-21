@@ -539,21 +539,39 @@ class TestRegression:
             assert os.path.exists(os.path.join(tmp, "docs/work/T2.md"))
 
     def test_checked_worker_survives_backend_error(self):
-        todo = "- [ ] T1 — Test\n"
-        responses = [
-            text_response(todo),
-            # Worker writes artifact and checkbox, then backend fails
-            text_response("WRITE docs/work/T1.md\ndata\nEND WRITE"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — Test\nEND WRITE\n\nDone"),
-        ]
-        backend = model.MockBackend(responses)
+        # Use a real init, then run Worker with a backend that crashes after checkbox
+        class CrashAfterCheck:
+            call_count = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_count += 1
+                if self.call_count == 1:
+                    return {"role": "assistant", "content": "WRITE docs/work/T1.md\ndata\nEND WRITE\nWRITE docs/todo.md\n- [x] T1 — Test\nEND WRITE\n", "tool_calls": None, "finish_reason": "stop"}
+                raise RuntimeError("simulated crash after checkbox")
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = config(tmp)
-            assert harness.init_project("test", cfg, backend=backend)["status"] == "success"
-            # succeeds: checked + done = normal submission
-            result = harness.run_worker_session(1, cfg, backend=backend)
-            assert result["status"] == "submitted"
-            assert result["termination"] == "normal"
+            cfg = config(tmp, worker_timeout=10, inactivity_timeout=10)
+            # Init with a normal backend
+            init_backend = model.MockBackend([text_response("- [ ] T1 — Test\n")])
+            assert harness.init_project("test", cfg, backend=init_backend)["status"] == "success"
+            # Run worker with crash backend
+            result = harness.run_worker_session(1, cfg, backend=CrashAfterCheck())
+            assert result["status"] == "submitted", f"expected submitted, got {result}"
+            assert result["termination"] == "error", f"expected error termination, got {result}"
+            assert os.path.exists(os.path.join(tmp, "docs/work/T1.md")), "artifact should survive"
+
+    def test_unchecked_worker_crash_rolls_back(self):
+        # Worker crashes before checking checkbox → rollback
+        class CrashBeforeCheck:
+            def run(self, messages, tools, max_tokens=None):
+                raise RuntimeError("early crash")
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
+            with open(os.path.join(tmp, "docs/todo.md"), "w") as f: f.write("- [ ] T1 — Test\n")
+            with open(os.path.join(tmp, "docs/worker.md"), "w") as f: f.write("# Worker\n")
+            from bid import vc
+            vc.VersionControl(tmp).init()
+            cfg = {"workspace": tmp, "max_tokens": 256, "worker_timeout": 5, "inactivity_timeout": 5, "repeat_action_limit": 3}
+            result = harness.run_worker_session(1, cfg, backend=CrashBeforeCheck())
+            assert result["status"] == "error", f"expected error, got {result}"
 
     def test_unterminated_write_rejected(self):
         cmds = adapter._parse_content_into_turns("WRITE x.txt\ncontent\nDone")
@@ -608,23 +626,63 @@ class TestRegression:
         valid, reason = adapter.validate_todo_tasks(tasks)
         assert not valid, f"should reject docs/reviews path: {reason}"
 
-    def test_stale_done_after_process_restart(self):
+    def test_stale_done_invalidated_by_hash_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
-            todo = "- [x] T1 — Test\n"
-            artifacts = {"docs/work/T1.md": "data"}
-            # Write a DONE status and completed hash, then mutate TODO
-            os.makedirs(os.path.join(tmp, "docs", "work"), exist_ok=True)
-            with open(os.path.join(tmp, "docs/todo.md"), "w") as f: f.write(todo)
-            with open(os.path.join(tmp, "docs/project-status.md"), "w") as f: f.write("# Project Status\n\nDONE\n")
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs/todo.md"), "w") as f: f.write("- [x] T1 — Test\n")
             with open(os.path.join(tmp, "docs/task.md"), "w") as f: f.write("# Task\n\nTest\n")
+            with open(os.path.join(tmp, "docs/project-status.md"), "w") as f: f.write("# Project Status\n\nDONE\n")
             with open(os.path.join(tmp, "docs/decisions.md"), "w") as f: f.write("# Decisions\n\n")
             harness.ensure_workspace(tmp)
-            for p, c in artifacts.items():
-                fp = os.path.join(tmp, p)
-                os.makedirs(os.path.dirname(fp), exist_ok=True)
-                with open(fp, "w") as f: f.write(c)
-            # No completed_hash file → DONE is invalid
-            assert not os.path.exists(os.path.join(tmp, harness._COMPLETED_HASH_FILE))
-            # run_project would see DONE but no hash → enters review instead of returning done
-            # (we can't easily run run_project here without mock, but the check is:
-            #  done_valid is False when hash file missing)
+            os.makedirs(os.path.join(tmp, "docs/work"))
+            with open(os.path.join(tmp, "docs/work/T1.md"), "w") as f: f.write("correct")
+            tasks = todo.parse_todo("- [x] T1 — Test\n")
+            correct_hash = harness._compute_plan_hash(tmp, tasks)
+            hash_path = os.path.join(tmp, "docs/.completed_hash")
+            with open(hash_path, "w") as f: f.write(correct_hash)
+            # Hash matches → completed
+            assert harness._is_completed(tmp, tasks)
+            # Mutate TODO → hash no longer matches
+            with open(os.path.join(tmp, "docs/todo.md"), "w") as f: f.write("- [x] T1 — Changed\n")
+            assert not harness._is_completed(tmp, tasks), "stale DONE should be invalid after TODO change"
+
+    def test_path_blocked_covers_all_control_paths(self):
+        assert permissions._path_blocked("docs/reviews")
+        assert permissions._path_blocked("docs/reviews/T1.md")
+        assert permissions._path_blocked("docs/.completed_hash")
+        assert permissions._path_blocked(".bid")
+        assert permissions._path_blocked(".bid/states/s0")
+        assert not permissions._path_blocked("docs/work/T1.md")
+        assert not permissions._path_blocked("docs/todo.md")
+
+    def test_rejects_T01_task_id(self):
+        assert not adapter.validate_todo_tasks(todo.parse_todo("- [ ] T01 — A\n"))[0]
+        assert adapter.validate_todo_tasks(todo.parse_todo("- [ ] T1 — A\n"))[0]
+
+    def test_rejects_normalized_dup_output(self):
+        bad = "- [ ] T1 — A\n  Output: docs/work/T1.md\n- [ ] T2 — B\n  Output: docs/work/../work/T1.md\n"
+        assert not adapter.validate_todo_tasks(todo.parse_todo(bad))[0]
+
+    def test_persisted_completion_resume(self):
+        """After completion, a second process sees DONE and returns done."""
+        todo_initial = "- [ ] T1 — First\n- [ ] T2 — Second\n"
+        responses = [
+            text_response(todo_initial),
+            text_response("WRITE docs/work/T1.md\none\nEND WRITE"),
+            text_response("WRITE docs/todo.md\n- [x] T1 — First\n- [ ] T2 — Second\nEND WRITE\n\nDone"),
+            text_response("WRITE docs/work/T2.md\ntwo\nEND WRITE"),
+            text_response("WRITE docs/todo.md\n- [x] T1 — First\n- [x] T2 — Second\nEND WRITE\n\nDone"),
+            text_response("ACCEPT\nReason: Good."),
+            text_response("ACCEPT\nReason: Good."),
+            text_response("COMPLETE\nReason: All done."),
+        ]
+        backend = model.MockBackend(responses)
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("test", cfg, backend=backend)["status"] == "success"
+            result = harness.run_project(cfg, backend=backend)
+            assert result["status"] == "done"
+            # Now simulate a process restart: create new backend, re-run
+            backend2 = model.MockBackend([])
+            result2 = harness.run_project(cfg, backend=backend2)
+            assert result2["status"] == "done", f"resume should return done: {result2}"
