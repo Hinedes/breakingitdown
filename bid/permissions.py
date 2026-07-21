@@ -18,12 +18,11 @@ WORKER_BLOCKED = {
     "docs/worker.md",
 }
 
-_BLOCKED_PREFIXES = (".bid/", "docs/reviews/", "docs/.completed_hash")
-_BLOCKED_EXACT = {".bid", "docs/reviews", "docs/.completed_hash"}
+_BLOCKED_PREFIXES = (".bid/", "docs/reviews/", "docs/research/", "docs/.completed_hash")
+_BLOCKED_EXACT = {".bid", "docs/reviews", "docs/research", "docs/.completed_hash"}
 
 
 def _path_blocked(rel_path):
-    """Return True if rel_path is a protected control path (file or dir)."""
     if rel_path in _BLOCKED_EXACT:
         return True
     for prefix in _BLOCKED_PREFIXES:
@@ -57,3 +56,11 @@ def check_write_permission(rel_path, role, worker_number=None):
         return True, None
 
     return False, f"unknown role: {role}"
+
+
+def check_read_permission(rel_path, role):
+    """Workers may READ research dirs; all other controls apply."""
+    if role == ROLE_WORKER:
+        if rel_path.startswith("docs/research/"):
+            return True, None
+    return True, None

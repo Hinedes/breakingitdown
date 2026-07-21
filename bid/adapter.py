@@ -250,10 +250,11 @@ class WorkerAdapter:
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
-        self._search_provider = search_provider or search_mod.MockSearchProvider()
-        self._search_cache = search_mod.SearchCache()
+        self._search_provider = search_provider or search_mod.create_provider(config)
+        self._search_cache = search_mod.SearchCache(self.workspace)
         self._search_count = 0
         self._search_limit = config.get("max_searches_per_worker", 10)
+        self._cache_hits = 0
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -300,10 +301,11 @@ class WorkerAdapter:
             f"\nTask T{self.task_number}: {task['description']}\n"
             f"Output file: {output_path}\n"
             f"{'Input files: ' + ', '.join(input_paths) if input_paths else ''}\n\n"
-            "Only use these commands:\n"
-            "  READ <path>     — read a file\n"
-            "  WRITE <path>    — write content; end with END WRITE on its own line\n"
-            f"  Done            — finish (after checking T{self.task_number} in docs/todo.md)\n\n"
+                    "Only use these commands:\n"
+                    "  READ <path>     — read a file\n"
+                    "  SEARCH <query>  — search for current information\n"
+                    "  WRITE <path>    — write content; end with END WRITE on its own line\n"
+                    f"  Done            — finish (after checking T{self.task_number} in docs/todo.md)\n\n"
             "Example:\n"
             f"WRITE {output_path}\n"
             "Your artifact content here.\n"
@@ -356,7 +358,7 @@ class WorkerAdapter:
                 last_sig = sig
                 messages.append({
                     "role": "user",
-                    "content": "Use READ <path>, WRITE <path>\\n<content>\\nEND WRITE, or Done."
+                    "content": "Use READ <path>, SEARCH <query>, WRITE <path>\\n<content>\\nEND WRITE, or Done."
                 })
             else:
                 for cmd in commands:
@@ -397,16 +399,20 @@ class WorkerAdapter:
                         if self._search_count >= self._search_limit:
                             result = f"error: search limit ({self._search_limit}) reached"
                         else:
-                            self._search_count += 1
-                            path, n, err = search_mod.execute_search(
+                            path, n, err, is_cache = search_mod.execute_search(
                                 self.workspace, self.task_number, cmd["query"],
                                 self._search_cache, self._search_provider,
                             )
                             if err:
-                                result = f"error: search failed: {err}"
+                                result = f"error: search failed: {err}. Try a different query."
                             else:
-                                result = f"Search completed. {n} source(s) saved to {os.path.relpath(path, self.workspace)}. READ that file to continue."
-                                useful = True
+                                if is_cache:
+                                    self._cache_hits += 1
+                                    result = f"Search cache hit. Evidence at {path}. READ that file."
+                                else:
+                                    self._search_count += 1
+                                    result = f"Search completed. {n} source(s) saved to {path}. READ that file."
+                                    useful = True
                         sig = f"SEARCH {cmd['query']}|{result[:50]}"
                         if sig == last_sig:
                             turn_repeat += 1
@@ -611,12 +617,35 @@ class ArtifactReviewAdapter:
         if not artifact_content.strip():
             return self._make_result("REWORK", "artifact is empty")
 
+        # Collect research files for this task
+        research_context = ""
+        research_dir = search_mod._research_dir(self.workspace, self.task_number)
+        if os.path.isdir(research_dir):
+            research_files = sorted(os.listdir(research_dir))
+            parts = ["", "## Supporting research", ""]
+            for fname in research_files:
+                fpath = os.path.join(research_dir, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        with open(fpath, encoding="utf-8") as fh:
+                            content = fh.read()
+                        parts.append(f"### {fname}")
+                        parts.append(content[:500])
+                        parts.append("")
+                    except OSError:
+                        pass
+            if len(parts) > 3:
+                research_context = "\n".join(parts)
+
         prompt = (
             "# Review Assignment\n\n"
             f"Task:\n{task['description']}\n\n"
             f"Required output:\n{output_path}\n\n"
-            f"Artifact:\n{artifact_content}\n\n"
-            "Judge only whether this artifact materially fulfills its task.\n\n"
+            f"Artifact:\n{artifact_content}\n"
+            f"{research_context}\n"
+            "Judge only whether this artifact materially fulfills its task.\n"
+            "If the task required research, verify that factual claims cite "
+            "specific sources from the supporting research. "
             "Return exactly one of:\n\n"
             "ACCEPT\n"
             "Reason: ...\n\n"

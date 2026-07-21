@@ -36,9 +36,14 @@ def test_manager_write_denied():
 
 
 def test_worker_can_write_artifacts():
-    for path in ("docs/research/foo.md", "src/main.py", "outputs/results.txt"):
+    for path in ("src/main.py", "outputs/results.txt", "docs/work/T1.md"):
         allowed, err = permissions.check_write_permission(path, permissions.ROLE_WORKER, 1)
-        assert allowed
+        assert allowed, f"{path} should be writable: {err}"
+
+def test_worker_cannot_write_research():
+    for path in ("docs/research", "docs/research/T1/search-001.md"):
+        allowed, err = permissions.check_write_permission(path, permissions.ROLE_WORKER, 1)
+        assert not allowed, f"{path} should be blocked"
 
 
 def test_worker_can_request_todo_write_for_content_validation():

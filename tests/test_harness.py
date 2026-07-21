@@ -698,19 +698,17 @@ class TestSearch:
     def test_cache_identical_queries(self):
         from bid.search import SearchCache, execute_search, MockSearchProvider, SearchResult
         import tempfile, os
-        cache = SearchCache()
-        provider = MockSearchProvider({
-            "test query": [SearchResult("Result", "http://x.com", "Test summary", "Test extract")]
-        })
         with tempfile.TemporaryDirectory() as tmp:
-            p1, n1, _ = execute_search(tmp, 1, "test query", cache, provider)
+            cache = SearchCache(tmp)
+            provider = MockSearchProvider({
+                "test query": [SearchResult("Result", "http://x.com", "Test summary", "Test extract")]
+            })
+            p1, n1, _, _ = execute_search(tmp, 1, "test query", cache, provider)
             assert n1 == 1
             assert cache.get("test query") is not None
-            # Second call should use cache
-            p2, n2, _ = execute_search(tmp, 1, "test query", cache, provider)
+            p2, n2, _, is_cache = execute_search(tmp, 1, "test query", cache, provider)
+            assert is_cache
             assert n2 == 1
-            with open(p2) as f:
-                assert "cache" in f.read()
 
     def test_search_in_worker_adapter(self):
         from bid.search import MockSearchProvider, SearchResult
@@ -771,3 +769,47 @@ class TestSearch:
             result = adapter.run(backend)
             # Should return with stalled status (searches 1 and 2 succeed, 3 hits limit)
             assert result["status"] in ("stalled", "timeout")
+
+    def test_worker_cannot_write_research(self):
+        from bid import permissions
+        assert not permissions.check_write_permission("docs/research/T1/search-001.md", permissions.ROLE_WORKER, 1)[0]
+        assert not permissions.check_write_permission("docs/research", permissions.ROLE_WORKER, 1)[0]
+
+    def test_worker_can_read_research(self):
+        from bid import permissions
+        ok, _ = permissions.check_read_permission("docs/research/T1/search-001.md", permissions.ROLE_WORKER)
+        assert ok
+
+    def test_cache_survives_new_adapter(self):
+        """Persistent cache should survive a new WorkerAdapter instance."""
+        from bid.search import SearchCache, MockSearchProvider, SearchResult, execute_search
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = SearchCache(tmp)
+            provider = MockSearchProvider({"python version": [SearchResult("Py3", "https://py.org", "Python 3")]})
+            p1, n1, _, _ = execute_search(tmp, 1, "python version", cache, provider)
+            assert n1 == 1
+            cache2 = SearchCache(tmp)
+            cached = cache2.get("python version")
+            assert cached is not None, "cache should persist across instances"
+
+    def test_url_validation_rejects_non_http(self):
+        from bid.search import SearchResult
+        r = SearchResult("Test", "ftp://bad.com", "summary")
+        assert r.url == "", f"non-http URL should be rejected: {r.url}"
+        r2 = SearchResult("Test", "https://good.com", "summary")
+        assert r2.url == "https://good.com"
+
+    def test_search_field_bounds(self):
+        from bid.search import SearchResult
+        long_title = "x" * 500
+        r = SearchResult(long_title, "https://example.com", "summary")
+        assert len(r.title) <= 200, f"title should be bounded: {len(r.title)}"
+
+    def test_mock_provider_not_default(self):
+        """Default provider should not be MockSearchProvider."""
+        from bid import search as search_mod
+        import tempfile
+        cfg = {}
+        provider = search_mod.create_provider(cfg)
+        assert not isinstance(provider, search_mod.MockSearchProvider), "mock should not be default"
