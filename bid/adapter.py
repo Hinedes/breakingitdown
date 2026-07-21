@@ -4,6 +4,7 @@ import re
 import time
 
 from . import permissions
+from . import search as search_mod
 from . import todo as todo_mod
 from .observer import Observer
 
@@ -64,6 +65,12 @@ def _parse_content_into_turns(content):
             i += 1
             continue
 
+        if stripped.startswith("SEARCH "):
+            query = stripped[7:].strip()
+            commands.append({"type": "SEARCH", "query": query})
+            i += 1
+            continue
+
         if stripped.startswith("READ "):
             path = stripped[5:].strip()
             commands.append({"type": "READ", "path": path})
@@ -114,6 +121,9 @@ def _build_scoped_manifest(workspace, task_number, output_path, input_paths):
         out_parent = os.path.dirname(output_path)
         if out_parent:
             lines.append(f"- {out_parent}/ (output directory)")
+    research = search_mod._research_dir(workspace, task_number)
+    if os.path.isdir(research):
+        lines.append(f"- docs/research/T{task_number}/")
     return "\n".join(lines) + "\n"
 
 
@@ -236,10 +246,14 @@ class ManagerInitAdapter:
 class WorkerAdapter:
     MAX_SOFT_RESETS = 3
 
-    def __init__(self, config, task_number):
+    def __init__(self, config, task_number, search_provider=None):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
+        self._search_provider = search_provider or search_mod.MockSearchProvider()
+        self._search_cache = search_mod.SearchCache()
+        self._search_count = 0
+        self._search_limit = config.get("max_searches_per_worker", 10)
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -263,6 +277,7 @@ class WorkerAdapter:
                     f"{'Input files: ' + ', '.join(input_paths) if input_paths else ''}\n\n"
                     "Only use these commands:\n"
                     "  READ <path>     — read a file\n"
+                    "  SEARCH <query>  — search for current information\n"
                     "  WRITE <path>    — write content; end with END WRITE on its own line\n"
                     f"  Done            — finish (after checking T{self.task_number} in docs/todo.md)\n\n"
                     "Example:\n"
@@ -362,7 +377,6 @@ class WorkerAdapter:
                                     result = f"not a file: {cmd['path']}"
                                 else:
                                     result = _read(self.workspace, rel)
-                                    # Progress = first read of path or content change
                                     fhash = _hash_file(abs_path)
                                     prev = _read_tracker.get(rel)
                                     if not prev or prev[1] != fhash:
@@ -371,6 +385,29 @@ class WorkerAdapter:
                         except ValueError as e:
                             result = str(e)
                         sig = f"READ {rel}|{result[:50]}"
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        messages.append({"role": "user", "content": result})
+                        continue
+
+                    if cmd["type"] == "SEARCH":
+                        if self._search_count >= self._search_limit:
+                            result = f"error: search limit ({self._search_limit}) reached"
+                        else:
+                            self._search_count += 1
+                            path, n, err = search_mod.execute_search(
+                                self.workspace, self.task_number, cmd["query"],
+                                self._search_cache, self._search_provider,
+                            )
+                            if err:
+                                result = f"error: search failed: {err}"
+                            else:
+                                result = f"Search completed. {n} source(s) saved to {os.path.relpath(path, self.workspace)}. READ that file to continue."
+                                useful = True
+                        sig = f"SEARCH {cmd['query']}|{result[:50]}"
                         if sig == last_sig:
                             turn_repeat += 1
                         else:

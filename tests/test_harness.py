@@ -686,3 +686,88 @@ class TestRegression:
             backend2 = model.MockBackend([])
             result2 = harness.run_project(cfg, backend=backend2)
             assert result2["status"] == "done", f"resume should return done: {result2}"
+
+
+class TestSearch:
+    def test_parse_search_command(self):
+        cmds = adapter._parse_content_into_turns("SEARCH Python testing\nDone")
+        assert len(cmds) == 2
+        assert cmds[0]["type"] == "SEARCH"
+        assert cmds[0]["query"] == "Python testing"
+
+    def test_cache_identical_queries(self):
+        from bid.search import SearchCache, execute_search, MockSearchProvider, SearchResult
+        import tempfile, os
+        cache = SearchCache()
+        provider = MockSearchProvider({
+            "test query": [SearchResult("Result", "http://x.com", "Test summary", "Test extract")]
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            p1, n1, _ = execute_search(tmp, 1, "test query", cache, provider)
+            assert n1 == 1
+            assert cache.get("test query") is not None
+            # Second call should use cache
+            p2, n2, _ = execute_search(tmp, 1, "test query", cache, provider)
+            assert n2 == 1
+            with open(p2) as f:
+                assert "cache" in f.read()
+
+    def test_search_in_worker_adapter(self):
+        from bid.search import MockSearchProvider, SearchResult
+        todo_initial = "- [ ] T1 — Research topic\n"
+        responses = [
+            text_response(todo_initial),
+            text_response("SEARCH current Python version\n"),
+            text_response("READ docs/research/T1/search-001.md"),
+            text_response("WRITE docs/work/T1.md\nPython 3.12\nEND WRITE"),
+            text_response("WRITE docs/todo.md\n- [x] T1 — Research topic\nEND WRITE\n\nDone"),
+        ]
+        backend = model.MockBackend(responses)
+        from bid.search import MockSearchProvider, SearchResult
+        provider = MockSearchProvider({
+            "current python version": [SearchResult("Python 3.12", "https://python.org", "Python 3.12 released", "Python 3.12 features")]
+        })
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp, worker_timeout=10, inactivity_timeout=10)
+            assert harness.init_project("test", cfg, backend=backend)["status"] == "success"
+            # Run worker with search provider
+            from bid.adapter import WorkerAdapter
+            adapter = WorkerAdapter(cfg, 1, search_provider=provider)
+            result = adapter.run(backend)
+            assert result["status"] == "done", f"worker should complete: {result}"
+            # Verify search artifact was created
+            research_file = os.path.join(tmp, "docs", "research", "T1", "search-001.md")
+            assert os.path.exists(research_file), f"search result should exist: {research_file}"
+            with open(research_file) as f:
+                content = f.read()
+                assert "Python 3.12" in content
+            # Verify work artifact was created
+            work_file = os.path.join(tmp, "docs/work/T1.md")
+            assert os.path.exists(work_file)
+            with open(work_file) as f:
+                assert "Python 3.12" in f.read()
+
+    def test_search_limit_enforced(self):
+        from bid.search import MockSearchProvider, SearchResult
+        provider = MockSearchProvider()
+        cfg_limited = {"max_searches_per_worker": 2}
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs/todo.md"), "w") as f: f.write("- [ ] T1 — Test\n")
+            with open(os.path.join(tmp, "docs/worker.md"), "w") as f: f.write("# Worker\n")
+            from bid import vc
+            vc.VersionControl(tmp).init()
+            from bid.adapter import WorkerAdapter
+            cfg = {"workspace": tmp, "max_tokens": 256, "worker_timeout": 5, "inactivity_timeout": 5,
+                   "repeat_action_limit": 10, "max_searches_per_worker": 2}
+            responses = [
+                text_response("SEARCH query 1"),
+                text_response("SEARCH query 2"),
+                text_response("SEARCH query 3"),
+            ]
+            backend = model.MockBackend(responses)
+            adapter = WorkerAdapter(cfg, 1, search_provider=provider)
+            result = adapter.run(backend)
+            # Should return with stalled status (searches 1 and 2 succeed, 3 hits limit)
+            assert result["status"] in ("stalled", "timeout")
