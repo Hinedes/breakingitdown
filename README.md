@@ -71,7 +71,7 @@ Initialization uses a sibling journal and backup so an interrupted reinitializat
 ## Quick start
 
 ```bash
-python -m pip install -e '.[dev]'
+python -m pip install -e '.[test]'
 
 ./llama-server -m smollm3-3b-q4_k_m.gguf --port 8080
 
