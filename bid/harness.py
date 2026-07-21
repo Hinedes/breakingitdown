@@ -126,6 +126,31 @@ def _pid_is_alive(pid):
     return True
 
 
+def _read_lock_metadata(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            value = json.load(handle)
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _run_lock_is_stale(path):
+    metadata = _read_lock_metadata(path)
+    pid = metadata.get("pid")
+    if isinstance(pid, int) and pid > 0:
+        return not _pid_is_alive(pid)
+    try:
+        return time.time() - os.path.getmtime(path) > _RUN_LOCK_STALE
+    except OSError:
+        return True
+
+
+def _existing_run_is_live(workspace):
+    path = os.path.join(workspace, ".bid", "run.lock")
+    return os.path.exists(path) and not _run_lock_is_stale(path)
+
+
 @contextmanager
 def _project_run_lock(workspace):
     bid_dir = os.path.join(workspace, ".bid")
@@ -142,15 +167,7 @@ def _project_run_lock(workspace):
                 os.fsync(handle.fileno())
             break
         except FileExistsError:
-            stale = False
-            try:
-                age = time.time() - os.path.getmtime(path)
-                with open(path, encoding="utf-8") as handle:
-                    metadata = json.load(handle)
-                stale = age > _RUN_LOCK_STALE or not _pid_is_alive(metadata.get("pid"))
-            except (OSError, json.JSONDecodeError):
-                stale = True
-            if stale:
+            if _run_lock_is_stale(path):
                 try:
                     os.remove(path)
                 except OSError:
@@ -163,16 +180,11 @@ def _project_run_lock(workspace):
         yield
     finally:
         try:
-            with open(path, encoding="utf-8") as handle:
-                metadata = json.load(handle)
+            metadata = _read_lock_metadata(path)
             if metadata.get("token") == token:
                 os.remove(path)
-        except (OSError, json.JSONDecodeError):
+        except OSError:
             pass
-
-
-def _hash_bytes(data):
-    return hashlib.sha256(data).hexdigest()
 
 
 def _safe_workspace_file(workspace, rel_path):
@@ -190,7 +202,6 @@ _COMPLETED_HASH_FILE = "docs/.completed_hash"
 
 
 def _compute_plan_hash(workspace, tasks):
-    """Hash TODO, declared artifacts, and task-scoped research evidence."""
     digest = hashlib.sha256()
     todo_path = os.path.join(workspace, "docs", "todo.md")
     try:
@@ -242,8 +253,7 @@ def run_worker_session(number, config, backend=None):
     interrupted = False
 
     try:
-        worker_adapter = adapter_mod.WorkerAdapter(config, number)
-        result = worker_adapter.run(backend or create_backend(config))
+        result = adapter_mod.WorkerAdapter(config, number).run(backend or create_backend(config))
     except KeyboardInterrupt:
         interrupted = True
         result = {"status": "interrupted", "reason": "interrupted by user"}
@@ -285,6 +295,8 @@ def init_project(user_task, config, backend=None):
     parent = os.path.dirname(workspace)
     os.makedirs(parent, exist_ok=True)
     existed = os.path.exists(workspace)
+    if existed and _existing_run_is_live(workspace):
+        return {"status": "error", "reason": "cannot initialize while BID is running this workspace"}
     backup = None
 
     if existed:
