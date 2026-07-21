@@ -123,9 +123,9 @@ def _render_search_result(query, results, provider_name, timestamp):
 
 def _write_text_atomic(path, content):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=".tmp-", dir=os.path.dirname(path))
+    descriptor, temporary = tempfile.mkstemp(prefix=".tmp-", dir=os.path.dirname(path))
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
@@ -149,22 +149,57 @@ class SearchCache:
         self._lock_path = os.path.join(self._dir, "lock")
         self._index = self._load_index()
 
+    @staticmethod
+    def _pid_is_alive(pid):
+        if not isinstance(pid, int) or pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+        return True
+
+    def _read_lock(self):
+        try:
+            with open(self._lock_path, encoding="utf-8") as handle:
+                value = json.load(handle)
+            return value if isinstance(value, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _lock_is_stale(self):
+        metadata = self._read_lock()
+        pid = metadata.get("pid")
+        if isinstance(pid, int) and pid > 0:
+            return not self._pid_is_alive(pid)
+        try:
+            return time.time() - os.path.getmtime(self._lock_path) > _CACHE_LOCK_STALE
+        except OSError:
+            return True
+
     @contextmanager
     def _lock(self):
         deadline = time.monotonic() + _CACHE_LOCK_TIMEOUT
+        token = f"{os.getpid()}-{time.time_ns()}"
+        payload = json.dumps({"pid": os.getpid(), "created": time.time(), "token": token})
         while True:
             try:
                 descriptor = os.open(self._lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                with os.fdopen(descriptor, "w", encoding="ascii") as handle:
-                    handle.write(f"{os.getpid()} {time.time()}\n")
+                with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
                 break
             except FileExistsError:
-                try:
-                    age = time.time() - os.path.getmtime(self._lock_path)
-                    if age > _CACHE_LOCK_STALE:
+                if self._lock_is_stale():
+                    try:
                         os.remove(self._lock_path)
-                        continue
-                except OSError:
+                    except OSError:
+                        pass
                     continue
                 if time.monotonic() >= deadline:
                     raise RuntimeError("search cache lock timeout")
@@ -173,7 +208,9 @@ class SearchCache:
             yield
         finally:
             try:
-                os.remove(self._lock_path)
+                metadata = self._read_lock()
+                if metadata.get("token") == token:
+                    os.remove(self._lock_path)
             except OSError:
                 pass
 
@@ -215,7 +252,7 @@ class SearchCache:
             self._index.pop(query_hash, None)
             self._save_index_atomic()
             return query_hash, None
-        if before != paths or "path" in entry:
+        if before != paths:
             self._save_index_atomic()
         return query_hash, entry
 
@@ -246,7 +283,6 @@ class SearchCache:
         return rel_path
 
     def materialize(self, query, task_number):
-        """Return a task-local evidence path for a cached query."""
         with self._lock():
             query_hash, entry = self._entry_for_query_locked(query)
             if entry is None:
@@ -305,7 +341,6 @@ class SearchCache:
             return rel_path
 
     def put(self, query, results, path, provider_name="unknown"):
-        """Compatibility API for callers that already wrote an evidence file."""
         if _safe_evidence_path(self.workspace, path, must_exist=True) is None:
             raise ValueError("cache path is not a valid evidence file")
         with self._lock():
@@ -443,7 +478,6 @@ def create_provider(config):
 
 
 def execute_search(workspace, task_number, query, cache, provider, max_results=5):
-    """Return (task-local evidence path, result count, error, cache hit)."""
     if not _canonical_query(query):
         return None, 0, "empty search query", False
     cached = cache.materialize(query, task_number)
@@ -476,7 +510,6 @@ def execute_search(workspace, task_number, query, cache, provider, max_results=5
 
 
 def has_citations(artifact_text, research_dir):
-    """Require a citation to an existing file or URL in this task's evidence."""
     if not artifact_text or not os.path.isdir(research_dir):
         return False
     task_name = os.path.basename(os.path.normpath(research_dir))
