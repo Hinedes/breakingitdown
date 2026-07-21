@@ -32,6 +32,8 @@ def _path_blocked(rel_path):
 
 
 def check_path_safety(path, workspace_root):
+    if not isinstance(path, str) or not path.strip():
+        return False, "path required", None
     abs_path = os.path.realpath(os.path.join(workspace_root, path))
     abs_workspace = os.path.realpath(workspace_root)
     if not abs_path.startswith(abs_workspace + os.sep) and abs_path != abs_workspace:
@@ -59,8 +61,11 @@ def check_write_permission(rel_path, role, worker_number=None):
 
 
 def check_read_permission(rel_path, role):
-    """Workers may READ research dirs; all other controls apply."""
     if role == ROLE_WORKER:
-        if rel_path.startswith("docs/research/"):
-            return True, None
+        if rel_path == ".bid" or rel_path.startswith(".bid/"):
+            return False, "worker cannot read VC control state"
+        if rel_path == "docs/reviews" or rel_path.startswith("docs/reviews/"):
+            return False, "worker cannot read Manager review state"
+        if rel_path == "docs/.completed_hash":
+            return False, "worker cannot read completion control state"
     return True, None
