@@ -126,6 +126,14 @@ def _pid_is_alive(pid):
     return True
 
 
+def _workspace_lock_path(workspace):
+    real = os.path.realpath(workspace)
+    parent = os.path.dirname(real)
+    name = os.path.basename(real) or "workspace"
+    identity = hashlib.sha256(real.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(parent, f".{name}.bid-run-{identity}.lock")
+
+
 def _read_lock_metadata(path):
     try:
         with open(path, encoding="utf-8") as handle:
@@ -146,16 +154,22 @@ def _run_lock_is_stale(path):
         return True
 
 
-def _existing_run_is_live(workspace):
+def _legacy_run_lock_is_live(workspace):
     path = os.path.join(workspace, ".bid", "run.lock")
     return os.path.exists(path) and not _run_lock_is_stale(path)
 
 
+def _existing_run_is_live(workspace):
+    stable = _workspace_lock_path(workspace)
+    return (
+        os.path.exists(stable) and not _run_lock_is_stale(stable)
+    ) or _legacy_run_lock_is_live(workspace)
+
+
 @contextmanager
 def _project_run_lock(workspace):
-    bid_dir = os.path.join(workspace, ".bid")
-    os.makedirs(bid_dir, exist_ok=True)
-    path = os.path.join(bid_dir, "run.lock")
+    path = _workspace_lock_path(workspace)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     deadline = time.monotonic() + _RUN_LOCK_TIMEOUT
     token = f"{os.getpid()}-{time.time_ns()}"
     while True:
@@ -223,7 +237,7 @@ def _compute_plan_hash(workspace, tasks):
         research_dir = os.path.join(workspace, "docs", "research", f"T{task['number']}")
         if os.path.isdir(research_dir):
             for name in sorted(os.listdir(research_dir)):
-                if not name.startswith("search-") or not name.endswith(".md"):
+                if not re.fullmatch(r"search-\d+\.md", name):
                     continue
                 path = os.path.join(research_dir, name)
                 if not os.path.isfile(path):
@@ -241,8 +255,10 @@ def _is_completed(workspace, tasks):
     hash_path = os.path.join(workspace, _COMPLETED_HASH_FILE)
     if not os.path.isfile(hash_path):
         return False
-    stored = read_file_content(hash_path).strip()
-    return hmac.compare_digest(stored, _compute_plan_hash(workspace, tasks))
+    return hmac.compare_digest(
+        read_file_content(hash_path).strip(),
+        _compute_plan_hash(workspace, tasks),
+    )
 
 
 def run_worker_session(number, config, backend=None):
@@ -292,11 +308,20 @@ def run_worker_session(number, config, backend=None):
 
 def init_project(user_task, config, backend=None):
     workspace = os.path.realpath(config["workspace"])
+    if _legacy_run_lock_is_live(workspace):
+        return {"status": "error", "reason": "cannot initialize while BID is running this workspace"}
+    try:
+        with _project_run_lock(workspace):
+            return _init_project_locked(user_task, config, backend)
+    except RuntimeError as exc:
+        return {"status": "error", "reason": str(exc)}
+
+
+def _init_project_locked(user_task, config, backend=None):
+    workspace = os.path.realpath(config["workspace"])
     parent = os.path.dirname(workspace)
     os.makedirs(parent, exist_ok=True)
     existed = os.path.exists(workspace)
-    if existed and _existing_run_is_live(workspace):
-        return {"status": "error", "reason": "cannot initialize while BID is running this workspace"}
     backup = None
 
     if existed:
@@ -333,8 +358,8 @@ def init_project(user_task, config, backend=None):
 
 def run_project(config, backend=None):
     workspace = config["workspace"]
-    ensure_workspace(workspace)
     with _project_run_lock(workspace):
+        ensure_workspace(workspace)
         return _run_project_locked(config, backend or create_backend(config))
 
 
