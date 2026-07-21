@@ -6,10 +6,15 @@ _META_RE = re.compile(r'^\s{2,}(Output|Inputs)\s*:\s*(.*)')
 _META_KEY_MAP = {"Output": "output", "Inputs": "inputs"}
 
 
+def _norm(text):
+    """Normalize \r\n to \n."""
+    return text.replace("\r\n", "\n") if text else text
+
+
 def parse_todo(text):
     tasks = []
     current_task = None
-    for line in text.split('\n'):
+    for line in _norm(text).split('\n'):
         match = re.match(r'^\s*[-*]\s+\[([ x])\]\s+(T\d*)\b\s*(.*)', line)
         if match and match.group(2) != 'T':
             if current_task:
@@ -76,8 +81,8 @@ def set_task_checked(text, task_number, checked=True):
 
 def validate_worker_todo_update(old_text, new_text, worker_number):
     """Allow a Worker to change only its own checkbox, in either direction."""
-    old_lines = old_text.splitlines()
-    new_lines = new_text.splitlines()
+    old_lines = _norm(old_text).splitlines()
+    new_lines = _norm(new_text).splitlines()
     if len(old_lines) != len(new_lines):
         return False, "worker may not add or remove TODO lines"
 

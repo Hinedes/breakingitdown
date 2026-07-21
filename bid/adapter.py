@@ -166,10 +166,11 @@ def validate_todo_tasks(tasks):
 
 
 def _is_reserved_control_path(rel):
-    parts = rel.split("/")
-    if ".bid" in parts:
+    if rel == ".bid" or rel.startswith(".bid/"):
         return True
-    if "docs/reviews" in rel or rel.startswith("docs/reviews/"):
+    if rel == "docs/reviews" or rel.startswith("docs/reviews/"):
+        return True
+    if rel == "docs/.completed_hash":
         return True
     if rel in ("docs/task.md", "docs/todo.md", "docs/project-status.md", "docs/decisions.md",
                "docs/manager.md", "docs/worker.md"):
@@ -441,7 +442,7 @@ class WorkerAdapter:
                         continue
 
                     if cmd["type"] == "WRITE_UNTERMINATED":
-                        result = "error: WRITE must end with END WRITE on its own line"
+                        result = f"error: WRITE {cmd['path']} must end with END WRITE on its own line"
                         sig = f"WRITE_UNTERMINATED"
                         if sig == last_sig:
                             turn_repeat += 1
@@ -810,34 +811,3 @@ class CompletionReviewAdapter:
                 return None
             return {"verdict": "MISSING", "missing": missing}
         return None
-
-
-# ── Legacy helpers (kept for backward compat, not used by scheduler) ──
-
-def _find_last_task_line(todo_text):
-    lines = todo_text.split("\n")
-    for i in range(len(lines) - 1, -1, -1):
-        if re.match(r"^\s*[-*]\s+\[[ x]\]\s+T\d+\b", lines[i]):
-            return i
-    return -1
-
-
-def _collect_artifact_summaries(workspace, tasks):
-    lines = ["## Artifacts", ""]
-    for t in tasks:
-        out, _ = todo_mod.get_task_metadata(tasks, t["number"])
-        try:
-            path = _safe_artifact_path(workspace, out)
-        except ValueError:
-            continue
-        if os.path.exists(path) and os.path.isfile(path):
-            try:
-                with open(path, encoding="utf-8") as f:
-                    body = f.read()
-                preview = body[:150].replace("\n", " ")
-                lines.append(f"### T{t['number']} — {out} ({len(body)}b)")
-                lines.append(f"{preview}")
-                lines.append("")
-            except OSError:
-                pass
-    return "\n".join(lines) if len(lines) > 2 else ""

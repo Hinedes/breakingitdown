@@ -18,16 +18,16 @@ WORKER_BLOCKED = {
     "docs/worker.md",
 }
 
-_BLOCKED_PREFIXES = (".bid/", "docs/reviews/", "docs/research/", "docs/.completed_hash")
-_BLOCKED_EXACT = {".bid", "docs/reviews", "docs/research", "docs/.completed_hash"}
-
 
 def _path_blocked(rel_path):
-    if rel_path in _BLOCKED_EXACT:
+    if rel_path == ".bid" or rel_path.startswith(".bid/"):
         return True
-    for prefix in _BLOCKED_PREFIXES:
-        if rel_path.startswith(prefix):
-            return True
+    if rel_path == "docs/reviews" or rel_path.startswith("docs/reviews/"):
+        return True
+    if rel_path == "docs/research" or rel_path.startswith("docs/research/"):
+        return True
+    if rel_path == "docs/.completed_hash":
+        return True
     return False
 
 

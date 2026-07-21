@@ -44,6 +44,19 @@ You have one task.
 """
 
 
+def _policy_content(name):
+    """Return policy from prompts/ directory, falling back to builtins."""
+    path = os.path.join(PROMPTS_DIR, f"{name}.md")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    if name == "manager":
+        return MANAGER_INSTRUCTIONS
+    if name == "worker":
+        return WORKER_INSTRUCTIONS
+    return ""
+
+
 def get_config():
     return {
         "endpoint": os.environ.get("BID_MODEL_ENDPOINT", "http://127.0.0.1:8080/v1/chat/completions"),
@@ -95,8 +108,8 @@ def write_file_content(path, content):
 def ensure_workspace(workspace):
     docs = os.path.join(workspace, "docs")
     os.makedirs(docs, exist_ok=True)
-    write_file_content(os.path.join(docs, "manager.md"), MANAGER_INSTRUCTIONS)
-    write_file_content(os.path.join(docs, "worker.md"), WORKER_INSTRUCTIONS)
+    write_file_content(os.path.join(docs, "manager.md"), _policy_content("manager"))
+    write_file_content(os.path.join(docs, "worker.md"), _policy_content("worker"))
 
 
 def _todo_hash(text):
@@ -143,7 +156,7 @@ def run_worker_session(number, config, backend=None):
         worker_adapter = adapter_mod.WorkerAdapter(config, number)
         b = backend or create_backend(config)
         result = worker_adapter.run(b)
-    except BaseException as exc:
+    except Exception as exc:
         result = {"status": "error", "reason": str(exc)}
 
     checked = Observer(workspace, number).task_is_checked()
@@ -155,7 +168,7 @@ def run_worker_session(number, config, backend=None):
                 f"Worker {number}",
                 f"T{number} submitted. Termination: {termination}.",
             )
-        except BaseException:
+        except Exception:
             if base_state:
                 vc_system.restore(base_state)
             return {"status": "error", "reason": "vc save failed after checked worker"}
@@ -169,7 +182,7 @@ def run_worker_session(number, config, backend=None):
     if base_state:
         try:
             vc_system.restore(base_state)
-        except BaseException as exc:
+        except Exception as exc:
             return {"status": "error", "reason": f"rollback failed: {exc}"}
     return {
         "status": "error",
@@ -204,7 +217,7 @@ def init_project(user_task, config, backend=None):
         adp = adapter_mod.ManagerInitAdapter(config)
         b = backend or create_backend(config)
         result = adp.run(b)
-    except BaseException as exc:
+    except Exception as exc:
         # Restore backup
         if ws_exists:
             shutil.rmtree(workspace, ignore_errors=True)
@@ -215,7 +228,7 @@ def init_project(user_task, config, backend=None):
     if result["status"] == "success" and tasks:
         try:
             state = vc_system.save_state("Manager (init)", "Project initialized")
-        except BaseException as exc:
+        except Exception as exc:
             if ws_exists:
                 shutil.rmtree(workspace, ignore_errors=True)
                 os.rename(backup_dir, workspace)
@@ -254,7 +267,7 @@ def run_project(config, backend=None):
             print(f"Worker {number}...")
             try:
                 result = run_worker_session(number, config, backend=backend)
-            except BaseException as exc:
+            except Exception as exc:
                 return {"status": "error", "reason": f"Worker {number} exception: {exc}"}
             if result["status"] != "submitted":
                 print(f"Worker {number} failed: {result.get('reason', 'unknown')}")
@@ -271,7 +284,7 @@ def run_project(config, backend=None):
             for task in tasks:
                 a_review = adapter_mod.ArtifactReviewAdapter(config, task["number"])
                 reviews.append(a_review.run(backend))
-        except BaseException as exc:
+        except Exception as exc:
             if base_state:
                 vc_system.restore(base_state)
             return {"status": "error", "reason": f"review exception: {exc}"}
@@ -296,7 +309,7 @@ def run_project(config, backend=None):
             try:
                 write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
                 vc_system.save_state("Review", f"reopened {[r_item.get('task_number') for r_item in rework]}")
-            except BaseException:
+            except Exception:
                 if base_state:
                     vc_system.restore(base_state)
                 return {"status": "error", "reason": "reopen+save failed"}
@@ -307,7 +320,7 @@ def run_project(config, backend=None):
         try:
             completion = adapter_mod.CompletionReviewAdapter(config)
             c_result = completion.run(backend)
-        except BaseException as exc:
+        except Exception as exc:
             if base_state:
                 vc_system.restore(base_state)
             return {"status": "error", "reason": f"completion review exception: {exc}"}
@@ -338,7 +351,7 @@ def run_project(config, backend=None):
             try:
                 write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
                 vc_system.save_state("Review", f"added {len(missing)} missing tasks")
-            except BaseException:
+            except Exception:
                 if base_state:
                     vc_system.restore(base_state)
                 return {"status": "error", "reason": "missing-add+save failed"}
@@ -352,7 +365,7 @@ def run_project(config, backend=None):
                 write_file_content(os.path.join(workspace, "docs/project-status.md"),
                                     "# Project Status\n\nDONE\n")
                 vc_system.save_state("Review", "Project completed")
-            except BaseException:
+            except Exception:
                 if base_state:
                     vc_system.restore(base_state)
                 return {"status": "error", "reason": "completion+save failed"}
