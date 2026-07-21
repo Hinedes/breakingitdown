@@ -192,13 +192,14 @@ class VersionControl:
                 else:
                     shutil.copy2(source, target)
 
-            for item in [entry for entry in os.listdir(self.workspace) if entry != ".bid"]:
-                shutil.move(os.path.join(self.workspace, item), os.path.join(backup_tree, item))
-
             try:
+                for item in [entry for entry in os.listdir(self.workspace) if entry != ".bid"]:
+                    shutil.move(os.path.join(self.workspace, item), os.path.join(backup_tree, item))
+
                 for item in os.listdir(restore_tree):
                     shutil.move(os.path.join(restore_tree, item), os.path.join(self.workspace, item))
                     moved_new.append(item)
+
                 self._set_current(state_name)
                 self._truncate_log(state_name)
             except BaseException:
@@ -213,14 +214,14 @@ class VersionControl:
                             os.remove(path)
                         except OSError:
                             pass
-                for item in os.listdir(backup_tree):
+                for item in list(os.listdir(backup_tree)):
                     shutil.move(os.path.join(backup_tree, item), os.path.join(self.workspace, item))
                 raise
 
             target_number = int(state_name[1:])
             for state in self._list_states():
                 if int(state[1:]) > target_number:
-                    shutil.rmtree(os.path.join(self.states_dir, state))
+                    shutil.rmtree(os.path.join(self.states_dir, state), ignore_errors=True)
         finally:
             shutil.rmtree(restore_tree, ignore_errors=True)
             shutil.rmtree(backup_tree, ignore_errors=True)
