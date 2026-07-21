@@ -98,8 +98,7 @@ def _parse_content_into_turns(content):
 
 def _build_scoped_manifest(workspace, task_number, output_path, input_paths):
     lines = ["# Available files", ""]
-    candidates = ["docs/todo.md", "docs/worker.md"] + list(input_paths)
-    for rel in candidates:
+    for rel in ["docs/todo.md", "docs/worker.md"] + list(input_paths):
         try:
             path = _safe_path(workspace, rel)
         except ValueError:
@@ -126,12 +125,8 @@ def _is_reserved_control_path(rel):
     if rel == "docs/.completed_hash":
         return True
     return rel in {
-        "docs/task.md",
-        "docs/todo.md",
-        "docs/project-status.md",
-        "docs/decisions.md",
-        "docs/manager.md",
-        "docs/worker.md",
+        "docs/task.md", "docs/todo.md", "docs/project-status.md", "docs/decisions.md",
+        "docs/manager.md", "docs/worker.md",
     }
 
 
@@ -176,15 +171,11 @@ class ManagerInitAdapter:
     def run(self, backend):
         messages = [
             {"role": "system", "content": _read(self.workspace, "docs/manager.md")},
-            {
-                "role": "user",
-                "content": (
-                    f"# Task\n\n{_read(self.workspace, 'docs/task.md')}\n\n"
-                    "Create a numbered checklist. Return only Markdown task lines, for example:\n"
-                    "- [ ] T1 — Short description\n"
-                    "- [ ] T2 — Short description"
-                ),
-            },
+            {"role": "user", "content": (
+                f"# Task\n\n{_read(self.workspace, 'docs/task.md')}\n\n"
+                "Create a numbered checklist. Return only Markdown task lines, for example:\n"
+                "- [ ] T1 — Short description\n- [ ] T2 — Short description"
+            )},
         ]
         for attempt in range(self.RETRY_LIMIT):
             try:
@@ -198,14 +189,10 @@ class ManagerInitAdapter:
             if attempt < self.RETRY_LIMIT - 1:
                 messages.extend([
                     {"role": "assistant", "content": content or "[no output]"},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Return only checklist lines in this exact format:\n"
-                            "- [ ] T1 — Description\n- [ ] T2 — Description\n"
-                            "No commentary or code fences."
-                        ),
-                    },
+                    {"role": "user", "content": (
+                        "Return only checklist lines in this exact format:\n"
+                        "- [ ] T1 — Description\n- [ ] T2 — Description\nNo commentary or code fences."
+                    )},
                 ])
         return {"status": "error", "reason": "failed to produce valid TODO after 3 attempts"}
 
@@ -235,9 +222,7 @@ class WorkerAdapter:
         return (
             f"{manifest}\nTask T{self.task_number}: {task['description']}\n"
             f"Output file: {output_path}\n{inputs}\n\n"
-            "Only use these commands:\n"
-            "  READ <path>\n"
-            "  SEARCH <query>\n"
+            "Only use these commands:\n  READ <path>\n  SEARCH <query>\n"
             "  WRITE <path>\n<content>\nEND WRITE\n"
             f"  Done — only after T{self.task_number} is checked in docs/todo.md\n\n"
             "First READ docs/todo.md. Perform only this task. Write the artifact, preserve every "
@@ -256,10 +241,9 @@ class WorkerAdapter:
         output_path, input_paths = todo_mod.get_task_metadata(tasks, self.task_number)
         policy = _read(self.workspace, "docs/worker.md")
         manifest = _build_scoped_manifest(self.workspace, self.task_number, output_path, input_paths)
-        assignment = self._assignment(task, output_path, input_paths, manifest)
         messages = [
             {"role": "system", "content": f"/no_think\n{policy}"},
-            {"role": "user", "content": assignment},
+            {"role": "user", "content": self._assignment(task, output_path, input_paths, manifest)},
         ]
 
         observer = Observer(self.workspace, self.task_number)
@@ -271,6 +255,7 @@ class WorkerAdapter:
         done_without_check = 0
         last_signature = None
         repeat_count = 0
+        no_progress_turns = 0
         read_hashes = {}
 
         while time.monotonic() - started < hard_ceiling:
@@ -289,10 +274,9 @@ class WorkerAdapter:
                 signature = "NO_COMMANDS"
                 repeat_count = self._repeat(last_signature, signature, repeat_count)
                 last_signature = signature
-                messages.append({
-                    "role": "user",
-                    "content": "Use READ <path>, SEARCH <query>, WRITE <path> followed by END WRITE, or Done.",
-                })
+                messages.append({"role": "user", "content": (
+                    "Use READ <path>, SEARCH <query>, WRITE <path> followed by END WRITE, or Done."
+                )})
 
             for command in commands:
                 kind = command["type"]
@@ -304,28 +288,32 @@ class WorkerAdapter:
                     raw_path = command["path"]
                     absolute = None
                     rel = raw_path
-                    safe, err, normalized = permissions.check_path_safety(raw_path, self.workspace)
-                    if not safe or normalized in (None, "."):
-                        result = f"error: {err or 'workspace root denied'}"
-                        signature = f"READ-ERROR:{raw_path}:{result}"
-                    else:
-                        rel = normalized
-                        absolute = os.path.join(self.workspace, rel)
-                        allowed, reason = permissions.check_read_permission(rel, permissions.ROLE_WORKER)
-                        if not allowed:
-                            result = f"error: permission denied: {reason}"
-                        elif not os.path.exists(absolute):
-                            result = f"file not found: {raw_path}"
-                        elif not os.path.isfile(absolute):
-                            result = f"not a file: {raw_path}"
+                    try:
+                        safe, err, normalized = permissions.check_path_safety(raw_path, self.workspace)
+                        if not safe or normalized in (None, "."):
+                            result = f"error: {err or 'workspace root denied'}"
+                            signature = f"READ-ERROR:{raw_path}:{result}"
                         else:
-                            result = _read(self.workspace, rel)
-                            file_hash = _hash_file(absolute)
-                            if read_hashes.get(rel) != file_hash:
-                                useful = True
-                            read_hashes[rel] = file_hash
-                        identity = _hash_file(absolute) if absolute and os.path.isfile(absolute) else result[:80]
-                        signature = f"READ:{rel}:{identity}"
+                            rel = normalized
+                            absolute = os.path.join(self.workspace, rel)
+                            allowed, reason = permissions.check_read_permission(rel, permissions.ROLE_WORKER)
+                            if not allowed:
+                                result = f"error: permission denied: {reason}"
+                            elif not os.path.exists(absolute):
+                                result = f"file not found: {raw_path}"
+                            elif not os.path.isfile(absolute):
+                                result = f"not a file: {raw_path}"
+                            else:
+                                result = _read(self.workspace, rel)
+                                file_hash = _hash_file(absolute)
+                                if read_hashes.get(rel) != file_hash:
+                                    useful = True
+                                read_hashes[rel] = file_hash
+                            identity = _hash_file(absolute) if absolute and os.path.isfile(absolute) else result[:80]
+                            signature = f"READ:{rel}:{identity}"
+                    except (OSError, UnicodeError, ValueError) as exc:
+                        result = f"error: cannot read {raw_path}: {exc}"
+                        signature = f"READ-ERROR:{rel}:{type(exc).__name__}:{str(exc)[:80]}"
                     repeat_count = self._repeat(last_signature, signature, repeat_count)
                     last_signature = signature
                     messages.append({"role": "user", "content": result})
@@ -341,11 +329,8 @@ class WorkerAdapter:
                         if cached is None:
                             self._search_requests += 1
                         path, count, error, is_cache = search_mod.execute_search(
-                            self.workspace,
-                            self.task_number,
-                            query,
-                            self._search_cache,
-                            self._search_provider,
+                            self.workspace, self.task_number, query,
+                            self._search_cache, self._search_provider,
                         )
                         if error:
                             result = f"error: search failed: {error}. Try a different query."
@@ -366,7 +351,7 @@ class WorkerAdapter:
                 if kind == "WRITE":
                     try:
                         result, write_changed, normalized = self._write_command(command["path"], command["content"])
-                    except ValueError as exc:
+                    except (OSError, UnicodeError, ValueError) as exc:
                         result = f"error: {exc}"
                         write_changed = False
                         normalized = command["path"]
@@ -374,10 +359,7 @@ class WorkerAdapter:
                         changed = True
                     if write_changed:
                         useful = True
-                    identity = (
-                        _hash_file(os.path.join(self.workspace, normalized))
-                        if write_changed else result[:80]
-                    )
+                    identity = _hash_file(os.path.join(self.workspace, normalized)) if write_changed else result[:80]
                     signature = f"WRITE:{normalized}:{identity}"
                     repeat_count = self._repeat(last_signature, signature, repeat_count)
                     last_signature = signature
@@ -397,37 +379,36 @@ class WorkerAdapter:
                 done_without_check += 1
                 if done_without_check >= repeat_limit:
                     return {"status": "stalled", "reason": f"Worker {self.task_number} ended without submitting"}
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"T{self.task_number} is still unchecked. Write docs/todo.md with only "
-                        f"T{self.task_number} changed to [x], then output Done."
-                    ),
-                })
+                messages.append({"role": "user", "content": (
+                    f"T{self.task_number} is still unchecked. Write docs/todo.md with only "
+                    f"T{self.task_number} changed to [x], then output Done."
+                )})
 
-            if repeat_count >= repeat_limit and not useful and not changed:
+            if useful or changed:
+                no_progress_turns = 0
+                observer.mark_activity()
+                done_without_check = 0
+            else:
+                no_progress_turns += 1
+
+            if (repeat_count >= repeat_limit or no_progress_turns >= repeat_limit) and not useful and not changed:
                 soft_resets += 1
                 if soft_resets > self.MAX_SOFT_RESETS:
                     return {"status": "stalled", "reason": "repeated action without progress"}
                 manifest = _build_scoped_manifest(self.workspace, self.task_number, output_path, input_paths)
                 messages = [
                     messages[0],
-                    {
-                        "role": "user",
-                        "content": (
-                            self._assignment(task, output_path, input_paths, manifest)
-                            + f"\n\n[ERROR: {last_signature} made no progress. Try a different approach.]"
-                        ),
-                    },
+                    {"role": "user", "content": (
+                        self._assignment(task, output_path, input_paths, manifest)
+                        + f"\n\n[ERROR: {last_signature} made no progress. Try a different approach.]"
+                    )},
                 ]
                 observer = Observer(self.workspace, self.task_number)
                 last_signature = None
                 repeat_count = 0
+                no_progress_turns = 0
                 continue
 
-            if useful or changed:
-                observer.mark_activity()
-                done_without_check = 0
             if observer.inactive_for() > inactivity_timeout:
                 return {"status": "timeout", "reason": f"inactive {observer.inactive_for():.0f}s"}
 
@@ -437,7 +418,6 @@ class WorkerAdapter:
         safe, err, rel = permissions.check_path_safety(path, self.workspace)
         if not safe or rel in (None, "."):
             raise ValueError(err or "workspace root denied")
-
         if rel == "docs/todo.md":
             old_text = _read(self.workspace, rel)
             valid, reason = todo_mod.validate_worker_todo_update(old_text, content, self.task_number)
@@ -446,8 +426,7 @@ class WorkerAdapter:
                 old_tasks = todo_mod.parse_todo(old_text)
                 new_tasks = todo_mod.parse_todo(content)
                 submitted = any(
-                    task["number"] == self.task_number and task["checked"]
-                    for task in new_tasks
+                    task["number"] == self.task_number and task["checked"] for task in new_tasks
                 )
                 old_task = todo_mod.get_task(old_tasks, self.task_number)
                 if submitted and old_task and not old_task["checked"]:
@@ -556,8 +535,7 @@ class ArtifactReviewAdapter:
         research = "\n\n## Supporting research\n" + "\n\n".join(research_parts) if research_parts else ""
         prompt = (
             "# Review Assignment\n\n"
-            f"Task:\n{task['description']}\n\n"
-            f"Required output:\n{output_path}\n\n"
+            f"Task:\n{task['description']}\n\nRequired output:\n{output_path}\n\n"
             f"Artifact:\n{artifact}\n{research}\n\n"
             "Judge only whether this artifact materially fulfills this task.\n"
             "Return ACCEPT or REWORK on the first line, followed by a nonempty Reason:."
@@ -606,10 +584,8 @@ class ArtifactReviewAdapter:
         except (ValueError, OSError):
             artifact_hash = "?"
         content = (
-            f"# Review T{self.task_number}\n\n"
-            f"Verdict: {result['verdict']}\n"
-            f"Reason: {result.get('reason', '')}\n"
-            f"Task: {self.task_number}\n"
+            f"# Review T{self.task_number}\n\nVerdict: {result['verdict']}\n"
+            f"Reason: {result.get('reason', '')}\nTask: {self.task_number}\n"
             f"Artifact hash: {artifact_hash}\n"
         )
         _write(self.workspace, f"docs/reviews/T{self.task_number}.md", content)
