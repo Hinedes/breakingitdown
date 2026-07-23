@@ -22,6 +22,7 @@ Initialization:
 - Read docs/task.md.
 - Break the request into sequential numbered tasks.
 - Write the complete checklist to docs/todo.md.
+- Every task must include explicit Output, Inputs, and Accept lines.
 
 Review:
 - Read the original task, checklist, and relevant Worker artifacts.
@@ -36,8 +37,9 @@ WORKER_INSTRUCTIONS = """# Worker
 You have one task.
 
 - Read docs/todo.md and the minimum other material needed.
+- Read docs/todo.md, including its Output, Inputs, and Accept fields, and the minimum other material needed.
 - Perform only your assigned task.
-- Create or repair its artifact.
+- Write only your assigned Output file and docs/todo.md.
 - To submit, rewrite docs/todo.md changing only your own checkbox from `[ ]` to `[x]`.
 - You may keep working after checking it, revise files, or uncheck it again while backtracking.
 - When the final submitted state is ready, keep your checkbox checked and output exactly `Done`.
@@ -347,7 +349,12 @@ def run_project(config, backend=None):
             max_num = max((t["number"] for t in tasks_now), default=0)
             for desc in missing:
                 max_num += 1
-                todo_text += f"\n- [ ] T{max_num} — {desc}"
+                todo_text += (
+                    f"\n- [ ] T{max_num} — {desc}\n"
+                    f"  Output: docs/work/T{max_num}.md\n"
+                    "  Inputs:\n"
+                    f"  Accept: {desc}\n"
+                )
             try:
                 write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
                 vc_system.save_state("Review", f"added {len(missing)} missing tasks")

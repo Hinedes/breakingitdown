@@ -19,6 +19,9 @@ def handle_list_files(args, workspace, role, worker_number):
     safe, err, rel = permissions.check_path_safety(path, workspace)
     if not safe:
         return err
+    allowed, err_msg = permissions.check_read_permission(rel, role, worker_number, workspace)
+    if not allowed:
+        return f"permission denied: {err_msg}"
     abs_path = os.path.join(workspace, rel)
     if not os.path.exists(abs_path):
         return f"path not found: {path}"
@@ -53,6 +56,10 @@ def handle_read_file(args, workspace, role, worker_number):
         if not safe:
             results.append(f"error: {err}")
             continue
+        allowed, err_msg = permissions.check_read_permission(rel, role, worker_number, workspace)
+        if not allowed:
+            results.append(f"permission denied: {err_msg}")
+            continue
         abs_path = os.path.join(workspace, rel)
         if not os.path.exists(abs_path):
             results.append(f"file not found: {path}")
@@ -76,7 +83,7 @@ def handle_write_file(args, workspace, role, worker_number):
     if not isinstance(content, str):
         return "error: content must be a string"
 
-    allowed, err_msg = permissions.check_write_permission(rel, role, worker_number)
+    allowed, err_msg = permissions.check_write_permission(rel, role, worker_number, workspace)
     if not allowed:
         return f"permission denied: {err_msg}"
 
@@ -108,7 +115,7 @@ def handle_replace_text(args, workspace, role, worker_number):
     if not old_text:
         return "error: old_text required"
 
-    allowed, err_msg = permissions.check_write_permission(rel, role, worker_number)
+    allowed, err_msg = permissions.check_write_permission(rel, role, worker_number, workspace)
     if not allowed:
         return f"permission denied: {err_msg}"
 

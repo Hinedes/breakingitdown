@@ -4,8 +4,17 @@ from bid import todo
 TODO_SAMPLE = """# TODO
 
 - [ ] T1 — Research backends
+  Output: docs/work/T1.md
+  Inputs: docs/task.md
+  Accept: Summarize viable backends.
 - [ ] T2 — Compare backends
+  Output: docs/work/T2.md
+  Inputs: docs/work/T1.md
+  Accept: Recommend one backend.
 - [ ] T3 — Produce recommendation
+  Output: docs/work/T3.md
+  Inputs: docs/work/T1.md, docs/work/T2.md
+  Accept: State the recommendation.
 """
 
 TODO_MIXED = """- [ ] T1 — First
@@ -19,6 +28,8 @@ def test_parse_todo():
     assert [task["id"] for task in tasks] == ["T1", "T2", "T3"]
     assert tasks[0]["number"] == 1
     assert not tasks[0]["checked"]
+    assert tasks[0]["output"] == "docs/work/T1.md"
+    assert tasks[0]["accept"] == "Summarize viable backends."
 
 
 def test_parse_checked():

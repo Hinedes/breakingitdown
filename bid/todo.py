@@ -2,8 +2,8 @@ import re
 
 
 _TASK_LINE_RE = re.compile(r'^(\s*[-*]\s+\[)([ x])(\]\s+T(\d+)\b.*)$')
-_META_RE = re.compile(r'^\s{2,}(Output|Inputs)\s*:\s*(.*)')
-_META_KEY_MAP = {"Output": "output", "Inputs": "inputs"}
+_META_RE = re.compile(r'^\s{2,}(Output|Inputs|Accept)\s*:\s*(.*)')
+_META_KEY_MAP = {"Output": "output", "Inputs": "inputs", "Accept": "accept"}
 
 
 def _norm(text):
@@ -27,12 +27,16 @@ def parse_todo(text):
                 "id": task_id,
                 "number": int(number_text) if number_text.isdigit() else 0,
                 "description": match.group(3).strip().lstrip('—–-').strip(),
+                "has_output": False,
+                "has_inputs": False,
+                "has_accept": False,
             }
             continue
         meta = _META_RE.match(line)
         if meta and current_task is not None:
             key = _META_KEY_MAP[meta.group(1)]
             current_task[key] = meta.group(2).strip()
+            current_task[f"has_{key}"] = True
     if current_task:
         tasks.append(current_task)
     return tasks
@@ -47,6 +51,13 @@ def get_task_metadata(tasks, number):
     inputs_raw = task.get("inputs", "")
     inputs = [p.strip() for p in inputs_raw.replace(",", "\n").split("\n") if p.strip()]
     return output, inputs
+
+
+def get_task_acceptance(tasks, number):
+    task = get_task(tasks, number)
+    if not task:
+        return ""
+    return task.get("accept", "")
 
 
 def get_task(tasks, number):

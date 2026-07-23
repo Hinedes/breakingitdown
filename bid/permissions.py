@@ -1,5 +1,7 @@
 import os
 
+from . import todo as todo_mod
+
 ROLE_MANAGER = "manager"
 ROLE_WORKER = "worker"
 
@@ -31,6 +33,37 @@ def _path_blocked(rel_path):
     return False
 
 
+def _worker_output_path(workspace, worker_number):
+    todo_path = os.path.join(workspace, "docs/todo.md")
+    try:
+        with open(todo_path, encoding="utf-8") as file:
+            tasks = todo_mod.parse_todo(file.read())
+    except OSError:
+        return None
+
+    task = todo_mod.get_task(tasks, worker_number)
+    if not task or not task.get("has_output") or not task.get("output"):
+        return None
+
+    output_path, _ = todo_mod.get_task_metadata(tasks, worker_number)
+    safe, _, rel = check_path_safety(output_path, workspace)
+    if not safe:
+        return None
+    return rel
+
+
+def _read_blocked(rel_path):
+    if rel_path == ".bid" or rel_path.startswith(".bid/"):
+        return True
+    if rel_path == "docs/reviews" or rel_path.startswith("docs/reviews/"):
+        return True
+    if rel_path == "docs/project-status.md":
+        return True
+    if rel_path == "docs/.completed_hash":
+        return True
+    return False
+
+
 def check_path_safety(path, workspace_root):
     abs_path = os.path.realpath(os.path.join(workspace_root, path))
     abs_workspace = os.path.realpath(workspace_root)
@@ -40,7 +73,7 @@ def check_path_safety(path, workspace_root):
     return True, None, rel
 
 
-def check_write_permission(rel_path, role, worker_number=None):
+def check_write_permission(rel_path, role, worker_number=None, workspace=None):
     if role == ROLE_MANAGER:
         if rel_path in MANAGER_WRITABLE:
             return True, None
@@ -53,14 +86,21 @@ def check_write_permission(rel_path, role, worker_number=None):
             return True, None
         if rel_path in WORKER_BLOCKED:
             return False, f"worker cannot modify {rel_path}"
+        if workspace is None or worker_number is None:
+            return False, "worker may only write docs/todo.md or assigned output file"
+
+        output_path = _worker_output_path(workspace, worker_number)
+        if not output_path:
+            return False, f"worker {worker_number} has no assigned output file"
+        if rel_path != output_path:
+            return False, f"worker may only write {output_path} or docs/todo.md"
         return True, None
 
     return False, f"unknown role: {role}"
 
 
-def check_read_permission(rel_path, role):
-    """Workers may READ research dirs; all other controls apply."""
+def check_read_permission(rel_path, role, worker_number=None, workspace=None):
     if role == ROLE_WORKER:
-        if rel_path.startswith("docs/research/"):
-            return True, None
+        if _read_blocked(rel_path):
+            return False, f"worker cannot read control path {rel_path}"
     return True, None

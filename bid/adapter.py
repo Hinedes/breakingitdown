@@ -146,7 +146,18 @@ def validate_todo_tasks(tasks):
             return False, f"{t['id']} must start unchecked"
         if not t["description"].strip():
             return False, f"{t['id']} has empty description"
+        if not t.get("has_output"):
+            return False, f"{t['id']} is missing Output"
+        if not t.get("has_inputs"):
+            return False, f"{t['id']} is missing Inputs"
+        if not t.get("has_accept"):
+            return False, f"{t['id']} is missing Accept"
         out, inputs = todo_mod.get_task_metadata(tasks, t["number"])
+        accept = todo_mod.get_task_acceptance(tasks, t["number"]).strip()
+        if not out.strip():
+            return False, f"{t['id']} has empty Output"
+        if not accept:
+            return False, f"{t['id']} has empty Accept"
         for p in [out] + inputs:
             if not p:
                 return False, f"{t['id']} has empty path"
@@ -199,10 +210,19 @@ class ManagerInitAdapter:
                 "role": "user",
                 "content": (
                     f"# Task\n\n{task_md}\n\n"
-                    "Create a numbered checklist for this task. "
-                    "Return only the Markdown checklist lines, one per task, like:\n"
+                    "Create a numbered checklist for this task. Every task must include explicit metadata lines:\n"
+                    "  Output: <workspace-relative artifact path>\n"
+                    "  Inputs: <comma-separated workspace-relative inputs or blank>\n"
+                    "  Accept: <specific acceptance criteria>\n\n"
+                    "Return only the Markdown checklist lines, one task block at a time, like:\n"
                     "- [ ] T1 — Short description\n"
-                    "- [ ] T2 — Short description"
+                    "  Output: docs/work/T1.md\n"
+                    "  Inputs: docs/task.md\n"
+                    "  Accept: File exists and matches the request.\n"
+                    "- [ ] T2 — Short description\n"
+                    "  Output: docs/work/T2.md\n"
+                    "  Inputs:\n"
+                    "  Accept: File exists and matches the request."
                 ),
             },
         ]
@@ -373,18 +393,24 @@ class WorkerAdapter:
                             if not safe:
                                 result = err
                             else:
-                                abs_path = os.path.join(self.workspace, rel)
-                                if not os.path.exists(abs_path):
-                                    result = f"file not found: {cmd['path']}"
-                                elif not os.path.isfile(abs_path):
-                                    result = f"not a file: {cmd['path']}"
+                                allowed, err_msg = permissions.check_read_permission(
+                                    rel, permissions.ROLE_WORKER, self.task_number, self.workspace
+                                )
+                                if not allowed:
+                                    result = f"permission denied: {err_msg}"
                                 else:
-                                    result = _read(self.workspace, rel)
-                                    fhash = _hash_file(abs_path)
-                                    prev = _read_tracker.get(rel)
-                                    if not prev or prev[1] != fhash:
-                                        useful = True
-                                    _read_tracker[rel] = (1 if not prev else prev[0] + 1, fhash)
+                                    abs_path = os.path.join(self.workspace, rel)
+                                    if not os.path.exists(abs_path):
+                                        result = f"file not found: {cmd['path']}"
+                                    elif not os.path.isfile(abs_path):
+                                        result = f"not a file: {cmd['path']}"
+                                    else:
+                                        result = _read(self.workspace, rel)
+                                        fhash = _hash_file(abs_path)
+                                        prev = _read_tracker.get(rel)
+                                        if not prev or prev[1] != fhash:
+                                            useful = True
+                                        _read_tracker[rel] = (1 if not prev else prev[0] + 1, fhash)
                         except ValueError as e:
                             result = str(e)
                         sig = f"READ {rel}|{result[:50]}"
@@ -533,7 +559,9 @@ class WorkerAdapter:
             _write(self.workspace, rel, content)
             return f"wrote {len(content)} bytes to {rel}"
 
-        allowed, err_msg = permissions.check_write_permission(rel, permissions.ROLE_WORKER, self.task_number)
+        allowed, err_msg = permissions.check_write_permission(
+            rel, permissions.ROLE_WORKER, self.task_number, self.workspace
+        )
         if not allowed:
             raise ValueError(f"permission denied: {err_msg}")
 
@@ -599,6 +627,7 @@ class ArtifactReviewAdapter:
             return self._make_result("ERROR", "task not found")
 
         output_path, _ = todo_mod.get_task_metadata(tasks, self.task_number)
+        accept = todo_mod.get_task_acceptance(tasks, self.task_number).strip()
         try:
             artifact_path = _safe_artifact_path(self.workspace, output_path)
         except ValueError as e:
@@ -617,6 +646,8 @@ class ArtifactReviewAdapter:
 
         if not artifact_content.strip():
             return self._make_result("REWORK", "artifact is empty")
+        if not accept:
+            return self._make_result("REWORK", "task is missing Accept criteria")
 
         # Collect research files for this task
         research_context = ""
@@ -646,9 +677,10 @@ class ArtifactReviewAdapter:
             "# Review Assignment\n\n"
             f"Task:\n{task['description']}\n\n"
             f"Required output:\n{output_path}\n\n"
+            f"Acceptance criteria:\n{accept}\n\n"
             f"Artifact:\n{artifact_content}\n"
             f"{research_context}\n"
-            "Judge only whether this artifact materially fulfills its task.\n"
+            "Judge only whether this artifact satisfies the acceptance criteria.\n"
         )
         if has_research and not cited:
             prompt += (

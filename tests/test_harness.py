@@ -57,10 +57,22 @@ def config(workspace, **overrides):
     return values
 
 
-def prepare_worker_workspace(tmp, todo_text="- [ ] T1 — Write result\n"):
+def todo_item(number, desc, checked=False, output=None, inputs="", accept=None):
+    mark = "x" if checked else " "
+    output = output or f"docs/work/T{number}.md"
+    accept = accept or desc
+    return (
+        f"- [{mark}] T{number} — {desc}\n"
+        f"  Output: {output}\n"
+        f"  Inputs: {inputs}\n"
+        f"  Accept: {accept}\n"
+    )
+
+
+def prepare_worker_workspace(tmp, todo_text=None):
     os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
     with open(os.path.join(tmp, "docs", "todo.md"), "w", encoding="utf-8") as file:
-        file.write(todo_text)
+        file.write(todo_text or todo_item(1, "Write result"))
     with open(os.path.join(tmp, "docs", "worker.md"), "w", encoding="utf-8") as file:
         file.write("# Worker\n")
     system = vc.VersionControl(tmp)
@@ -75,7 +87,7 @@ class TestObserver:
             observer = Observer(tmp, 1)
             assert not observer.task_just_became_checked()
             with open(os.path.join(tmp, "docs", "todo.md"), "w", encoding="utf-8") as file:
-                file.write("- [x] T1 — Write result\n")
+                file.write(todo_item(1, "Write result", checked=True))
             assert observer.task_just_became_checked()
             assert not observer.task_just_became_checked()
             assert observer.seen_done("work\nDone")
@@ -105,7 +117,8 @@ class TestObserver:
 class TestSession:
     def test_tool_event_is_structured(self):
         with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, "docs"))
+            prepare_worker_workspace(tmp, todo_item(1, "Read file", inputs="docs/f.txt"))
+            os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
             with open(os.path.join(tmp, "docs", "f.txt"), "w") as f:
                 f.write("data")
             backend = model.MockBackend([tool_response("read_file", {"path": "docs/f.txt"})])
@@ -221,12 +234,47 @@ class TestTranscript:
 class TestFileTools:
     def test_repeated_write_overwrites_so_worker_can_backtrack(self):
         with tempfile.TemporaryDirectory() as tmp:
+            prepare_worker_workspace(tmp)
             worker_tools = {tool["name"]: tool for tool in tools.get_tools_for_role("worker", 1)}
             write = worker_tools["write_file"]["handler"]
-            assert write({"path": "result.md", "content": "first"}, tmp, "worker", 1).startswith("wrote")
-            assert write({"path": "result.md", "content": "corrected"}, tmp, "worker", 1).startswith("wrote")
-            with open(os.path.join(tmp, "result.md"), encoding="utf-8") as file:
+            assert write({"path": "docs/work/T1.md", "content": "first"}, tmp, "worker", 1).startswith("wrote")
+            assert write({"path": "docs/work/T1.md", "content": "corrected"}, tmp, "worker", 1).startswith("wrote")
+            with open(os.path.join(tmp, "docs/work/T1.md"), encoding="utf-8") as file:
                 assert file.read() == "corrected"
+
+    def test_worker_may_replace_only_own_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_worker_workspace(tmp)
+            os.makedirs(os.path.join(tmp, "docs", "work"), exist_ok=True)
+            with open(os.path.join(tmp, "docs/work/T1.md"), "w", encoding="utf-8") as file:
+                file.write("draft")
+            worker_tools = {tool["name"]: tool for tool in tools.get_tools_for_role("worker", 1)}
+            replace = worker_tools["replace_text"]["handler"]
+            ok = replace({"path": "docs/work/T1.md", "old_text": "draft", "new_text": "final"}, tmp, "worker", 1)
+            assert ok.startswith("replaced")
+            denied = replace({"path": "docs/work/T2.md", "old_text": "draft", "new_text": "final"}, tmp, "worker", 1)
+            assert denied.startswith("permission denied")
+
+    def test_worker_may_read_safe_file_outside_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_worker_workspace(tmp, todo_item(1, "Read research", inputs="docs/research/T1/"))
+            os.makedirs(os.path.join(tmp, "src"), exist_ok=True)
+            with open(os.path.join(tmp, "src", "standalone.txt"), "w", encoding="utf-8") as file:
+                file.write("evidence")
+            os.makedirs(os.path.join(tmp, "docs", "research", "T1"), exist_ok=True)
+            with open(os.path.join(tmp, "docs", "research", "T1", "search-001.md"), "w", encoding="utf-8") as file:
+                file.write("evidence")
+            read = tools.handle_read_file
+            ok = read({"path": "src/standalone.txt"}, tmp, "worker", 1)
+            assert "evidence" in ok
+            ok_list = tools.handle_list_files({"path": "src"}, tmp, "worker", 1)
+            assert "standalone.txt" in ok_list
+            denied_read = read({"path": ".bid/current"}, tmp, "worker", 1)
+            assert denied_read.startswith("permission denied")
+            denied_reviews = read({"path": "docs/reviews/T1.md"}, tmp, "worker", 1)
+            assert denied_reviews.startswith("permission denied")
+            denied_completion = read({"path": "docs/project-status.md"}, tmp, "worker", 1)
+            assert denied_completion.startswith("permission denied")
 
     def test_worker_may_toggle_only_own_checkbox(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -253,9 +301,9 @@ class TestFileTools:
 class TestWorkerLifecycle:
     def test_checked_worker_may_revise_then_done(self):
         responses = [
-            text_response("WRITE result.md\ndraft\nEND WRITE"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — Write result\nEND WRITE"),
-            text_response("WRITE result.md\nfinal\nEND WRITE\n\nDone"),
+            text_response("WRITE docs/work/T1.md\ndraft\nEND WRITE"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "Write result", checked=True) + "END WRITE"),
+            text_response("WRITE docs/work/T1.md\nfinal\nEND WRITE\n\nDone"),
         ]
         backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
@@ -263,13 +311,13 @@ class TestWorkerLifecycle:
             result = harness.run_worker_session(1, config(tmp), backend=backend)
             assert result["status"] == "submitted"
             assert result["termination"] == "normal"
-            with open(os.path.join(tmp, "result.md"), encoding="utf-8") as file:
+            with open(os.path.join(tmp, "docs/work/T1.md"), encoding="utf-8") as file:
                 assert file.read() == "final"
 
     def test_done_without_checkbox_does_not_terminate_worker(self):
         responses = [
             text_response("Done"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — Write result\nEND WRITE"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "Write result", checked=True) + "END WRITE"),
             text_response("Done"),
         ]
         backend = model.MockBackend(responses)
@@ -282,7 +330,7 @@ class TestWorkerLifecycle:
 
     def test_unchecked_stalled_worker_rolls_back(self):
         responses = [
-            text_response("WRITE leak.md\nunfinished\nEND WRITE"),
+            text_response("WRITE docs/work/T1.md\nunfinished\nEND WRITE"),
             text_response("READ nonexistent.md"),
             text_response("READ nonexistent.md"),
             text_response("READ nonexistent.md"),
@@ -293,13 +341,14 @@ class TestWorkerLifecycle:
             system = prepare_worker_workspace(tmp)
             result = harness.run_worker_session(1, config(tmp), backend=backend)
             assert result["status"] == "error"
-            assert not os.path.exists(os.path.join(tmp, "leak.md"))
+            assert not os.path.exists(os.path.join(tmp, "docs/work/T1.md"))
             assert system.get_current() == "s0"
             assert system._list_states() == ["s0"]
 
     def test_checked_stalled_worker_is_saved_as_abnormal_submission(self):
         responses = [
             text_response("WRITE docs/todo.md\n- [x] T1 — Write result\nEND WRITE"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "Write result", checked=True) + "END WRITE"),
             text_response("READ nonexistent.md"),
             text_response("READ nonexistent.md"),
             text_response("READ nonexistent.md"),
@@ -318,13 +367,13 @@ class TestWorkerLifecycle:
 
 class TestFullFlow:
     def test_manager_workers_manager_done(self):
-        todo_initial = "- [ ] T1 — First artifact\n- [ ] T2 — Second artifact\n"
+        todo_initial = todo_item(1, "First artifact") + todo_item(2, "Second artifact")
         responses = [
             text_response(todo_initial),
             text_response("WRITE docs/work/T1.md\none\nEND WRITE"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — First artifact\n- [ ] T2 — Second artifact\nEND WRITE\n\nDone"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "First artifact", checked=True) + todo_item(2, "Second artifact") + "END WRITE\n\nDone"),
             text_response("WRITE docs/work/T2.md\ntwo\nEND WRITE"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — First artifact\n- [x] T2 — Second artifact\nEND WRITE\n\nDone"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "First artifact", checked=True) + todo_item(2, "Second artifact", checked=True) + "END WRITE\n\nDone"),
             text_response("ACCEPT\nReason: Good."),
             text_response("ACCEPT\nReason: Good."),
             text_response("COMPLETE\nReason: All done."),
@@ -342,12 +391,70 @@ class TestFullFlow:
             assert states == ["s0", "s1", "s2", "s3", "s4"]
             assert all(call["max_tokens"] == 8192 for call in backend.call_history)
 
+    def test_reject_repair_interrupt_resume_completion(self):
+        class CrashAfterResponses(model.MockBackend):
+            def __init__(self, responses, crash_on):
+                super().__init__(responses)
+                self.crash_on = crash_on
+
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({
+                    "messages": [dict(message) for message in messages],
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                })
+                if self.call_index == self.crash_on:
+                    raise RuntimeError("simulated interruption")
+                if self.call_index < len(self.responses):
+                    response = self.responses[self.call_index]
+                    self.call_index += 1
+                    return response
+                raise RuntimeError("simulated interruption")
+
+        todo_initial = todo_item(1, "Write result")
+        repair_todo = todo_item(1, "Write result", checked=True)
+        first_phase = CrashAfterResponses([
+            text_response(
+                "WRITE docs/work/T1.md\ndraft\nEND WRITE\n"
+                "WRITE docs/todo.md\n" + repair_todo + "END WRITE\n\nDone"
+            ),
+            text_response("REWORK\nReason: Draft is not acceptable."),
+            text_response(
+                "WRITE docs/work/T1.md\nfinal\nEND WRITE\n"
+                "WRITE docs/todo.md\n" + repair_todo + "END WRITE\n\nDone"
+            ),
+        ], crash_on=3)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            init_backend = model.MockBackend([text_response(todo_initial)])
+            assert harness.init_project("Write result", cfg, backend=init_backend)["status"] == "success"
+
+            first = harness.run_project(cfg, backend=first_phase)
+            assert first["status"] == "error"
+            review_file = os.path.join(tmp, "docs/reviews/T1.md")
+            with open(review_file, encoding="utf-8") as file:
+                assert "REWORK" in file.read()
+            assert vc.VersionControl(tmp).get_current() == "s4"
+
+            resume_backend = model.MockBackend([
+                text_response("ACCEPT\nReason: Repaired artifact matches Accept."),
+                text_response("COMPLETE\nReason: Done."),
+            ])
+            second = harness.run_project(cfg, backend=resume_backend)
+            assert second["status"] == "done"
+            with open(review_file, encoding="utf-8") as file:
+                assert "ACCEPT" in file.read()
+            states = vc.VersionControl(tmp)._list_states()
+            assert states == ["s0", "s1", "s2", "s3", "s4", "s5"]
+            assert vc.VersionControl(tmp).get_current() == "s5"
+
 
 class TestArtifactReview:
     def _prepare(self, tmp, task_desc, artifact_content, todo_text=None):
         os.makedirs(os.path.join(tmp, "docs", "work"), exist_ok=True)
         with open(os.path.join(tmp, "docs/todo.md"), "w", encoding="utf-8") as f:
-            f.write(todo_text or f"- [x] T1 — {task_desc}\n")
+            f.write(todo_text or todo_item(1, task_desc, checked=True))
         with open(os.path.join(tmp, "docs/task.md"), "w", encoding="utf-8") as f:
             f.write(f"# Task\n\n{task_desc}\n")
         with open(os.path.join(tmp, "docs/project-status.md"), "w", encoding="utf-8") as f:
@@ -424,7 +531,7 @@ class TestCompletionReview:
                 f.write(content)
 
     def test_complete_when_all_done(self):
-        todo = "- [x] T1 — Write code\n- [x] T2 — Write tests\n"
+        todo = todo_item(1, "Write code", checked=True) + todo_item(2, "Write tests", checked=True)
         artifacts = {"docs/work/T1.md": "def foo(): pass", "docs/work/T2.md": "def test_foo(): pass"}
         with tempfile.TemporaryDirectory() as tmp:
             self._prepare(tmp, "Build a library.", todo, artifacts)
@@ -433,7 +540,7 @@ class TestCompletionReview:
             assert r["verdict"] == "COMPLETE"
 
     def test_missing_when_incomplete(self):
-        todo = "- [x] T1 — Write code\n"
+        todo = todo_item(1, "Write code", checked=True)
         artifacts = {"docs/work/T1.md": "def foo(): pass"}
         with tempfile.TemporaryDirectory() as tmp:
             self._prepare(tmp, "Build a library with tests and docs.", todo, artifacts)
@@ -444,7 +551,7 @@ class TestCompletionReview:
             assert "Write documentation" in r["missing"]
 
     def test_retries_on_malformed(self):
-        todo = "- [x] T1 — Write code\n"
+        todo = todo_item(1, "Write code", checked=True)
         artifacts = {"docs/work/T1.md": "def foo(): pass"}
         with tempfile.TemporaryDirectory() as tmp:
             self._prepare(tmp, "Build a library.", todo, artifacts)
@@ -472,7 +579,7 @@ class TestRegression:
 
     def test_review_result_includes_task_number(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self._ws(tmp, "- [x] T1 — A\n", {"docs/work/T1.md": "ok"})
+            self._ws(tmp, todo_item(1, "A", checked=True), {"docs/work/T1.md": "ok"})
             b = model.MockBackend([text_response("ACCEPT\nReason: Fine.")])
             r = adapter.ArtifactReviewAdapter(config(tmp), 1).run(b)
             assert r.get("task_number") == 1
@@ -485,19 +592,24 @@ class TestRegression:
             assert r["verdict"] != "MISSING"
 
     def test_init_rejects_duplicates(self):
-        assert not adapter.validate_todo_tasks(todo.parse_todo("- [ ] T1 — A\n- [ ] T1 — B\n"))[0]
+        bad = todo_item(1, "A", output="docs/work/T1.md", accept="A done") + todo_item(1, "B", output="docs/work/T2.md", accept="B done")
+        assert not adapter.validate_todo_tasks(todo.parse_todo(bad))[0]
 
     def test_init_rejects_gaps(self):
-        assert not adapter.validate_todo_tasks(todo.parse_todo("- [ ] T1 — A\n- [ ] T3 — C\n"))[0]
+        bad = todo_item(1, "A", output="docs/work/T1.md", accept="A done") + todo_item(3, "C", output="docs/work/T3.md", accept="C done")
+        assert not adapter.validate_todo_tasks(todo.parse_todo(bad))[0]
 
     def test_init_rejects_prechecked(self):
-        assert not adapter.validate_todo_tasks(todo.parse_todo("- [x] T1 — A\n"))[0]
+        bad = todo_item(1, "A", checked=True, output="docs/work/T1.md", accept="A done")
+        assert not adapter.validate_todo_tasks(todo.parse_todo(bad))[0]
 
     def test_init_rejects_empty_desc(self):
-        assert not adapter.validate_todo_tasks(todo.parse_todo("- [ ] T1 — \n"))[0]
+        bad = "- [ ] T1 — \n  Output: docs/work/T1.md\n  Inputs:\n  Accept: A done\n"
+        assert not adapter.validate_todo_tasks(todo.parse_todo(bad))[0]
 
     def test_init_accepts_valid(self):
-        assert adapter.validate_todo_tasks(todo.parse_todo("- [ ] T1 — A\n- [ ] T2 — B\n"))[0]
+        valid = todo_item(1, "A", output="docs/work/T1.md", accept="A done") + todo_item(2, "B", output="docs/work/T2.md", accept="B done")
+        assert adapter.validate_todo_tasks(todo.parse_todo(valid))[0]
 
     def test_literal_backslash_n_preserved(self):
         cmds = adapter._parse_content_into_turns('WRITE x.txt\nline1\\nline2\nEND WRITE')
@@ -505,7 +617,7 @@ class TestRegression:
 
     def test_review_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self._ws(tmp, "- [x] T1 — A\n", {"docs/work/T1.md": "good"})
+            self._ws(tmp, todo_item(1, "A", checked=True), {"docs/work/T1.md": "good"})
             b = model.MockBackend([text_response("ACCEPT\nReason: Fine.")])
             adapter.ArtifactReviewAdapter(config(tmp), 1).run(b)
             os.remove(os.path.join(tmp, "docs/work/T1.md"))
@@ -514,17 +626,17 @@ class TestRegression:
                 assert "REWORK" in f.read()
 
     def test_full_repair_cycle(self):
-        todo_initial = "- [ ] T1 — First\n- [ ] T2 — Second\n"
+        todo_initial = todo_item(1, "First") + todo_item(2, "Second")
         responses = [
             text_response(todo_initial),
             text_response("WRITE docs/work/T1.md\nweak\nEND WRITE"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — First\n- [ ] T2 — Second\nEND WRITE\n\nDone"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "First", checked=True) + todo_item(2, "Second") + "END WRITE\n\nDone"),
             text_response("WRITE docs/work/T2.md\ngood\nEND WRITE"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — First\n- [x] T2 — Second\nEND WRITE\n\nDone"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "First", checked=True) + todo_item(2, "Second", checked=True) + "END WRITE\n\nDone"),
             text_response("REWORK\nReason: Weak."),
             text_response("ACCEPT\nReason: Good."),
             text_response("WRITE docs/work/T1.md\nsubstantial\nEND WRITE"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — First\n- [x] T2 — Second\nEND WRITE\n\nDone"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "First", checked=True) + todo_item(2, "Second", checked=True) + "END WRITE\n\nDone"),
             text_response("ACCEPT\nReason: Better."),
             text_response("ACCEPT\nReason: Good."),
             text_response("COMPLETE\nReason: Done."),
@@ -545,12 +657,12 @@ class TestRegression:
             def run(self, messages, tools, max_tokens=None):
                 self.call_count += 1
                 if self.call_count == 1:
-                    return {"role": "assistant", "content": "WRITE docs/work/T1.md\ndata\nEND WRITE\nWRITE docs/todo.md\n- [x] T1 — Test\nEND WRITE\n", "tool_calls": None, "finish_reason": "stop"}
+                    return {"role": "assistant", "content": "WRITE docs/work/T1.md\ndata\nEND WRITE\nWRITE docs/todo.md\n" + todo_item(1, "Test", checked=True) + "END WRITE\n", "tool_calls": None, "finish_reason": "stop"}
                 raise RuntimeError("simulated crash after checkbox")
         with tempfile.TemporaryDirectory() as tmp:
             cfg = config(tmp, worker_timeout=10, inactivity_timeout=10)
             # Init with a normal backend
-            init_backend = model.MockBackend([text_response("- [ ] T1 — Test\n")])
+            init_backend = model.MockBackend([text_response(todo_item(1, "Test"))])
             assert harness.init_project("test", cfg, backend=init_backend)["status"] == "success"
             # Run worker with crash backend
             result = harness.run_worker_session(1, cfg, backend=CrashAfterCheck())
@@ -609,19 +721,22 @@ class TestRegression:
             assert r["status"] == "error"  # unchecked = error
 
     def test_plan_validates_normalized_dup_outputs(self):
-        bad = "- [ ] T1 — A\n  Output: docs/work/T1.md\n- [ ] T2 — B\n  Output: docs/work/../work/T1.md\n"
+        bad = (
+            "- [ ] T1 — A\n  Output: docs/work/T1.md\n  Inputs:\n  Accept: A done\n"
+            "- [ ] T2 — B\n  Output: docs/work/../work/T1.md\n  Inputs:\n  Accept: B done\n"
+        )
         tasks = todo.parse_todo(bad)
         valid, reason = adapter.validate_todo_tasks(tasks)
         assert not valid, f"should reject normalized dup: {reason}"
 
     def test_plan_rejects_empty_output(self):
-        bad = "- [ ] T1 — A\n  Output:\n"
+        bad = "- [ ] T1 — A\n  Output:\n  Inputs:\n  Accept: A done\n"
         tasks = todo.parse_todo(bad)
         valid, reason = adapter.validate_todo_tasks(tasks)
         assert not valid, f"should reject empty Output: {reason}"
 
     def test_plan_rejects_docs_reviews_path(self):
-        bad = "- [ ] T1 — A\n  Output: docs/reviews/T1.md\n"
+        bad = "- [ ] T1 — A\n  Output: docs/reviews/T1.md\n  Inputs:\n  Accept: A done\n"
         tasks = todo.parse_todo(bad)
         valid, reason = adapter.validate_todo_tasks(tasks)
         assert not valid, f"should reject docs/reviews path: {reason}"
@@ -656,22 +771,25 @@ class TestRegression:
         assert not permissions._path_blocked("docs/todo.md")
 
     def test_rejects_T01_task_id(self):
-        assert not adapter.validate_todo_tasks(todo.parse_todo("- [ ] T01 — A\n"))[0]
-        assert adapter.validate_todo_tasks(todo.parse_todo("- [ ] T1 — A\n"))[0]
+        assert not adapter.validate_todo_tasks(todo.parse_todo("- [ ] T01 — A\n  Output: docs/work/T01.md\n  Inputs:\n  Accept: A done\n"))[0]
+        assert adapter.validate_todo_tasks(todo.parse_todo(todo_item(1, "A", output="docs/work/T1.md", accept="A done")))[0]
 
     def test_rejects_normalized_dup_output(self):
-        bad = "- [ ] T1 — A\n  Output: docs/work/T1.md\n- [ ] T2 — B\n  Output: docs/work/../work/T1.md\n"
+        bad = (
+            "- [ ] T1 — A\n  Output: docs/work/T1.md\n  Inputs:\n  Accept: A done\n"
+            "- [ ] T2 — B\n  Output: docs/work/../work/T1.md\n  Inputs:\n  Accept: B done\n"
+        )
         assert not adapter.validate_todo_tasks(todo.parse_todo(bad))[0]
 
     def test_persisted_completion_resume(self):
         """After completion, a second process sees DONE and returns done."""
-        todo_initial = "- [ ] T1 — First\n- [ ] T2 — Second\n"
+        todo_initial = todo_item(1, "First") + todo_item(2, "Second")
         responses = [
             text_response(todo_initial),
             text_response("WRITE docs/work/T1.md\none\nEND WRITE"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — First\n- [ ] T2 — Second\nEND WRITE\n\nDone"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "First", checked=True) + todo_item(2, "Second") + "END WRITE\n\nDone"),
             text_response("WRITE docs/work/T2.md\ntwo\nEND WRITE"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — First\n- [x] T2 — Second\nEND WRITE\n\nDone"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "First", checked=True) + todo_item(2, "Second", checked=True) + "END WRITE\n\nDone"),
             text_response("ACCEPT\nReason: Good."),
             text_response("ACCEPT\nReason: Good."),
             text_response("COMPLETE\nReason: All done."),
@@ -712,13 +830,13 @@ class TestSearch:
 
     def test_search_in_worker_adapter(self):
         from bid.search import MockSearchProvider, SearchResult
-        todo_initial = "- [ ] T1 — Research topic\n"
+        todo_initial = todo_item(1, "Research topic", inputs="docs/research/T1/")
         responses = [
             text_response(todo_initial),
             text_response("SEARCH current Python version\n"),
             text_response("READ docs/research/T1/search-001.md"),
             text_response("WRITE docs/work/T1.md\nPython 3.12\nEND WRITE"),
-            text_response("WRITE docs/todo.md\n- [x] T1 — Research topic\nEND WRITE\n\nDone"),
+            text_response("WRITE docs/todo.md\n" + todo_item(1, "Research topic", checked=True, inputs="docs/research/T1/") + "END WRITE\n\nDone"),
         ]
         backend = model.MockBackend(responses)
         from bid.search import MockSearchProvider, SearchResult
@@ -777,7 +895,9 @@ class TestSearch:
 
     def test_worker_can_read_research(self):
         from bid import permissions
-        ok, _ = permissions.check_read_permission("docs/research/T1/search-001.md", permissions.ROLE_WORKER)
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_worker_workspace(tmp, todo_item(1, "Read research", inputs="docs/research/T1/"))
+            ok, _ = permissions.check_read_permission("docs/research/T1/search-001.md", permissions.ROLE_WORKER, 1, tmp)
         assert ok
 
     def test_cache_survives_new_adapter(self):
