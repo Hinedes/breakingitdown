@@ -6,6 +6,7 @@ on:
 
 jobs:
   pytest:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,4 +14,4 @@ jobs:
         with:
           python-version: '3.11'
       - run: python -m pip install httpx pytest
-      - run: python -m pytest -q
+      - run: python -m pytest -vv
