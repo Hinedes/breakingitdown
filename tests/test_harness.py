@@ -108,10 +108,11 @@ class TestObserver:
             assert "result.md" in observer.poll_changes()
 
     def test_repeated_action_count(self):
-        observer = Observer("/tmp", 0)
-        assert observer.record_action("read_file", {"path": "."}, "docs/") == 1
-        assert observer.record_action("read_file", {"path": "."}, "docs/") == 2
-        assert observer.record_action("read_file", {"path": "x"}, "x") == 1
+        with tempfile.TemporaryDirectory() as tmp:
+            observer = Observer(tmp, 0)
+            assert observer.record_action("read_file", {"path": "."}, "docs/") == 1
+            assert observer.record_action("read_file", {"path": "."}, "docs/") == 2
+            assert observer.record_action("read_file", {"path": "x"}, "x") == 1
 
 
 class TestSession:
