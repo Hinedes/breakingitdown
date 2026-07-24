@@ -76,7 +76,7 @@ class VersionControl:
         if not re.fullmatch(r"s\d+", name):
             raise ValueError(f"invalid state name: {name!r}")
 
-    def restore(self, state_name):
+    def restore(self, state_name, preserve_todo=False):
         if not re.fullmatch(r"s\d+", state_name):
             raise ValueError(f"invalid state name: {state_name!r}")
         snapshot = os.path.realpath(os.path.join(self.states_dir, state_name))
@@ -84,6 +84,13 @@ class VersionControl:
             raise ValueError(f"state path traversal denied: {state_name!r}")
         if not os.path.isdir(snapshot):
             raise ValueError(f"state {state_name} not found")
+
+        todo_text = None
+        if preserve_todo:
+            todo_path = os.path.join(self.workspace, "docs", "todo.md")
+            if os.path.exists(todo_path):
+                with open(todo_path, encoding="utf-8") as file:
+                    todo_text = file.read()
 
         self._acquire_lock()
         try:
@@ -120,6 +127,12 @@ class VersionControl:
             for state in self._list_states():
                 if int(state[1:]) > target_number:
                     shutil.rmtree(os.path.join(self.states_dir, state))
+
+            if todo_text is not None:
+                todo_path = os.path.join(self.workspace, "docs", "todo.md")
+                os.makedirs(os.path.dirname(todo_path), exist_ok=True)
+                with open(todo_path, "w", encoding="utf-8") as file:
+                    file.write(todo_text)
         finally:
             self._release_lock()
 

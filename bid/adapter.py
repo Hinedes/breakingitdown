@@ -1,3 +1,4 @@
+import difflib
 import hashlib
 import os
 import re
@@ -91,7 +92,7 @@ def _parse_content_into_turns(content):
                 i += 1
             if not terminated:
                 # Unterminated WRITE: reject, perform no write
-                commands.append({"type": "WRITE_UNTERMINATED"})
+                commands.append({"type": "WRITE_UNTERMINATED", "path": path})
                 continue
             commands.append({"type": "WRITE", "path": path, "content": "\n".join(body_lines)})
             continue
@@ -99,37 +100,7 @@ def _parse_content_into_turns(content):
         i += 1
 
     return commands
-
-
-def _build_scoped_manifest(workspace, task_number, output_path, input_paths):
-    lines = ["# Available files", ""]
-    for rel in ["docs/todo.md", "docs/worker.md"]:
-        try:
-            p = _safe_path(workspace, rel)
-            if os.path.exists(p):
-                lines.append(f"- {rel}")
-        except ValueError:
-            pass
-    for p in input_paths:
-        try:
-            ap = _safe_path(workspace, p)
-            if os.path.exists(ap):
-                lines.append(f"- {p}")
-        except ValueError:
-            pass
-    if output_path:
-        out_parent = os.path.dirname(output_path)
-        if out_parent:
-            lines.append(f"- {out_parent}/ (output directory)")
-    research = search_mod._research_dir(workspace, task_number)
-    if os.path.isdir(research):
-        lines.append(f"- docs/research/T{task_number}/")
-    return "\n".join(lines) + "\n"
-
-
 # ── TODO validation ──────────────────────────────────────────────────
-
-_TASK_LINE_CHECK = re.compile(r"^\s*[-*]\s+\[([ x])\]\s+(T\d+)\b\s*(.*)")
 
 
 def validate_todo_tasks(tasks):
@@ -138,7 +109,6 @@ def validate_todo_tasks(tasks):
     numbers = [t["number"] for t in tasks]
     if numbers != list(range(1, len(tasks) + 1)):
         return False, f"task numbers must be sequential T1..T{len(tasks)}, got {numbers}"
-    seen_outputs = set()
     for t in tasks:
         if t["id"] != f"T{t['number']}":
             return False, f"{t['id']} has noncanonical format (expected T{t['number']})"
@@ -146,47 +116,7 @@ def validate_todo_tasks(tasks):
             return False, f"{t['id']} must start unchecked"
         if not t["description"].strip():
             return False, f"{t['id']} has empty description"
-        if not t.get("has_output"):
-            return False, f"{t['id']} is missing Output"
-        if not t.get("has_inputs"):
-            return False, f"{t['id']} is missing Inputs"
-        if not t.get("has_accept"):
-            return False, f"{t['id']} is missing Accept"
-        out, inputs = todo_mod.get_task_metadata(tasks, t["number"])
-        accept = todo_mod.get_task_acceptance(tasks, t["number"]).strip()
-        if not out.strip():
-            return False, f"{t['id']} has empty Output"
-        if not accept:
-            return False, f"{t['id']} has empty Accept"
-        for p in [out] + inputs:
-            if not p:
-                return False, f"{t['id']} has empty path"
-            safe, err, rel = permissions.check_path_safety(p, "/dummy")
-            if not safe:
-                return False, f"{t['id']} has unsafe path: {err}"
-            if rel == "." or not rel:
-                return False, f"{t['id']} path is workspace root"
-            if _is_reserved_control_path(rel):
-                return False, f"{t['id']} path targets a protected file: {rel}"
-        if out:
-            _, _, norm_out = permissions.check_path_safety(out, "/dummy")
-            if norm_out in seen_outputs:
-                return False, f"duplicate output path: {out}"
-            seen_outputs.add(norm_out)
     return True, None
-
-
-def _is_reserved_control_path(rel):
-    if rel == ".bid" or rel.startswith(".bid/"):
-        return True
-    if rel == "docs/reviews" or rel.startswith("docs/reviews/"):
-        return True
-    if rel == "docs/.completed_hash":
-        return True
-    if rel in ("docs/task.md", "docs/todo.md", "docs/project-status.md", "docs/decisions.md",
-               "docs/manager.md", "docs/worker.md"):
-        return True
-    return False
 
 
 # ── Adapters ─────────────────────────────────────────────────────────
@@ -210,19 +140,11 @@ class ManagerInitAdapter:
                 "role": "user",
                 "content": (
                     f"# Task\n\n{task_md}\n\n"
-                    "Create a numbered checklist for this task. Every task must include explicit metadata lines:\n"
-                    "  Output: <workspace-relative artifact path>\n"
-                    "  Inputs: <comma-separated workspace-relative inputs or blank>\n"
-                    "  Accept: <specific acceptance criteria>\n\n"
-                    "Return only the Markdown checklist lines, one task block at a time, like:\n"
+                    "Create a numbered checklist for this task. Return only Markdown checklist lines.\n"
+                    "Keep the steps natural. If a step is a deliberate no-op, that is fine.\n\n"
+                    "Example:\n"
                     "- [ ] T1 — Short description\n"
-                    "  Output: docs/work/T1.md\n"
-                    "  Inputs: docs/task.md\n"
-                    "  Accept: File exists and matches the request.\n"
-                    "- [ ] T2 — Short description\n"
-                    "  Output: docs/work/T2.md\n"
-                    "  Inputs:\n"
-                    "  Accept: File exists and matches the request."
+                    "- [ ] T2 — Short description"
                 ),
             },
         ]
@@ -267,7 +189,7 @@ class ManagerInitAdapter:
 class WorkerAdapter:
     MAX_SOFT_RESETS = 3
 
-    def __init__(self, config, task_number, search_provider=None):
+    def __init__(self, config, task_number, search_provider=None, feedback=None):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
@@ -276,6 +198,7 @@ class WorkerAdapter:
         self._search_count = 0
         self._search_limit = config.get("max_searches_per_worker", 10)
         self._cache_hits = 0
+        self.feedback = feedback or ""
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -283,63 +206,29 @@ class WorkerAdapter:
         task = todo_mod.get_task(tasks, self.task_number)
         if not task:
             return {"status": "error", "reason": f"T{self.task_number} not found in TODO"}
-        output_path, input_paths = todo_mod.get_task_metadata(tasks, self.task_number)
 
         worker_policy = _read(self.workspace, "docs/worker.md")
-        manifest = _build_scoped_manifest(self.workspace, self.task_number, output_path, input_paths)
+        task_prompt = (
+            f"\nTask T{self.task_number}: {task['description']}\n\n"
+            "Only use these commands:\n"
+            "  READ <path>     — read a file\n"
+            "  SEARCH <query>  — search for current information\n"
+            "  WRITE <path>    — write content; end with END WRITE on its own line\n"
+            "  Done            — finish when the task is complete\n\n"
+            "If the right answer is no file changes, say Done.\n"
+        )
+        if self.feedback:
+            task_prompt += f"\nPrevious reviewer feedback:\n{self.feedback}\n"
 
         messages = [
             {"role": "system", "content": f"/no_think\n{worker_policy}"},
             {
                 "role": "user",
                 "content": (
-                    f"{manifest}"
-                    f"\nTask T{self.task_number}: {task['description']}\n"
-                    f"Output file: {output_path}\n"
-                    f"{'Input files: ' + ', '.join(input_paths) if input_paths else ''}\n\n"
-                    "Only use these commands:\n"
-                    "  READ <path>     — read a file\n"
-                    "  SEARCH <query>  — search for current information\n"
-                    "  WRITE <path>    — write content; end with END WRITE on its own line\n"
-                    f"  Done            — finish (after checking T{self.task_number} in docs/todo.md)\n\n"
-                    "Example:\n"
-                    f"WRITE {output_path}\n"
-                    "Your artifact content here.\n"
-                    "END WRITE\n"
-                    f"WRITE docs/todo.md\n"
-                    f"- [x] T{self.task_number} — {task['description']}\n"
-                    "END WRITE\n"
-                    "Done\n\n"
-                    "First READ docs/todo.md to see the current task list. "
-                    f"Preserve all existing task lines exactly, changing only T{self.task_number} from [ ] to [x]. "
-                    "Then write your artifact. "
-                    "Finally output Done."
+                    f"{task_prompt}"
                 ),
             },
         ]
-
-        _task_assignment = (
-            f"\nTask T{self.task_number}: {task['description']}\n"
-            f"Output file: {output_path}\n"
-            f"{'Input files: ' + ', '.join(input_paths) if input_paths else ''}\n\n"
-                    "Only use these commands:\n"
-                    "  READ <path>     — read a file\n"
-                    "  SEARCH <query>  — search for current information\n"
-                    "  WRITE <path>    — write content; end with END WRITE on its own line\n"
-                    f"  Done            — finish (after checking T{self.task_number} in docs/todo.md)\n\n"
-            "Example:\n"
-            f"WRITE {output_path}\n"
-            "Your artifact content here.\n"
-            "END WRITE\n"
-            f"WRITE docs/todo.md\n"
-            f"- [x] T{self.task_number} — {task['description']}\n"
-            "END WRITE\n"
-            "Done\n\n"
-            "First READ docs/todo.md to see the current task list. "
-            f"Preserve all existing task lines exactly, changing only T{self.task_number} from [ ] to [x]. "
-            "Then write your artifact. "
-            "Finally output Done."
-        )
 
         observer = Observer(self.workspace, self.task_number)
         hard_ceiling = self.config.get("worker_timeout", 3600)
@@ -347,7 +236,6 @@ class WorkerAdapter:
         repeat_limit = self.config.get("repeat_action_limit", 5)
         session_start = time.monotonic()
         soft_resets = 0
-        done_without_check = 0
         last_sig = None
         turn_repeat = 0
         _read_tracker = {}  # canonical_rel_path → (useful_count, last_hash)
@@ -480,23 +368,7 @@ class WorkerAdapter:
 
             # Done processing
             if saw_done:
-                if observer.task_is_checked():
-                    return {"status": "done", "checked": True}
-                done_without_check += 1
-                if done_without_check >= repeat_limit:
-                    return {
-                        "status": "stalled",
-                        "reason": f"Worker {self.task_number} ended without submitting",
-                    }
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"T{self.task_number} is still unchecked. "
-                        "Submit by writing docs/todo.md with T{self.task_number} set to [x]. "
-                        "Then output Done."
-                    ),
-                })
-                changed = True
+                return {"status": "done", "checked": False}
 
             # Soft reset on repeat stall
             if turn_repeat >= repeat_limit and not changed and not useful:
@@ -504,13 +376,12 @@ class WorkerAdapter:
                 if soft_resets > self.MAX_SOFT_RESETS:
                     return {"status": "stalled", "reason": f"repeated action without progress"}
                 system = messages[0]
-                manifest = _build_scoped_manifest(self.workspace, self.task_number, output_path, input_paths)
                 messages = [
                     system,
                     {
                         "role": "user",
                         "content": (
-                            f"{manifest}{_task_assignment}\n\n"
+                            f"{task_prompt}\n\n"
                             f"[ERROR: did not make progress. "
                             f"Last command: {last_sig.split('|')[0] if '|' in last_sig else last_sig}. "
                             f"Try a different approach.]"
@@ -525,7 +396,6 @@ class WorkerAdapter:
             # Activity marking
             if useful or changed:
                 observer.mark_activity()
-                done_without_check = 0
 
             if observer.inactive_for() > inactivity_timeout:
                 return {"status": "timeout", "reason": f"inactive {observer.inactive_for():.0f}s"}
@@ -537,28 +407,6 @@ class WorkerAdapter:
         if not safe:
             raise ValueError(err)
 
-        if rel == "docs/todo.md":
-            old_text = _read(self.workspace, "docs/todo.md")
-            valid, reason = todo_mod.validate_worker_todo_update(old_text, content, self.task_number)
-            if not valid:
-                old_tasks = todo_mod.parse_todo(old_text)
-                new_tasks = todo_mod.parse_todo(content)
-                merged = old_text
-                toggled = False
-                for nt in new_tasks:
-                    if nt["number"] == self.task_number and nt["checked"]:
-                        ot = todo_mod.get_task(old_tasks, self.task_number)
-                        if ot and not ot["checked"]:
-                            merged = todo_mod.set_task_checked(merged, self.task_number, True)
-                            toggled = True
-                            break
-                if toggled:
-                    _write(self.workspace, rel, merged)
-                    return f"wrote {len(merged)} bytes to {rel}"
-                raise ValueError(f"permission denied: {reason}")
-            _write(self.workspace, rel, content)
-            return f"wrote {len(content)} bytes to {rel}"
-
         allowed, err_msg = permissions.check_write_permission(
             rel, permissions.ROLE_WORKER, self.task_number, self.workspace
         )
@@ -569,127 +417,149 @@ class WorkerAdapter:
         return f"wrote {len(content)} bytes to {rel}"
 
 
-# ── Helpers for review adapters ──────────────────────────────────────
-
-def _find_last_task_line(todo_text):
-    lines = todo_text.split("\n")
-    for i in range(len(lines) - 1, -1, -1):
-        if re.match(r"^\s*[-*]\s+\[[ x]\]\s+T\d+\b", lines[i]):
-            return i
-    return -1
-
-
-def _safe_artifact_path(workspace, output_path):
-    safe, err, rel = permissions.check_path_safety(output_path, workspace)
-    if not safe:
-        raise ValueError(f"unsafe artifact path: {err}")
-    return os.path.join(workspace, rel)
+_REVIEW_CONTROL_PATHS = {
+    ".bid",
+    "docs/task.md",
+    "docs/todo.md",
+    "docs/project-status.md",
+    "docs/decisions.md",
+    "docs/manager.md",
+    "docs/worker.md",
+    "docs/reviews",
+}
 
 
-def _collect_artifact_summaries(workspace, tasks):
-    lines = ["## Artifacts", ""]
-    for t in tasks:
-        out, _ = todo_mod.get_task_metadata(tasks, t["number"])
-        try:
-            path = _safe_artifact_path(workspace, out)
-        except ValueError:
-            continue
-        if os.path.exists(path) and os.path.isfile(path):
+def _review_path_blocked(rel_path):
+    if rel_path in _REVIEW_CONTROL_PATHS:
+        return True
+    return rel_path.startswith(".bid/") or rel_path.startswith("docs/reviews/")
+
+
+def _workspace_tree(root):
+    tree = {}
+    for dirpath, dirs, files in os.walk(root):
+        dirs[:] = [directory for directory in dirs if directory != ".bid"]
+        for filename in files:
+            path = os.path.join(dirpath, filename)
+            rel = os.path.relpath(path, root).replace(os.sep, "/")
+            if _review_path_blocked(rel):
+                continue
             try:
-                with open(path, encoding="utf-8") as f:
-                    body = f.read()
-                preview = body[:150].replace("\n", " ")
-                lines.append(f"### T{t['number']} — {out} ({len(body)}b)")
-                lines.append(f"{preview}")
-                lines.append("")
+                with open(path, encoding="utf-8") as file:
+                    tree[rel] = file.read()
             except OSError:
                 pass
-    return "\n".join(lines) if len(lines) > 2 else ""
+    return tree
 
 
-# ── ArtifactReviewAdapter ────────────────────────────────────────────
+def _workspace_diff(base_root, candidate_root, limit=12000):
+    base = _workspace_tree(base_root)
+    cand = _workspace_tree(candidate_root)
+    chunks = []
+    for rel in sorted(set(base) | set(cand)):
+        before = base.get(rel)
+        after = cand.get(rel)
+        if before == after:
+            continue
+        if before is None:
+            chunks.append(f"### added {rel}")
+            if after:
+                chunks.append(after[:2000])
+            continue
+        if after is None:
+            chunks.append(f"### deleted {rel}")
+            continue
+        chunks.append(f"### modified {rel}")
+        chunks.extend(
+            difflib.unified_diff(
+                before.splitlines(),
+                after.splitlines(),
+                fromfile=f"a/{rel}",
+                tofile=f"b/{rel}",
+                lineterm="",
+            )
+        )
+    text = "\n".join(chunks).strip()
+    return text[:limit] if text else "(no file changes)"
 
-class ArtifactReviewAdapter:
-    """Judge one complete artifact against its one task."""
 
+def _workspace_listing(root, limit=12000):
+    tree = _workspace_tree(root)
+    lines = []
+    for rel in sorted(tree):
+        lines.append(f"### {rel}")
+        body = tree[rel].strip()
+        if body:
+            lines.append(body[:500])
+        lines.append("")
+    text = "\n".join(lines).strip()
+    return text[:limit] if text else "(no workspace files)"
+
+
+def _research_context(workspace, task_number):
+    research_dir = search_mod._research_dir(workspace, task_number)
+    if not os.path.isdir(research_dir):
+        return "", research_dir, False
+
+    parts = ["", "## Supporting research", ""]
+    for fname in sorted(os.listdir(research_dir)):
+        fpath = os.path.join(research_dir, fname)
+        if not os.path.isfile(fpath):
+            continue
+        try:
+            with open(fpath, encoding="utf-8") as file:
+                content = file.read()
+        except OSError:
+            continue
+        parts.append(f"### {fname}")
+        parts.append(content[:500])
+        parts.append("")
+    return ("\n".join(parts).strip(), research_dir, True)
+
+
+class TaskReviewAdapter:
     RETRY_LIMIT = 3
 
-    def __init__(self, config, task_number):
+    def __init__(self, config, task_number, base_state=None):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
+        self.base_state = base_state
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
         tasks = todo_mod.parse_todo(todo_text)
         task = todo_mod.get_task(tasks, self.task_number)
         if not task:
-            return self._make_result("ERROR", "task not found")
+            return {"verdict": "ERROR", "reason": "task not found", "task_number": self.task_number}
 
-        output_path, _ = todo_mod.get_task_metadata(tasks, self.task_number)
-        accept = todo_mod.get_task_acceptance(tasks, self.task_number).strip()
-        try:
-            artifact_path = _safe_artifact_path(self.workspace, output_path)
-        except ValueError as e:
-            return self._make_result("REWORK", str(e))
+        task_md = _read(self.workspace, "docs/task.md")
+        if not self.base_state:
+            return {"verdict": "ERROR", "reason": "base state not found", "task_number": self.task_number}
 
-        if not os.path.exists(artifact_path):
-            return self._make_result("REWORK", "artifact file does not exist")
-        if not os.path.isfile(artifact_path):
-            return self._make_result("REWORK", "artifact path is not a file")
+        base_root = os.path.join(self.workspace, ".bid", "states", self.base_state)
+        if not os.path.isdir(base_root):
+            return {"verdict": "ERROR", "reason": f"base state {self.base_state} not found", "task_number": self.task_number}
 
-        try:
-            with open(artifact_path, encoding="utf-8") as f:
-                artifact_content = f.read()
-        except OSError as e:
-            return self._make_result("REWORK", f"cannot read artifact: {e}")
-
-        if not artifact_content.strip():
-            return self._make_result("REWORK", "artifact is empty")
-        if not accept:
-            return self._make_result("REWORK", "task is missing Accept criteria")
-
-        # Collect research files for this task
-        research_context = ""
-        research_dir = search_mod._research_dir(self.workspace, self.task_number)
-        has_research = os.path.isdir(research_dir)
-        if has_research:
-            research_files = sorted(os.listdir(research_dir))
-            parts = ["", "## Supporting research", ""]
-            for fname in research_files:
-                fpath = os.path.join(research_dir, fname)
-                if os.path.isfile(fpath):
-                    try:
-                        with open(fpath, encoding="utf-8") as fh:
-                            content = fh.read()
-                        parts.append(f"### {fname}")
-                        parts.append(content[:500])
-                        parts.append("")
-                    except OSError:
-                        pass
-            if len(parts) > 3:
-                research_context = "\n".join(parts)
-
-        # Deterministic citation check
-        cited = search_mod.has_citations(artifact_content, research_dir) if has_research else True
+        diff_text = _workspace_diff(base_root, self.workspace)
+        research_context, research_dir, has_research = _research_context(self.workspace, self.task_number)
+        if has_research and not search_mod.has_citations(diff_text, research_dir):
+            return {
+                "verdict": "REWORK",
+                "reason": "artifact does not cite supporting research evidence",
+                "task_number": self.task_number,
+            }
 
         prompt = (
             "# Review Assignment\n\n"
+            f"Original request:\n{task_md}\n\n"
             f"Task:\n{task['description']}\n\n"
-            f"Required output:\n{output_path}\n\n"
-            f"Acceptance criteria:\n{accept}\n\n"
-            f"Artifact:\n{artifact_content}\n"
-            f"{research_context}\n"
-            "Judge only whether this artifact satisfies the acceptance criteria.\n"
+            f"Base -> candidate diff:\n{diff_text}\n"
         )
-        if has_research and not cited:
-            prompt += (
-                "WARNING: This artifact does not cite any evidence from the supporting research.\n"
-                "Factual claims must reference evidence file paths or source URLs.\n"
-            )
-            return self._make_result("REWORK",
-                "artifact does not cite supporting research evidence")
+        if research_context:
+            prompt += f"{research_context}\n\n"
         prompt += (
+            "Judge only whether the diff satisfies the request.\n\n"
             "Return exactly one of:\n\n"
             "ACCEPT\n"
             "Reason: ...\n\n"
@@ -706,7 +576,7 @@ class ArtifactReviewAdapter:
             try:
                 response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 8192))
             except Exception as exc:
-                return self._make_result("ERROR", f"model request failed: {exc}")
+                return {"verdict": "ERROR", "reason": f"model request failed: {exc}", "task_number": self.task_number}
 
             content = (response.get("content") or "").strip()
             raw = content
@@ -715,13 +585,12 @@ class ArtifactReviewAdapter:
             result = self._parse(content)
             if result:
                 result["task_number"] = self.task_number
-                self._save_review(result)
                 return result
 
             messages.append({"role": "assistant", "content": raw or "[no output]"})
             messages.append({"role": "user", "content": "Return ACCEPT or REWORK with Reason."})
 
-        return self._make_result("ERROR", "failed to produce valid review after retries")
+        return {"verdict": "ERROR", "reason": "failed to produce valid review after retries", "task_number": self.task_number}
 
     @staticmethod
     def _parse(content):
@@ -736,39 +605,11 @@ class ArtifactReviewAdapter:
             return None
         return {"verdict": first, "reason": reason}
 
-    def _make_result(self, verdict, reason):
-        result = {"verdict": verdict, "reason": reason, "task_number": self.task_number}
-        self._save_review(result)
-        return result
 
-    def _save_review(self, result):
-        path = os.path.join(self.workspace, "docs/reviews", f"T{self.task_number}.md")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        try:
-            out, _ = todo_mod.get_task_metadata(
-                todo_mod.parse_todo(_read(self.workspace, "docs/todo.md")),
-                self.task_number,
-            )
-            ap = _safe_artifact_path(self.workspace, out)
-            h = _hash_file(ap)
-        except (ValueError, OSError):
-            h = "?"
-        content = (
-            f"# Review T{self.task_number}\n\n"
-            f"Verdict: {result['verdict']}\n"
-            f"Reason: {result.get('reason', '')}\n"
-            f"Task: {self.task_number}\n"
-            f"Artifact hash: {h}\n"
-        )
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
+ArtifactReviewAdapter = TaskReviewAdapter
 
-
-# ── CompletionReviewAdapter ──────────────────────────────────────────
 
 class CompletionReviewAdapter:
-    """After individual artifacts are accepted, check whether the original request is covered."""
-
     RETRY_LIMIT = 3
 
     def __init__(self, config):
@@ -777,38 +618,18 @@ class CompletionReviewAdapter:
 
     def run(self, backend):
         task_md = _read(self.workspace, "docs/task.md")
-        todo_text = _read(self.workspace, "docs/todo.md")
-        tasks = todo_mod.parse_todo(todo_text)
-
-        summaries = []
-        for t in tasks:
-            out, _ = todo_mod.get_task_metadata(tasks, t["number"])
-            try:
-                path = _safe_artifact_path(self.workspace, out)
-            except ValueError:
-                continue
-            if os.path.exists(path) and os.path.isfile(path):
-                try:
-                    with open(path, encoding="utf-8") as f:
-                        body = f.read()
-                    summaries.append(f"- T{t['number']} ({out}, {len(body)}b)")
-                except OSError:
-                    pass
-
-        summary_text = "\n".join(summaries) if summaries else "(no artifacts)"
+        workspace_text = _workspace_listing(self.workspace)
 
         prompt = (
             "# Completion Review\n\n"
             f"Original request:\n{task_md}\n\n"
-            f"Completed tasks:\n{todo_text}\n\n"
-            f"Artifacts:\n{summary_text}\n\n"
-            "Does the completed work fully satisfy the original request?\n\n"
+            f"Final workspace:\n{workspace_text}\n\n"
             "Return exactly one of:\n\n"
             "COMPLETE\n"
             "Reason: ...\n\n"
             "MISSING\n"
-            "- description of missing deliverable\n"
-            "- description of missing deliverable"
+            "- missing deliverable\n"
+            "- missing deliverable"
         )
 
         messages = [
@@ -831,7 +652,7 @@ class CompletionReviewAdapter:
                 return result
 
             messages.append({"role": "assistant", "content": raw or "[no output]"})
-            messages.append({"role": "user", "content": "Return COMPLETE or MISSING with details."})
+            messages.append({"role": "user", "content": "Return COMPLETE or MISSING."})
 
         return {"verdict": "ERROR", "reason": "failed to produce valid completion review"}
 
@@ -847,10 +668,10 @@ class CompletionReviewAdapter:
                 m = re.match(r"^\s*[-*]\s+(.*)", line)
                 if m:
                     item = m.group(1).strip()
-                    if item and item.lower() not in seen:
-                        seen.add(item.lower())
+                    key = item.lower()
+                    if item and key not in seen:
+                        seen.add(key)
                         missing.append(item)
-            if not missing:
-                return None
-            return {"verdict": "MISSING", "missing": missing}
+            if missing:
+                return {"verdict": "MISSING", "missing": missing}
         return None

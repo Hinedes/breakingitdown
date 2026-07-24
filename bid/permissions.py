@@ -1,7 +1,5 @@
 import os
 
-from . import todo as todo_mod
-
 ROLE_MANAGER = "manager"
 ROLE_WORKER = "worker"
 
@@ -14,54 +12,27 @@ MANAGER_WRITABLE = {
 
 WORKER_BLOCKED = {
     "docs/task.md",
+    "docs/todo.md",
     "docs/project-status.md",
     "docs/decisions.md",
     "docs/manager.md",
     "docs/worker.md",
+    "docs/reviews",
+    ".bid",
 }
 
 
-def _path_blocked(rel_path):
-    if rel_path == ".bid" or rel_path.startswith(".bid/"):
+def _is_blocked_path(rel_path):
+    if rel_path in WORKER_BLOCKED:
         return True
-    if rel_path == "docs/reviews" or rel_path.startswith("docs/reviews/"):
-        return True
-    if rel_path == "docs/research" or rel_path.startswith("docs/research/"):
-        return True
-    if rel_path == "docs/.completed_hash":
-        return True
-    return False
-
-
-def _worker_output_path(workspace, worker_number):
-    todo_path = os.path.join(workspace, "docs/todo.md")
-    try:
-        with open(todo_path, encoding="utf-8") as file:
-            tasks = todo_mod.parse_todo(file.read())
-    except OSError:
-        return None
-
-    task = todo_mod.get_task(tasks, worker_number)
-    if not task or not task.get("has_output") or not task.get("output"):
-        return None
-
-    output_path, _ = todo_mod.get_task_metadata(tasks, worker_number)
-    safe, _, rel = check_path_safety(output_path, workspace)
-    if not safe:
-        return None
-    return rel
+    return any(
+        rel_path.startswith(prefix + "/")
+        for prefix in (".bid", "docs/reviews")
+    )
 
 
 def _read_blocked(rel_path):
-    if rel_path == ".bid" or rel_path.startswith(".bid/"):
-        return True
-    if rel_path == "docs/reviews" or rel_path.startswith("docs/reviews/"):
-        return True
-    if rel_path == "docs/project-status.md":
-        return True
-    if rel_path == "docs/.completed_hash":
-        return True
-    return False
+    return _is_blocked_path(rel_path)
 
 
 def check_path_safety(path, workspace_root):
@@ -80,20 +51,8 @@ def check_write_permission(rel_path, role, worker_number=None, workspace=None):
         return False, f"manager cannot write {rel_path}"
 
     if role == ROLE_WORKER:
-        if _path_blocked(rel_path):
+        if _is_blocked_path(rel_path):
             return False, f"worker cannot write control path {rel_path}"
-        if rel_path == "docs/todo.md":
-            return True, None
-        if rel_path in WORKER_BLOCKED:
-            return False, f"worker cannot modify {rel_path}"
-        if workspace is None or worker_number is None:
-            return False, "worker may only write docs/todo.md or assigned output file"
-
-        output_path = _worker_output_path(workspace, worker_number)
-        if not output_path:
-            return False, f"worker {worker_number} has no assigned output file"
-        if rel_path != output_path:
-            return False, f"worker may only write {output_path} or docs/todo.md"
         return True, None
 
     return False, f"unknown role: {role}"

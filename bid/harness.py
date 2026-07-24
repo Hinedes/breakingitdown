@@ -1,62 +1,14 @@
-import hashlib
+import re
 import os
 import shutil
-import time
-import tempfile
 
 from . import adapter as adapter_mod
 from . import model as model_mod
-from . import permissions
 from . import todo as todo_mod
 from . import vc as vc_mod
-from .observer import Observer
 
 
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
-
-MANAGER_INSTRUCTIONS = """# Manager
-
-You manage the project but do not perform Worker tasks.
-
-Initialization:
-- Read docs/task.md.
-- Break the request into sequential numbered tasks.
-- Write the complete checklist to docs/todo.md.
-- Every task must include explicit Output, Inputs, and Accept lines.
-
-Review:
-- Read the original task, checklist, and relevant Worker artifacts.
-- Write DONE to docs/project-status.md only when the whole request is satisfied.
-- Otherwise uncheck inadequate tasks or add missing tasks in docs/todo.md.
-
-When the current Manager job is complete, output exactly `Done`.
-"""
-
-WORKER_INSTRUCTIONS = """# Worker
-
-You have one task.
-
-- Read docs/todo.md and the minimum other material needed.
-- Read docs/todo.md, including its Output, Inputs, and Accept fields, and the minimum other material needed.
-- Perform only your assigned task.
-- Write only your assigned Output file and docs/todo.md.
-- To submit, rewrite docs/todo.md changing only your own checkbox from `[ ]` to `[x]`.
-- You may keep working after checking it, revise files, or uncheck it again while backtracking.
-- When the final submitted state is ready, keep your checkbox checked and output exactly `Done`.
-"""
-
-
-def _policy_content(name):
-    """Return policy from prompts/ directory, falling back to builtins."""
-    path = os.path.join(PROMPTS_DIR, f"{name}.md")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    if name == "manager":
-        return MANAGER_INSTRUCTIONS
-    if name == "worker":
-        return WORKER_INSTRUCTIONS
-    return ""
 
 
 def get_config():
@@ -107,88 +59,91 @@ def write_file_content(path, content):
         file.write(content)
 
 
+def _append_missing_tasks(todo_text, missing):
+    seen = {task["description"].strip().lower() for task in todo_mod.parse_todo(todo_text)}
+    next_number = max((task["number"] for task in todo_mod.parse_todo(todo_text)), default=0)
+    for desc in missing:
+        item = desc.strip()
+        key = item.lower()
+        if not item or key in seen:
+            continue
+        seen.add(key)
+        next_number += 1
+        todo_text += f"\n- [ ] T{next_number} — {item}\n"
+    return todo_text
+
+
+def _task_base_state(vc_system):
+    current = vc_system.get_current()
+    if not current:
+        return None
+    log = vc_system.get_log()
+    marker = f"### {current}\n"
+    start = log.rfind(marker)
+    if start < 0:
+        return current
+    section = log[start + len(marker):]
+    for line in section.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            break
+        match = re.search(r"\bbase=(s\d+)\b", stripped)
+        if match:
+            return match.group(1)
+    return current
+
+
 def ensure_workspace(workspace):
     docs = os.path.join(workspace, "docs")
     os.makedirs(docs, exist_ok=True)
-    write_file_content(os.path.join(docs, "manager.md"), _policy_content("manager"))
-    write_file_content(os.path.join(docs, "worker.md"), _policy_content("worker"))
-
-
-def _todo_hash(text):
-    return hashlib.sha256(text.encode()).hexdigest()
-
-
-_COMPLETED_HASH_FILE = "docs/.completed_hash"
-
-
-def _compute_plan_hash(workspace, tasks):
-    """Return SHA-256 of (TODO + sorted artifact paths + each artifact content)."""
-    todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
-    h = _todo_hash(todo_text)
-    for t in tasks:
-        out, _ = todo_mod.get_task_metadata(tasks, t["number"])
-        p = os.path.join(workspace, out)
-        if os.path.exists(p):
-            h += _todo_hash(read_file_content(p))
-    return _todo_hash(h)
-
-
-def _is_completed(workspace, tasks):
-    """DONE is valid only when persisted hash matches current state."""
-    status_raw = read_file_content(os.path.join(workspace, "docs/project-status.md")).strip()
-    if status_raw != "# Project Status\n\nDONE":
-        return False
-    hash_path = os.path.join(workspace, _COMPLETED_HASH_FILE)
-    if not os.path.exists(hash_path):
-        return False
-    stored = read_file_content(hash_path).strip()
-    current = _compute_plan_hash(workspace, tasks)
-    return stored == current
+    write_file_content(os.path.join(docs, "manager.md"), load_prompt("manager"))
+    write_file_content(os.path.join(docs, "worker.md"), load_prompt("worker"))
 
 
 # ── Worker session ───────────────────────────────────────────────────
 
-def run_worker_session(number, config, backend=None):
+def run_worker_session(number, config, backend=None, feedback=None):
     workspace = config["workspace"]
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
     base_state = vc_system.get_current()
 
     try:
-        worker_adapter = adapter_mod.WorkerAdapter(config, number)
+        worker_adapter = adapter_mod.WorkerAdapter(config, number, feedback=feedback)
         b = backend or create_backend(config)
         result = worker_adapter.run(b)
     except Exception as exc:
         result = {"status": "error", "reason": str(exc)}
 
-    checked = Observer(workspace, number).task_is_checked()
-
-    if checked:
-        termination = "normal" if result.get("status") == "done" else result.get("status", "error")
+    if result.get("status") == "done":
         try:
             state = vc_system.save_state(
                 f"Worker {number}",
-                f"T{number} submitted. Termination: {termination}.",
+                f"T{number} candidate base={base_state}",
             )
         except Exception:
             if base_state:
-                vc_system.restore(base_state)
-            return {"status": "error", "reason": "vc save failed after checked worker"}
+                vc_system.restore(base_state, preserve_todo=True)
+            return {"status": "error", "reason": "vc save failed after worker"}
         return {
             "status": "submitted",
             "summary": f"T{number} submitted",
-            "termination": termination,
+            "termination": "normal",
             "state": state,
+            "base_state": base_state,
         }
 
     if base_state:
         try:
-            vc_system.restore(base_state)
+            vc_system.restore(base_state, preserve_todo=True)
         except Exception as exc:
             return {"status": "error", "reason": f"rollback failed: {exc}"}
     return {
         "status": "error",
         "reason": result.get("reason", f"T{number} was not submitted"),
+        "termination": result.get("status", "error"),
     }
 
 
@@ -254,144 +209,82 @@ def run_project(config, backend=None):
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
     backend = backend or create_backend(config)
+    reviewer_feedback = {}
+    current_task_number = None
+    current_task_base_state = None
 
     while True:
         todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
         tasks = todo_mod.parse_todo(todo_text)
-        status_text = read_file_content(os.path.join(workspace, "docs/project-status.md"))
 
-        if tasks and todo_mod.all_checked(tasks) and _is_completed(workspace, tasks):
-            return {"status": "done"}
+        if not tasks:
+            return {"status": "error", "reason": "no TODO tasks"}
+
+        if todo_mod.all_checked(tasks):
+            completion = adapter_mod.CompletionReviewAdapter(config).run(backend)
+            if completion.get("verdict") == "COMPLETE":
+                return {"status": "done"}
+            if completion.get("verdict") == "MISSING":
+                todo_text = _append_missing_tasks(todo_text, completion.get("missing", []))
+                write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
+                current_task_number = None
+                current_task_base_state = None
+                continue
+            return {"status": "error", "reason": completion.get("reason", "completion review error"), "detail": completion}
 
         unchecked = todo_mod.first_unchecked(tasks)
-        if unchecked is not None:
-            number = unchecked["number"]
-            print(f"Worker {number}...")
-            try:
-                result = run_worker_session(number, config, backend=backend)
-            except Exception as exc:
-                return {"status": "error", "reason": f"Worker {number} exception: {exc}"}
-            if result["status"] != "submitted":
-                print(f"Worker {number} failed: {result.get('reason', 'unknown')}")
-                return {"status": "error", "reason": f"Worker {number} failed", "detail": result}
-            print(f"Worker {number} submitted T{number} ({result['termination']}, {result['state']}).")
-            continue
 
-        print("All submitted. Reviewing artifacts...")
-        base_state = vc_system.get_current()
+        if unchecked is None:
+            return {"status": "error", "reason": "no unchecked task found"}
 
-        # Phase 1: review each artifact individually
-        reviews = []
+        number = unchecked["number"]
+        if current_task_number != number or current_task_base_state is None:
+            current_task_number = number
+            current_task_base_state = _task_base_state(vc_system)
+        print(f"Worker {number}...")
         try:
-            for task in tasks:
-                a_review = adapter_mod.ArtifactReviewAdapter(config, task["number"])
-                reviews.append(a_review.run(backend))
+            result = run_worker_session(number, config, backend=backend, feedback=reviewer_feedback.get(number))
         except Exception as exc:
-            if base_state:
-                vc_system.restore(base_state)
+            return {"status": "error", "reason": f"Worker {number} exception: {exc}"}
+        if result["status"] != "submitted":
+            print(f"Worker {number} failed: {result.get('reason', 'unknown')}")
+            return {"status": "error", "reason": f"Worker {number} failed", "detail": result}
+        print(f"Worker {number} submitted T{number} ({result['termination']}, {result['state']}).")
+
+        review = None
+        try:
+            review = adapter_mod.TaskReviewAdapter(config, number, base_state=current_task_base_state).run(backend)
+        except Exception as exc:
             return {"status": "error", "reason": f"review exception: {exc}"}
 
-        errors = [r for r in reviews if r["verdict"] == "ERROR"]
-        if errors:
-            if base_state:
-                vc_system.restore(base_state)
-            return {
-                "status": "error",
-                "reason": f"review errors: {[e.get('reason','?')[:60] for e in errors]}",
-                "detail": reviews,
-            }
+        if review.get("verdict") == "ERROR":
+            return {"status": "error", "reason": review.get("reason", "review error"), "detail": review}
 
-        rework = [r for r in reviews if r["verdict"] == "REWORK"]
-        if rework:
-            print(f"Reopening {len(rework)} tasks: {[r['task_number'] for r in rework]}")
-            todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
-            for r_item in rework:
-                tn = r_item.get("task_number", 0)
-                todo_text = todo_mod.set_task_checked(todo_text, tn, False)
-            try:
-                write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
-                vc_system.save_state("Review", f"reopened {[r_item.get('task_number') for r_item in rework]}")
-            except Exception:
-                if base_state:
-                    vc_system.restore(base_state)
-                return {"status": "error", "reason": "reopen+save failed"}
+        if review.get("verdict") == "REWORK":
+            reviewer_feedback[number] = review.get("reason", "")
+            print(f"Worker {number} rework: {reviewer_feedback[number]}")
             continue
 
-        # Phase 2: all artifacts accepted — check project completeness
-        print("All artifacts accepted. Checking completion...")
-        try:
-            completion = adapter_mod.CompletionReviewAdapter(config)
-            c_result = completion.run(backend)
-        except Exception as exc:
-            if base_state:
-                vc_system.restore(base_state)
-            return {"status": "error", "reason": f"completion review exception: {exc}"}
-
-        if not isinstance(c_result, dict):
-            if base_state:
-                vc_system.restore(base_state)
-            return {"status": "error", "reason": "completion review returned non-dict"}
-
-        if c_result.get("verdict") == "ERROR":
-            if base_state:
-                vc_system.restore(base_state)
-            return {"status": "error", "reason": f"completion review: {c_result.get('reason','?')}"}
-
-        if c_result.get("verdict") == "MISSING":
-            missing = _deduplicate(c_result.get("missing", []))
-            if not missing:
-                if base_state:
-                    vc_system.restore(base_state)
-                return {"status": "error", "reason": "MISSING verdict with no items"}
-            print(f"Adding {len(missing)} missing tasks...")
+        if review.get("verdict") == "ACCEPT":
+            reviewer_feedback.pop(number, None)
             todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
-            tasks_now = todo_mod.parse_todo(todo_text)
-            max_num = max((t["number"] for t in tasks_now), default=0)
-            for desc in missing:
-                max_num += 1
-                todo_text += (
-                    f"\n- [ ] T{max_num} — {desc}\n"
-                    f"  Output: docs/work/T{max_num}.md\n"
-                    "  Inputs:\n"
-                    f"  Accept: {desc}\n"
-                )
-            try:
-                write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
-                vc_system.save_state("Review", f"added {len(missing)} missing tasks")
-            except Exception:
-                if base_state:
-                    vc_system.restore(base_state)
-                return {"status": "error", "reason": "missing-add+save failed"}
-            continue
+            todo_text = todo_mod.set_task_checked(todo_text, number, True)
+            write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
+            current_task_number = None
+            current_task_base_state = None
 
-        if c_result.get("verdict") == "COMPLETE":
-            try:
-                tasks_now = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
-                plan_hash = _compute_plan_hash(workspace, tasks_now)
-                write_file_content(os.path.join(workspace, _COMPLETED_HASH_FILE), plan_hash)
-                write_file_content(os.path.join(workspace, "docs/project-status.md"),
-                                    "# Project Status\n\nDONE\n")
-                vc_system.save_state("Review", "Project completed")
-            except Exception:
-                if base_state:
-                    vc_system.restore(base_state)
-                return {"status": "error", "reason": "completion+save failed"}
-            return {"status": "done"}
+            if todo_mod.all_checked(todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))):
+                completion = adapter_mod.CompletionReviewAdapter(config).run(backend)
+                if completion.get("verdict") == "COMPLETE":
+                    return {"status": "done"}
+                if completion.get("verdict") == "MISSING":
+                    todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
+                    todo_text = _append_missing_tasks(todo_text, completion.get("missing", []))
+                    write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
+                    continue
+                return {"status": "error", "reason": completion.get("reason", "completion review error"), "detail": completion}
 
-        if base_state:
-            vc_system.restore(base_state)
-        return {"status": "error", "reason": f"unexpected completion verdict: {c_result.get('verdict', '?')}"}
-
-
-def _deduplicate(items):
-    seen = set()
-    out = []
-    for item in items:
-        s = item.strip().lower()
-        if s and s not in seen:
-            seen.add(s)
-            out.append(item.strip())
-    return out
+        return {"status": "error", "reason": f"unexpected review verdict: {review.get('verdict', '?')}"}
 
 
 def show_status(config):
@@ -402,10 +295,9 @@ def show_status(config):
     current = vc_mod.VersionControl(workspace).get_current() or "?"
     tasks = todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md")))
     checked = sum(1 for task in tasks if task["checked"])
-    completed = _is_completed(workspace, tasks)
     print(f"VC state: {current}")
     print(f"Tasks:    {checked}/{len(tasks)} checked")
-    print(f"Done:     {'yes' if completed else 'no'}")
+    print(f"Done:     {'yes' if tasks and todo_mod.all_checked(tasks) else 'no'}")
     for task in tasks:
         mark = "x" if task["checked"] else " "
         print(f"  [{mark}] {task['id']} — {task['description']}")

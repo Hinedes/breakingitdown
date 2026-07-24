@@ -8,26 +8,25 @@ The harness owns procedure. The model reads, writes, searches when available, re
 
 ```text
 User task
-→ Manager creates docs/todo.md
+→ Manager creates docs/todo.md checklist
 → BID starts the first unchecked Worker
-→ Worker reads/writes one task
-→ Worker checks only its own TODO box
-→ Worker may continue revising or backtrack
+→ Worker reads/writes/searches for one task
 → Worker outputs Done
-→ BID records a VC state
-→ next Worker
-→ Manager reviews all submitted work
+→ BID saves a candidate VC state
+→ Reviewer compares base to candidate
+→ ACCEPT marks the task checked
+→ next Worker or finish
 ```
 
-A checkbox means **submitted for Manager review**, not accepted.
+A checkbox means **accepted**.
 
 BID observes the filesystem, TODO transitions, model output, repeated operations, inactivity, and hard runtime ceilings. The Worker is not required to call an invented `finish`, `submit_task`, or `check_own_task` tool.
 
 ## Authority
 
-- **Manager:** creates and revises the plan, reviews artifacts, reopens tasks, and declares the project complete.
-- **Worker N:** performs only Task TN and may change only its own checkbox in `docs/todo.md`.
-- **Harness:** selects roles, validates writes, detects progress and loops, handles timeouts, saves states, rolls back failed work, and schedules the next role.
+- **Manager:** creates and revises the plan, reviews candidate diffs, reopens tasks, and declares the project complete.
+- **Worker N:** performs only Task TN and may change any non-control workspace files.
+- **Harness:** selects roles, validates writes, detects progress and loops, handles timeouts, saves candidate states, reviews diffs, and marks accepted tasks.
 - **VC:** native linear snapshots named `s0`, `s1`, `s2`, and so on.
 
 ## Model operations
@@ -42,9 +41,9 @@ The current local tool surface is deliberately small:
 There are no Worker terminal tools. Completion is observable state:
 
 ```text
-own checkbox checked + final output Done → normal submission
-own checkbox checked + timeout/crash/stall → abnormal submission for Manager review
-own checkbox unchecked + timeout/crash/stall → rollback
+ worker Done + reviewer ACCEPT → normal completion
+ worker Done + reviewer REWORK → task stays open for another pass
+ timeout/crash/stall → rollback
 ```
 
 ## Quick start
@@ -90,7 +89,7 @@ python bid.py vc log
 python bid.py vc rollback s3
 ```
 
-Each accepted role run produces one complete named state. Unfinished unchecked work is restored to the previous state.
+Each submitted worker run produces one candidate state. Manual rollback remains available.
 
 ## Tests
 
@@ -98,7 +97,7 @@ Each accepted role run produces one complete named state. Unfinished unchecked w
 python -m pytest -q
 ```
 
-The suite covers TODO parsing and ownership, role permissions, tool execution, observer state, repeated-action stalls, Worker backtracking, abnormal checked submission, rollback, Manager review, and the complete Manager → Workers → Manager lifecycle.
+The suite covers TODO parsing, permissions, worker submission, retry/rework, diff review, and the Manager → Worker → Review lifecycle.
 
 ## Project tree
 

@@ -1,7 +1,6 @@
 import os
 
 from . import permissions
-from . import todo as todo_mod
 
 
 def _safe_path(args, workspace, key="path"):
@@ -87,17 +86,8 @@ def handle_write_file(args, workspace, role, worker_number):
     if not allowed:
         return f"permission denied: {err_msg}"
 
-    abs_path = os.path.join(workspace, rel)
-    if role == permissions.ROLE_WORKER and rel == "docs/todo.md":
-        if not os.path.exists(abs_path):
-            return "error: todo.md not found"
-        with open(abs_path, "r", encoding="utf-8") as file:
-            current = file.read()
-        valid, reason = todo_mod.validate_worker_todo_update(current, content, worker_number)
-        if not valid:
-            return f"permission denied: {reason}"
-
     try:
+        abs_path = os.path.join(workspace, rel)
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
         with open(abs_path, "w", encoding="utf-8") as file:
             file.write(content)
@@ -128,10 +118,6 @@ def handle_replace_text(args, workspace, role, worker_number):
         if old_text not in current:
             return f"old_text not found in {rel}"
         updated = current.replace(old_text, new_text, 1)
-        if role == permissions.ROLE_WORKER and rel == "docs/todo.md":
-            valid, reason = todo_mod.validate_worker_todo_update(current, updated, worker_number)
-            if not valid:
-                return f"permission denied: {reason}"
         with open(abs_path, "w", encoding="utf-8") as file:
             file.write(updated)
         return f"replaced text in {rel}"
