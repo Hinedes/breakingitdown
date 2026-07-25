@@ -621,3 +621,64 @@ class TestResumeBehavior:
             assert "Need evidence." not in latest_s2
             assert "rework_reason:" in latest_s2
             assert vc.VersionControl(tmp).get_current() == "s2"
+
+    def test_malformed_write_is_rejected_and_logged(self):
+        init_backend = model.MockBackend([text_response(todo_item(1, "Verify malformed write rejection"))])
+        backend = model.MockBackend([
+            text_response("WRITE README.md << 'EOF'\nboom\nEND WRITE"),
+            text_response("WRITE notes.txt\nok\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Fine."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("Verify malformed write rejection", cfg, backend=init_backend)["status"] == "success"
+
+            result = harness.run_project(cfg, backend=backend)
+            assert result["status"] == "done"
+
+            with open(os.path.join(tmp, "notes.txt"), encoding="utf-8") as file:
+                assert file.read() == "ok"
+
+            with open(os.path.join(tmp, ".bid", "log.md"), encoding="utf-8") as file:
+                log_text = file.read()
+            assert "worker raw response:" in log_text
+            assert "worker parsed command:" in log_text
+            assert "WRITE README.md << 'EOF'" in log_text
+            assert "malformed WRITE path" in log_text
+
+    def test_run_cannot_delete_control_state_and_worker_continues(self):
+        init_backend = model.MockBackend([text_response(todo_item(1, "Protect control state"))])
+        backend = model.MockBackend([
+            text_response("RUN rm -f docs/todo.md\nDone"),
+            text_response("WRITE notes.txt\nok\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Fixed."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("Protect control state", cfg, backend=init_backend)["status"] == "success"
+
+            result = harness.run_project(cfg, backend=backend)
+            assert result["status"] == "done"
+
+            with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
+                todo_text = file.read()
+            assert "Protect control state" in todo_text
+
+            with open(os.path.join(tmp, "notes.txt"), encoding="utf-8") as file:
+                assert file.read() == "ok"
+
+            with open(os.path.join(tmp, ".bid", "log.md"), encoding="utf-8") as file:
+                log_text = file.read()
+            assert "worker parsed command:\n  RUN rm -f docs/todo.md" in log_text
+            assert "worker recovery:\n  restored protected control state" in log_text
+
+            assert any(
+                "policy violation: protected control state changed; restored" in message.get("content", "")
+                for request in backend.call_history
+                for message in request["messages"]
+                if message.get("role") == "user"
+            )

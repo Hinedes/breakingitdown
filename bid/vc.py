@@ -142,6 +142,16 @@ class VersionControl:
         with open(self.log_file, encoding="utf-8") as file:
             return file.read().rstrip()
 
+    def append_log(self, text):
+        self._acquire_lock()
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as file:
+                file.write(text)
+                if text and not text.endswith("\n"):
+                    file.write("\n")
+        finally:
+            self._release_lock()
+
     def _save_snapshot_atomic(self, name):
         destination = os.path.join(self.states_dir, name + ".tmp")
         if os.path.isdir(destination):

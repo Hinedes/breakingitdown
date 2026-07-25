@@ -5,11 +5,14 @@ import shlex
 import re
 import subprocess
 import sys
+import shutil
+import tempfile
 import time
 
 from . import permissions
 from . import search as search_mod
 from . import todo as todo_mod
+from . import vc as vc_mod
 from .observer import Observer
 
 
@@ -56,6 +59,17 @@ def _hash_file(path):
 
 RUN_OUTPUT_LIMIT = 2000
 
+CONTROL_ROOTS = (
+    ".bid",
+    "docs/task.md",
+    "docs/todo.md",
+    "docs/worker.md",
+    "docs/manager.md",
+    "docs/project-status.md",
+    "docs/decisions.md",
+    "docs/reviews",
+)
+
 
 def _bounded_text(text, limit=RUN_OUTPUT_LIMIT):
     if isinstance(text, bytes):
@@ -64,6 +78,93 @@ def _bounded_text(text, limit=RUN_OUTPUT_LIMIT):
     if len(text) <= limit:
         return text
     return text[:limit] + "\n...[truncated]"
+
+
+def _indented_text(text):
+    text = _bounded_text(text)
+    if not text:
+        text = "(empty)"
+    return "\n".join((f"  {line}" if line else "") for line in text.splitlines())
+
+
+def _log_worker_event(vc_system, label, text):
+    vc_system.append_log(f"\n{label}:\n{_indented_text(text)}\n")
+
+
+def _command_label(cmd):
+    if cmd["type"] == "READ":
+        return f"READ {cmd['path']}"
+    if cmd["type"] == "WRITE":
+        return f"WRITE {cmd['path']}"
+    if cmd["type"] == "WRITE_UNTERMINATED":
+        return f"WRITE {cmd['path']} [unterminated]"
+    if cmd["type"] == "RUN":
+        return f"RUN {cmd['command']}"
+    if cmd["type"] == "Done":
+        return "Done"
+    return cmd["type"]
+
+
+def _snapshot_control_state(workspace):
+    snapshot = tempfile.mkdtemp(prefix="bid-control-")
+    for rel in CONTROL_ROOTS:
+        source = os.path.join(workspace, rel)
+        if not os.path.exists(source):
+            continue
+        target = os.path.join(snapshot, rel)
+        if os.path.isdir(source):
+            shutil.copytree(source, target)
+        else:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(source, target)
+    return snapshot
+
+
+def _entry_signature(path):
+    if not os.path.exists(path):
+        return None
+    if os.path.isfile(path):
+        with open(path, "rb") as file:
+            return ("file", hashlib.sha256(file.read()).hexdigest())
+    if os.path.isdir(path):
+        return (
+            "dir",
+            tuple(
+                sorted(
+                    (name, _entry_signature(os.path.join(path, name)))
+                    for name in os.listdir(path)
+                )
+            ),
+        )
+    return ("other", None)
+
+
+def _control_state_changed(workspace, snapshot):
+    for rel in CONTROL_ROOTS:
+        if _entry_signature(os.path.join(workspace, rel)) != _entry_signature(os.path.join(snapshot, rel)):
+            return True
+    return False
+
+
+def _restore_control_state(workspace, snapshot):
+    for rel in sorted(CONTROL_ROOTS, key=lambda item: item.count("/"), reverse=True):
+        target = os.path.join(workspace, rel)
+        if os.path.isdir(target) and not os.path.islink(target):
+            shutil.rmtree(target)
+        elif os.path.exists(target):
+            os.remove(target)
+
+    for rel in CONTROL_ROOTS:
+        source = os.path.join(snapshot, rel)
+        if not os.path.exists(source):
+            continue
+        target = os.path.join(workspace, rel)
+        if os.path.isdir(source):
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copytree(source, target)
+        else:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(source, target)
 
 
 def format_run_evidence(entries):
@@ -234,6 +335,7 @@ class WorkerAdapter:
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
+        self._vc = vc_mod.VersionControl(self.workspace)
         self._search_provider = search_provider or search_mod.create_provider(config)
         self._search_cache = search_mod.SearchCache(self.workspace)
         self._search_count = 0
@@ -282,12 +384,15 @@ class WorkerAdapter:
             except Exception as exc:
                 return {"status": "error", "reason": f"model request failed: {exc}"}
 
-            content = (response.get("content") or "").strip()
+            raw_content = response.get("content") or ""
+            content = raw_content.strip()
 
             messages.append({"role": "assistant", "content": content or "[no output]"})
+            _log_worker_event(self._vc, "worker raw response", raw_content)
             changed = False
             useful = False
             saw_done = False
+            policy_violation = False
 
             if content:
                 commands = _parse_content_into_turns(content)
@@ -295,6 +400,7 @@ class WorkerAdapter:
                 commands = []
 
             if not commands:
+                _log_worker_event(self._vc, "worker parsed command", "(none)")
                 sig = "no_commands"
                 if sig == last_sig:
                     turn_repeat += 1
@@ -307,8 +413,10 @@ class WorkerAdapter:
                 })
             else:
                 for cmd in commands:
+                    _log_worker_event(self._vc, "worker parsed command", _command_label(cmd))
                     if cmd["type"] == "Done":
                         saw_done = True
+                        _log_worker_event(self._vc, "worker result", "done")
                         continue
 
                     if cmd["type"] == "READ":
@@ -343,6 +451,7 @@ class WorkerAdapter:
                         else:
                             turn_repeat = 0
                         last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
                         messages.append({"role": "user", "content": result})
                         continue
 
@@ -370,6 +479,7 @@ class WorkerAdapter:
                         else:
                             turn_repeat = 0
                         last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
                         messages.append({"role": "user", "content": result})
                         continue
 
@@ -388,17 +498,56 @@ class WorkerAdapter:
                         else:
                             turn_repeat = 0
                         last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
                         messages.append({"role": "user", "content": result})
                         continue
 
                     if cmd["type"] == "RUN":
-                        result = self._run_command(cmd["command"])
+                        control_snapshot = _snapshot_control_state(self.workspace)
+                        control_changed = False
+                        ordinary_changed = False
+                        try:
+                            try:
+                                result = self._run_command(cmd["command"])
+                            except Exception as exc:
+                                result = f"error: execution failed: {exc}"
+
+                            control_changed = _control_state_changed(self.workspace, control_snapshot)
+                            if control_changed:
+                                _restore_control_state(self.workspace, control_snapshot)
+                            ordinary_changed = bool(observer.poll_changes())
+                        finally:
+                            shutil.rmtree(control_snapshot, ignore_errors=True)
+
+                        if control_changed:
+                            _log_worker_event(self._vc, "worker result", result)
+                            _log_worker_event(self._vc, "worker recovery", "restored protected control state")
+                            sig = f"RUN {cmd['command']}|policy violation"
+                            if sig == last_sig:
+                                turn_repeat += 1
+                            else:
+                                turn_repeat = 0
+                            last_sig = sig
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "policy violation: protected control state changed; restored\n"
+                                    f"command result:\n{_indented_text(result)}"
+                                ),
+                            })
+                            policy_violation = True
+                            observer.mark_activity()
+                            break
+
+                        _log_worker_event(self._vc, "worker result", result)
                         sig = f"RUN {cmd['command']}|{result[:50]}"
                         if sig == last_sig:
                             turn_repeat += 1
                         else:
                             turn_repeat = 0
                         last_sig = sig
+                        if ordinary_changed:
+                            changed = True
                         messages.append({"role": "user", "content": result})
                         continue
 
@@ -410,10 +559,18 @@ class WorkerAdapter:
                         else:
                             turn_repeat = 0
                         last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
                         messages.append({"role": "user", "content": result})
                         continue
 
+                    result = f"error: unknown command {cmd['type']}"
+                    _log_worker_event(self._vc, "worker result", result)
+                    messages.append({"role": "user", "content": result})
+
             # Done processing
+            if policy_violation:
+                saw_done = False
+
             if saw_done:
                 return {"status": "done", "checked": False, "run_evidence": list(self._run_evidence)}
 
@@ -450,6 +607,9 @@ class WorkerAdapter:
         return {"status": "timeout", "reason": f"hard ceiling {hard_ceiling}s"}
 
     def _write_command(self, path, content):
+        if re.search(r"[<>|;&`'\"]", path):
+            raise ValueError(f"malformed WRITE path: {path}")
+
         safe, err, rel = permissions.check_path_safety(path, self.workspace)
         if not safe:
             raise ValueError(err)
