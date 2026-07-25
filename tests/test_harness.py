@@ -57,7 +57,7 @@ class TestWorkerSession:
             assert result["termination"] == "normal"
             assert vc.VersionControl(tmp).get_current() == "s1"
 
-    def test_run_command_maps_pytest_to_module(self, monkeypatch):
+    def test_run_command_maps_python_to_interpreter(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmp:
             runner = adapter.WorkerAdapter(config(tmp), 1)
             seen = {}
@@ -73,29 +73,9 @@ class TestWorkerSession:
                 return Result()
 
             monkeypatch.setattr(adapter.subprocess, "run", fake_run)
-            result = runner._run_command("pytest -q")
-            assert seen["argv"][:4] == [sys.executable, "-B", "-m", "pytest"]
-            assert "command: pytest -q" in result
-
-    def test_run_command_maps_argus_test_alias(self, monkeypatch):
-        with tempfile.TemporaryDirectory() as tmp:
-            runner = adapter.WorkerAdapter(config(tmp), 1)
-            seen = {}
-
-            def fake_run(argv, **kwargs):
-                seen["argv"] = argv
-
-                class Result:
-                    stdout = ""
-                    stderr = ""
-                    returncode = 0
-
-                return Result()
-
-            monkeypatch.setattr(adapter.subprocess, "run", fake_run)
-            result = runner._run_command("argus-test")
-            assert seen["argv"][:5] == [sys.executable, "-B", "-m", "pytest", "-q"]
-            assert "command: argus-test" in result
+            result = runner._run_command("python -c 'print(1)'")
+            assert seen["argv"][:2] == [sys.executable, "-c"]
+            assert "command: python -c 'print(1)'" in result
 
     def test_workspace_listing_skips_binary_files(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -371,8 +351,9 @@ class TestResumeBehavior:
             assert result["status"] == "done"
 
             worker_prompt = backend.call_history[0]["messages"][0]["content"]
-            assert "READ, WRITE, RUN, and Done" in worker_prompt
-            assert "If the right answer is no file changes" not in worker_prompt
+            assert "RUN <program> [arguments...]" in worker_prompt
+            assert "workspace is already the current directory" in worker_prompt
+            assert "Do not use cd, &&, pipes, redirects, or other shell syntax" in worker_prompt
             assert "Output" not in worker_prompt
             assert "Inputs" not in worker_prompt
             assert "Accept" not in worker_prompt
@@ -385,6 +366,7 @@ class TestResumeBehavior:
                 if message["role"] == "user" and message["content"].startswith("command: python -B -m pytest -q")
             ]
             assert len(run_results) == 1
+            assert "result: success" in run_results[0]
             assert "timed_out: no" in run_results[0]
             assert "exit_code: 0" in run_results[0]
             assert "stdout:" in run_results[0]
@@ -392,6 +374,46 @@ class TestResumeBehavior:
             with open(os.path.join(tmp, "hello.txt"), encoding="utf-8") as file:
                 assert file.read() == "hello"
             assert vc.VersionControl(tmp).get_current() == "s1"
+
+    def test_invalid_run_is_recoverable_then_valid_run_succeeds(self):
+        init_backend = model.MockBackend([text_response(todo_item(1, "Verify argv-only RUN"))])
+        backend = model.MockBackend([
+            text_response("RUN cd somewhere && python -m pytest"),
+            text_response("RUN python -B -m pytest -q"),
+            text_response("Done"),
+            text_response("ACCEPT\nReason: Fixed."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("Verify argv-only RUN", cfg, backend=init_backend)["status"] == "success"
+            os.makedirs(os.path.join(tmp, "tests"), exist_ok=True)
+            with open(os.path.join(tmp, "tests", "test_smoke.py"), "w", encoding="utf-8") as file:
+                file.write("def test_smoke():\n    assert True\n")
+
+            result = harness.run_project(cfg, backend=backend)
+            assert result["status"] == "done"
+
+            first_run_prompt = backend.call_history[1]["messages"][-1]["content"]
+            assert "command: cd somewhere && python -m pytest" in first_run_prompt
+            assert "result: error: command not found: cd" in first_run_prompt
+            assert "stdout:" in first_run_prompt
+            assert "stderr:" in first_run_prompt
+
+            second_run_prompt = backend.call_history[2]["messages"][-1]["content"]
+            assert "command: python -B -m pytest -q" in second_run_prompt
+            assert "result: success" in second_run_prompt
+            assert "exit_code: 0" in second_run_prompt
+
+            review_prompt = next(
+                request["messages"][1]["content"]
+                for request in backend.call_history
+                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Review Assignment")
+            )
+            assert "RUN evidence:" in review_prompt
+            assert "command: cd somewhere && python -m pytest" in review_prompt
+            assert "command: python -B -m pytest -q" in review_prompt
 
     def test_no_file_changes_can_pass_on_run_evidence(self):
         class EvidenceBackend(model.MockBackend):

@@ -1,1 +1,1 @@
-Worker {worker_number}. Read docs/worker.md and perform only T{worker_number}. Use READ, WRITE, RUN, and Done. You may write any path-safe non-control workspace file. Done merely submits the current candidate for review.
+Worker {worker_number}. Read docs/worker.md and perform only T{worker_number}. Use READ, WRITE, and RUN <program> [arguments...]. The workspace is already the current directory. Do not use cd, &&, pipes, redirects, or other shell syntax. Done merely submits the current candidate for review.

@@ -74,6 +74,7 @@ def format_run_evidence(entries):
             lines.append("")
         lines.append(f"RUN #{index}")
         lines.append(f"command: {entry['command']}")
+        lines.append(f"result: {entry['result']}")
         lines.append(f"timed_out: {'yes' if entry.get('timed_out') else 'no'}")
         lines.append(f"exit_code: {entry['exit_code']}")
         lines.append("stdout:")
@@ -252,7 +253,8 @@ class WorkerAdapter:
             "Only use these commands:\n"
             "  READ <path>     — read a file\n"
             "  WRITE <path>    — write content; end with END WRITE on its own line\n"
-            "  RUN <command>   — run a command in the workspace\n"
+            "  RUN <program> [arguments...] — run a program; the workspace is already the current directory\n"
+            "  Do not use cd, &&, pipes, redirects, or other shell syntax\n"
             "  Done            — submit the current candidate for review\n\n"
         )
         if self.feedback:
@@ -305,7 +307,11 @@ class WorkerAdapter:
                 last_sig = sig
                 messages.append({
                     "role": "user",
-                    "content": "Use READ <path>, WRITE <path>\\n<content>\\nEND WRITE, RUN <command>, or Done."
+                    "content": (
+                        "Use READ <path>, WRITE <path>\\n<content>\\nEND WRITE, or RUN <program> [arguments...]. "
+                        "The workspace is already the current directory. Do not use cd, &&, pipes, redirects, or other shell syntax. "
+                        "Or output Done to submit the current candidate."
+                    )
                 })
             else:
                 for cmd in commands:
@@ -468,22 +474,18 @@ class WorkerAdapter:
     def _run_command(self, command):
         command = (command or "").strip()
         if not command:
-            return "error: command required"
+            return self._record_run_evidence(command, "error: command required", False, 127, "", "")
 
         try:
             argv = shlex.split(command)
         except ValueError as exc:
-            return f"error: malformed RUN command: {exc}"
+            return self._record_run_evidence(command, f"error: malformed argv: {exc}", False, 127, "", str(exc))
 
         if not argv:
-            return "error: command required"
+            return self._record_run_evidence(command, "error: command required", False, 127, "", "")
 
         if argv[0] in {"python", "python3"}:
             argv[0] = sys.executable
-        elif argv[0] == "pytest":
-            argv = [sys.executable, "-B", "-m", "pytest", *argv[1:]]
-        elif argv[0].startswith("argus-test"):
-            argv = [sys.executable, "-B", "-m", "pytest", "-q", *argv[1:]]
 
         timeout = self.config.get("run_timeout", 60)
         try:
@@ -495,13 +497,21 @@ class WorkerAdapter:
                 timeout=timeout,
                 check=False,
             )
-            return self._record_run_evidence(command, False, completed.returncode, completed.stdout, completed.stderr)
+            result = "success" if completed.returncode == 0 else f"error: exit code {completed.returncode}"
+            return self._record_run_evidence(command, result, False, completed.returncode, completed.stdout, completed.stderr)
+        except FileNotFoundError as exc:
+            return self._record_run_evidence(command, f"error: command not found: {argv[0]}", False, 127, "", str(exc))
+        except PermissionError as exc:
+            return self._record_run_evidence(command, f"error: permission denied: {argv[0]}", False, 126, "", str(exc))
         except subprocess.TimeoutExpired as exc:
-            return self._record_run_evidence(command, True, -1, exc.stdout, exc.stderr)
+            return self._record_run_evidence(command, f"error: timeout after {timeout}s", True, -1, exc.stdout, exc.stderr)
+        except OSError as exc:
+            return self._record_run_evidence(command, f"error: execution failed: {exc}", False, 126, "", str(exc))
 
-    def _record_run_evidence(self, command, timed_out, exit_code, stdout, stderr):
+    def _record_run_evidence(self, command, result, timed_out, exit_code, stdout, stderr):
         evidence = {
             "command": command,
+            "result": result,
             "timed_out": timed_out,
             "exit_code": exit_code,
             "stdout": _bounded_text(stdout),
@@ -510,6 +520,7 @@ class WorkerAdapter:
         self._run_evidence.append(evidence)
         return (
             f"command: {command}\n"
+            f"result: {result}\n"
             f"timed_out: {'yes' if timed_out else 'no'}\n"
             f"exit_code: {exit_code}\n"
             f"stdout:\n{evidence['stdout'] or '(empty)'}\n"

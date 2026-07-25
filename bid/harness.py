@@ -196,7 +196,7 @@ def init_project(user_task, config, backend=None):
     ws_exists = os.path.exists(workspace)
     if ws_exists:
         if os.path.exists(backup_dir):
-            shutil.rmtree(backup_dir)
+            shutil.rmtree(backup_dir, ignore_errors=True)
         os.rename(workspace, backup_dir)
 
     try:
