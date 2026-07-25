@@ -77,6 +77,21 @@ class TestWorkerSession:
             assert seen["argv"][:2] == [sys.executable, "-c"]
             assert "command: python -c 'print(1)'" in result
 
+    def test_run_command_decodes_timeout_bytes(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = adapter.WorkerAdapter(config(tmp), 1)
+
+            def fake_run(argv, **kwargs):
+                raise adapter.subprocess.TimeoutExpired(argv, 1, output=b"stdout-\xff", stderr=b"stderr-\xfe")
+
+            monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+            result = runner._run_command("python -c 'print(1)'")
+            assert "timed_out: yes" in result
+            assert "exit_code: -1" in result
+            assert "stdout:\nstdout-" in result
+            assert "stderr:\nstderr-" in result
+            assert "b'" not in result
+
     def test_workspace_listing_skips_binary_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "ok.txt"), "w", encoding="utf-8") as file:

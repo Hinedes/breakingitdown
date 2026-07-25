@@ -58,6 +58,8 @@ RUN_OUTPUT_LIMIT = 2000
 
 
 def _bounded_text(text, limit=RUN_OUTPUT_LIMIT):
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
     text = (text or "").rstrip()
     if len(text) <= limit:
         return text
