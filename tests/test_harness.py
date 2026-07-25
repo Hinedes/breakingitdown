@@ -92,6 +92,54 @@ class TestWorkerSession:
             assert "stderr:\nstderr-" in result
             assert "b'" not in result
 
+    def test_worker_reads_project_file_after_initial_prompt(self):
+        class PromptBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({
+                    "messages": [dict(message) for message in messages],
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                })
+
+                prompt = messages[-1]["content"] if messages else ""
+                system = messages[0]["content"]
+
+                if self.step == 0:
+                    assert "Read docs/worker.md" not in system
+                    assert "{worker_number}" not in system
+                    assert "Only use these commands" not in messages[1]["content"]
+                    assert "Task T1:" in prompt
+                    self.step = 1
+                    return text_response("READ README.md")
+
+                if self.step == 1:
+                    assert "project note" in prompt
+                    self.step = 2
+                    return text_response("Done")
+
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fine.")
+
+                if prompt.startswith("# Completion Review"):
+                    return text_response("COMPLETE\nReason: Done.")
+
+                raise AssertionError(f"unexpected prompt: {prompt[:80]}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Read a project file"))
+            with open(os.path.join(tmp, "README.md"), "w", encoding="utf-8") as file:
+                file.write("project note\n")
+
+            result = harness.run_project(config(tmp), backend=PromptBackend())
+            assert result["status"] == "done"
+
+            with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
+                assert "[x] T1" in file.read()
+
     def test_workspace_listing_skips_binary_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             with open(os.path.join(tmp, "ok.txt"), "w", encoding="utf-8") as file:

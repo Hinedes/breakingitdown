@@ -252,12 +252,6 @@ class WorkerAdapter:
         worker_policy = _read(self.workspace, "docs/worker.md")
         task_prompt = (
             f"\nTask T{self.task_number}: {task['description']}\n\n"
-            "Only use these commands:\n"
-            "  READ <path>     — read a file\n"
-            "  WRITE <path>    — write content; end with END WRITE on its own line\n"
-            "  RUN <program> [arguments...] — run a program; the workspace is already the current directory\n"
-            "  Do not use cd, &&, pipes, redirects, or other shell syntax\n"
-            "  Done            — submit the current candidate for review\n\n"
         )
         if self.feedback:
             task_prompt += f"\nPrevious reviewer feedback:\n{self.feedback}\n"
@@ -309,11 +303,7 @@ class WorkerAdapter:
                 last_sig = sig
                 messages.append({
                     "role": "user",
-                    "content": (
-                        "Use READ <path>, WRITE <path>\\n<content>\\nEND WRITE, or RUN <program> [arguments...]. "
-                        "The workspace is already the current directory. Do not use cd, &&, pipes, redirects, or other shell syntax. "
-                        "Or output Done to submit the current candidate."
-                    )
+                    "content": "No progress. Try a different approach."
                 })
             else:
                 for cmd in commands:
