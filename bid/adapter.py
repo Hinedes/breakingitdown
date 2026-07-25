@@ -1,7 +1,10 @@
 import difflib
 import hashlib
 import os
+import shlex
 import re
+import subprocess
+import sys
 import time
 
 from . import permissions
@@ -51,6 +54,35 @@ def _hash_file(path):
         return "?"
 
 
+RUN_OUTPUT_LIMIT = 2000
+
+
+def _bounded_text(text, limit=RUN_OUTPUT_LIMIT):
+    text = (text or "").rstrip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...[truncated]"
+
+
+def format_run_evidence(entries):
+    if not entries:
+        return "(no RUN evidence)"
+
+    lines = ["RUN evidence:"]
+    for index, entry in enumerate(entries, start=1):
+        if index > 1:
+            lines.append("")
+        lines.append(f"RUN #{index}")
+        lines.append(f"command: {entry['command']}")
+        lines.append(f"timed_out: {'yes' if entry.get('timed_out') else 'no'}")
+        lines.append(f"exit_code: {entry['exit_code']}")
+        lines.append("stdout:")
+        lines.append(_bounded_text(entry.get('stdout')) or "(empty)")
+        lines.append("stderr:")
+        lines.append(_bounded_text(entry.get('stderr')) or "(empty)")
+    return "\n".join(lines)
+
+
 # ── Command parsing ──────────────────────────────────────────────────
 
 def _parse_content_into_turns(content):
@@ -95,6 +127,12 @@ def _parse_content_into_turns(content):
                 commands.append({"type": "WRITE_UNTERMINATED", "path": path})
                 continue
             commands.append({"type": "WRITE", "path": path, "content": "\n".join(body_lines)})
+            continue
+
+        if stripped.startswith("RUN "):
+            command = stripped[4:].strip()
+            commands.append({"type": "RUN", "command": command})
+            i += 1
             continue
 
         i += 1
@@ -199,6 +237,7 @@ class WorkerAdapter:
         self._search_limit = config.get("max_searches_per_worker", 10)
         self._cache_hits = 0
         self.feedback = feedback or ""
+        self._run_evidence = []
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -212,10 +251,9 @@ class WorkerAdapter:
             f"\nTask T{self.task_number}: {task['description']}\n\n"
             "Only use these commands:\n"
             "  READ <path>     — read a file\n"
-            "  SEARCH <query>  — search for current information\n"
             "  WRITE <path>    — write content; end with END WRITE on its own line\n"
-            "  Done            — finish when the task is complete\n\n"
-            "If the right answer is no file changes, say Done.\n"
+            "  RUN <command>   — run a command in the workspace\n"
+            "  Done            — submit the current candidate for review\n\n"
         )
         if self.feedback:
             task_prompt += f"\nPrevious reviewer feedback:\n{self.feedback}\n"
@@ -267,7 +305,7 @@ class WorkerAdapter:
                 last_sig = sig
                 messages.append({
                     "role": "user",
-                    "content": "Use READ <path>, SEARCH <query>, WRITE <path>\\n<content>\\nEND WRITE, or Done."
+                    "content": "Use READ <path>, WRITE <path>\\n<content>\\nEND WRITE, RUN <command>, or Done."
                 })
             else:
                 for cmd in commands:
@@ -355,6 +393,17 @@ class WorkerAdapter:
                         messages.append({"role": "user", "content": result})
                         continue
 
+                    if cmd["type"] == "RUN":
+                        result = self._run_command(cmd["command"])
+                        sig = f"RUN {cmd['command']}|{result[:50]}"
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        messages.append({"role": "user", "content": result})
+                        continue
+
                     if cmd["type"] == "WRITE_UNTERMINATED":
                         result = f"error: WRITE {cmd['path']} must end with END WRITE on its own line"
                         sig = f"WRITE_UNTERMINATED"
@@ -368,7 +417,7 @@ class WorkerAdapter:
 
             # Done processing
             if saw_done:
-                return {"status": "done", "checked": False}
+                return {"status": "done", "checked": False, "run_evidence": list(self._run_evidence)}
 
             # Soft reset on repeat stall
             if turn_repeat >= repeat_limit and not changed and not useful:
@@ -416,9 +465,61 @@ class WorkerAdapter:
         _write(self.workspace, rel, content)
         return f"wrote {len(content)} bytes to {rel}"
 
+    def _run_command(self, command):
+        command = (command or "").strip()
+        if not command:
+            return "error: command required"
+
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            return f"error: malformed RUN command: {exc}"
+
+        if not argv:
+            return "error: command required"
+
+        if argv[0] in {"python", "python3"}:
+            argv[0] = sys.executable
+        elif argv[0] == "pytest":
+            argv = [sys.executable, "-B", "-m", "pytest", *argv[1:]]
+        elif argv[0].startswith("argus-test"):
+            argv = [sys.executable, "-B", "-m", "pytest", "-q", *argv[1:]]
+
+        timeout = self.config.get("run_timeout", 60)
+        try:
+            completed = subprocess.run(
+                argv,
+                cwd=self.workspace,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False,
+            )
+            return self._record_run_evidence(command, False, completed.returncode, completed.stdout, completed.stderr)
+        except subprocess.TimeoutExpired as exc:
+            return self._record_run_evidence(command, True, -1, exc.stdout, exc.stderr)
+
+    def _record_run_evidence(self, command, timed_out, exit_code, stdout, stderr):
+        evidence = {
+            "command": command,
+            "timed_out": timed_out,
+            "exit_code": exit_code,
+            "stdout": _bounded_text(stdout),
+            "stderr": _bounded_text(stderr),
+        }
+        self._run_evidence.append(evidence)
+        return (
+            f"command: {command}\n"
+            f"timed_out: {'yes' if timed_out else 'no'}\n"
+            f"exit_code: {exit_code}\n"
+            f"stdout:\n{evidence['stdout'] or '(empty)'}\n"
+            f"stderr:\n{evidence['stderr'] or '(empty)'}"
+        )
+
 
 _REVIEW_CONTROL_PATHS = {
     ".bid",
+    ".pytest_cache",
     "docs/task.md",
     "docs/todo.md",
     "docs/project-status.md",
@@ -432,13 +533,22 @@ _REVIEW_CONTROL_PATHS = {
 def _review_path_blocked(rel_path):
     if rel_path in _REVIEW_CONTROL_PATHS:
         return True
-    return rel_path.startswith(".bid/") or rel_path.startswith("docs/reviews/")
+    return (
+        rel_path.startswith(".bid/")
+        or rel_path.startswith(".pytest_cache/")
+        or rel_path.startswith("__pycache__/")
+        or rel_path.startswith("docs/reviews/")
+    )
 
 
 def _workspace_tree(root):
     tree = {}
     for dirpath, dirs, files in os.walk(root):
-        dirs[:] = [directory for directory in dirs if directory != ".bid"]
+        dirs[:] = [
+            directory
+            for directory in dirs
+            if directory not in {".bid", ".pytest_cache", "__pycache__"}
+        ]
         for filename in files:
             path = os.path.join(dirpath, filename)
             rel = os.path.relpath(path, root).replace(os.sep, "/")
@@ -447,7 +557,7 @@ def _workspace_tree(root):
             try:
                 with open(path, encoding="utf-8") as file:
                     tree[rel] = file.read()
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 pass
     return tree
 
@@ -509,7 +619,7 @@ def _research_context(workspace, task_number):
         try:
             with open(fpath, encoding="utf-8") as file:
                 content = file.read()
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         parts.append(f"### {fname}")
         parts.append(content[:500])
@@ -520,11 +630,12 @@ def _research_context(workspace, task_number):
 class TaskReviewAdapter:
     RETRY_LIMIT = 3
 
-    def __init__(self, config, task_number, base_state=None):
+    def __init__(self, config, task_number, base_state=None, run_evidence=None):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
         self.base_state = base_state
+        self.run_evidence = run_evidence or []
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -556,6 +667,11 @@ class TaskReviewAdapter:
             f"Task:\n{task['description']}\n\n"
             f"Base -> candidate diff:\n{diff_text}\n"
         )
+        if self.run_evidence:
+            prompt += (
+                "\nSuccessful RUN evidence can satisfy the task even if the diff is empty.\n\n"
+                f"{format_run_evidence(self.run_evidence)}\n\n"
+            )
         if research_context:
             prompt += f"{research_context}\n\n"
         prompt += (

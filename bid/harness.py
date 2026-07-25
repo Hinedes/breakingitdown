@@ -91,8 +91,31 @@ def _task_base_state(vc_system):
             break
         match = re.search(r"\bbase=(s\d+)\b", stripped)
         if match:
-            return match.group(1)
+                return match.group(1)
     return current
+
+
+def _task_rework_reason(vc_system):
+    current = vc_system.get_current()
+    if not current:
+        return None
+    log = vc_system.get_log()
+    marker = f"### {current}\n"
+    start = log.rfind(marker)
+    if start < 0:
+        return None
+    section = log[start + len(marker):]
+    reason = None
+    for line in section.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("## ") or stripped.startswith("### "):
+            break
+        match = re.search(r"\brework_reason:\s*(.*)", stripped)
+        if match:
+            reason = match.group(1).strip() or None
+    return reason
 
 
 def ensure_workspace(workspace):
@@ -103,6 +126,8 @@ def ensure_workspace(workspace):
 
 
 # ── Worker session ───────────────────────────────────────────────────
+
+MAX_WORKER_RESPAWNS = 3
 
 def run_worker_session(number, config, backend=None, feedback=None):
     workspace = config["workspace"]
@@ -118,10 +143,14 @@ def run_worker_session(number, config, backend=None, feedback=None):
         result = {"status": "error", "reason": str(exc)}
 
     if result.get("status") == "done":
+        run_evidence = result.get("run_evidence", [])
+        description = f"T{number} candidate base={base_state}"
+        if run_evidence:
+            description += f"\n\n{adapter_mod.format_run_evidence(run_evidence)}"
         try:
             state = vc_system.save_state(
                 f"Worker {number}",
-                f"T{number} candidate base={base_state}",
+                description,
             )
         except Exception:
             if base_state:
@@ -132,6 +161,15 @@ def run_worker_session(number, config, backend=None, feedback=None):
             "summary": f"T{number} submitted",
             "termination": "normal",
             "state": state,
+            "base_state": base_state,
+            "run_evidence": run_evidence,
+        }
+
+    if result.get("status") in {"stalled", "timeout"}:
+        return {
+            "status": result.get("status"),
+            "reason": result.get("reason", f"T{number} {result.get('status', 'error')}"),
+            "termination": result.get("status", "error"),
             "base_state": base_state,
         }
 
@@ -210,6 +248,7 @@ def run_project(config, backend=None):
     vc_system = vc_mod.VersionControl(workspace)
     backend = backend or create_backend(config)
     reviewer_feedback = {}
+    respawn_counts = {}
     current_task_number = None
     current_task_base_state = None
 
@@ -241,19 +280,38 @@ def run_project(config, backend=None):
         if current_task_number != number or current_task_base_state is None:
             current_task_number = number
             current_task_base_state = _task_base_state(vc_system)
+        feedback = reviewer_feedback.get(number) or _task_rework_reason(vc_system)
+        if feedback:
+            reviewer_feedback[number] = feedback
         print(f"Worker {number}...")
         try:
-            result = run_worker_session(number, config, backend=backend, feedback=reviewer_feedback.get(number))
+            result = run_worker_session(number, config, backend=backend, feedback=feedback)
         except Exception as exc:
             return {"status": "error", "reason": f"Worker {number} exception: {exc}"}
+        if result["status"] in {"stalled", "timeout"}:
+            respawn_counts[number] = respawn_counts.get(number, 0) + 1
+            print(f"Worker {number} {result['status']}: {result.get('reason', 'unknown')}")
+            if respawn_counts[number] > MAX_WORKER_RESPAWNS:
+                return {
+                    "status": "error",
+                    "reason": f"Worker {number} exceeded respawn limit",
+                    "detail": result,
+                }
+            continue
         if result["status"] != "submitted":
             print(f"Worker {number} failed: {result.get('reason', 'unknown')}")
             return {"status": "error", "reason": f"Worker {number} failed", "detail": result}
         print(f"Worker {number} submitted T{number} ({result['termination']}, {result['state']}).")
+        respawn_counts.pop(number, None)
 
         review = None
         try:
-            review = adapter_mod.TaskReviewAdapter(config, number, base_state=current_task_base_state).run(backend)
+            review = adapter_mod.TaskReviewAdapter(
+                config,
+                number,
+                base_state=current_task_base_state,
+                run_evidence=result.get("run_evidence", []),
+            ).run(backend)
         except Exception as exc:
             return {"status": "error", "reason": f"review exception: {exc}"}
 
@@ -261,12 +319,14 @@ def run_project(config, backend=None):
             return {"status": "error", "reason": review.get("reason", "review error"), "detail": review}
 
         if review.get("verdict") == "REWORK":
-            reviewer_feedback[number] = review.get("reason", "")
+            reviewer_feedback[number] = " ".join(review.get("reason", "").split()).strip()
+            vc_system._append_log(result["state"], f"rework_reason: {reviewer_feedback[number]}")
             print(f"Worker {number} rework: {reviewer_feedback[number]}")
             continue
 
         if review.get("verdict") == "ACCEPT":
             reviewer_feedback.pop(number, None)
+            vc_system._append_log(result["state"], "rework_reason:")
             todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
             todo_text = todo_mod.set_task_checked(todo_text, number, True)
             write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)

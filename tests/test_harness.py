@@ -1,4 +1,5 @@
 import os
+import sys
 import tempfile
 
 from bid import adapter, harness, model, vc
@@ -55,6 +56,58 @@ class TestWorkerSession:
             assert result["status"] == "submitted"
             assert result["termination"] == "normal"
             assert vc.VersionControl(tmp).get_current() == "s1"
+
+    def test_run_command_maps_pytest_to_module(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = adapter.WorkerAdapter(config(tmp), 1)
+            seen = {}
+
+            def fake_run(argv, **kwargs):
+                seen["argv"] = argv
+
+                class Result:
+                    stdout = ""
+                    stderr = ""
+                    returncode = 0
+
+                return Result()
+
+            monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+            result = runner._run_command("pytest -q")
+            assert seen["argv"][:4] == [sys.executable, "-B", "-m", "pytest"]
+            assert "command: pytest -q" in result
+
+    def test_run_command_maps_argus_test_alias(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = adapter.WorkerAdapter(config(tmp), 1)
+            seen = {}
+
+            def fake_run(argv, **kwargs):
+                seen["argv"] = argv
+
+                class Result:
+                    stdout = ""
+                    stderr = ""
+                    returncode = 0
+
+                return Result()
+
+            monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+            result = runner._run_command("argus-test")
+            assert seen["argv"][:5] == [sys.executable, "-B", "-m", "pytest", "-q"]
+            assert "command: argus-test" in result
+
+    def test_workspace_listing_skips_binary_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "ok.txt"), "w", encoding="utf-8") as file:
+                file.write("hello")
+            os.makedirs(os.path.join(tmp, "__pycache__"), exist_ok=True)
+            with open(os.path.join(tmp, "__pycache__", "bad.pyc"), "wb") as file:
+                file.write(b"\x80\x04\x95\x01\x00\x00\x00\x00\x00\x00\x00\x9c")
+
+            listing = adapter._workspace_listing(tmp)
+            assert "ok.txt" in listing
+            assert "bad.pyc" not in listing
 
 
 class TestRunProject:
@@ -128,6 +181,95 @@ class TestResumeBehavior:
             assert "BASE_SENTINEL" in review_prompts[0]
             assert "draft" not in review_prompts[0]
 
+    def test_stalled_worker_respawns_and_preserves_workspace_changes(self):
+        class RespawnBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.session = 0
+                self.prev_len = None
+                self.step = 0
+                self.saw_preserved_draft = False
+
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({
+                    "messages": [dict(message) for message in messages],
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                })
+
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fixed.")
+                if prompt.startswith("# Completion Review"):
+                    return text_response("COMPLETE\nReason: Done.")
+
+                if self.prev_len is None:
+                    self.session = 1
+                    self.step = 0
+                elif self.prev_len != 2 and len(messages) == 2:
+                    self.session += 1
+                    self.step = 0
+                self.prev_len = len(messages)
+
+                if self.session == 1:
+                    if self.step == 0:
+                        self.step += 1
+                        return text_response("WRITE notes.txt\ndraft\nEND WRITE")
+                    self.step += 1
+                    return text_response("READ notes.txt")
+
+                if self.session == 2:
+                    if self.step == 0:
+                        self.step += 1
+                        return text_response("READ notes.txt")
+                    if self.step == 1:
+                        self.saw_preserved_draft = any("draft" in message.get("content", "") for message in messages)
+                        self.step += 1
+                        return text_response("WRITE notes.txt\nfinal\nEND WRITE\nDone")
+                    raise AssertionError("unexpected extra worker turn after respawn")
+
+                raise AssertionError(f"unexpected worker session {self.session}")
+
+        init_backend = model.MockBackend([text_response(todo_item(1, "Update notes"))])
+        backend = RespawnBackend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp, repeat_action_limit=1)
+            assert harness.init_project("Update notes", cfg, backend=init_backend)["status"] == "success"
+            with open(os.path.join(tmp, "notes.txt"), "w", encoding="utf-8") as file:
+                file.write("BASE_SENTINEL")
+            base_state = vc.VersionControl(tmp).save_state("prep", "seed sentinel")
+
+            result = harness.run_project(cfg, backend=backend)
+            assert result["status"] == "done"
+            assert backend.saw_preserved_draft
+
+            with open(os.path.join(tmp, "notes.txt"), encoding="utf-8") as file:
+                assert file.read() == "final"
+
+            worker_prompts = [
+                request["messages"][1]["content"]
+                for request in backend.call_history
+                if len(request["messages"]) == 2 and request["messages"][1]["content"].lstrip().startswith("Task T1:")
+            ]
+            assert len(worker_prompts) == 2
+
+            review_prompts = [
+                request["messages"][1]["content"]
+                for request in backend.call_history
+                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Review Assignment")
+            ]
+            assert len(review_prompts) == 1
+            assert "BASE_SENTINEL" in review_prompts[0]
+
+            completion_prompts = [
+                request["messages"][1]["content"]
+                for request in backend.call_history
+                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Completion Review")
+            ]
+            assert len(completion_prompts) == 1
+            assert vc.VersionControl(tmp).get_current() == "s3"
+
     def test_resume_all_checked_runs_final_review(self):
         backend = model.MockBackend([text_response("COMPLETE\nReason: Done.")])
 
@@ -193,3 +335,204 @@ class TestResumeBehavior:
             assert "[x] T1" in todo_text
             assert "[x] T2" in todo_text
             assert vc.VersionControl(tmp).get_current() == "s3"
+
+    def test_worker_write_run_and_submit_candidate(self):
+        backend = model.MockBackend([
+            text_response("WRITE hello.txt\nhello\nEND WRITE"),
+            text_response("RUN python -B -m pytest -q"),
+            text_response("Done"),
+            text_response("ACCEPT\nReason: File and test match."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
+            os.makedirs(os.path.join(tmp, "tests"), exist_ok=True)
+
+            with open(os.path.join(tmp, "docs", "task.md"), "w", encoding="utf-8") as file:
+                file.write("# Task\n\nEdit hello.txt and verify it with pytest.\n")
+            with open(os.path.join(tmp, "docs", "todo.md"), "w", encoding="utf-8") as file:
+                file.write(todo_item(1, "Edit hello.txt and verify it with pytest"))
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w", encoding="utf-8") as file:
+                file.write("# Project Status\n\nInitialized.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w", encoding="utf-8") as file:
+                file.write("# Decisions\n\n")
+            with open(os.path.join(tmp, "tests", "test_hello.py"), "w", encoding="utf-8") as file:
+                file.write(
+                    "from pathlib import Path\n\n\n"
+                    "def test_hello_file():\n"
+                    "    assert Path('hello.txt').read_text() == 'hello'\n"
+                )
+
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+
+            result = harness.run_project(config(tmp), backend=backend)
+            assert result["status"] == "done"
+
+            worker_prompt = backend.call_history[0]["messages"][0]["content"]
+            assert "READ, WRITE, RUN, and Done" in worker_prompt
+            assert "If the right answer is no file changes" not in worker_prompt
+            assert "Output" not in worker_prompt
+            assert "Inputs" not in worker_prompt
+            assert "Accept" not in worker_prompt
+            assert "SEARCH" not in worker_prompt
+
+            run_results = [
+                message["content"]
+                for request in backend.call_history
+                for message in request["messages"]
+                if message["role"] == "user" and message["content"].startswith("command: python -B -m pytest -q")
+            ]
+            assert len(run_results) == 1
+            assert "timed_out: no" in run_results[0]
+            assert "exit_code: 0" in run_results[0]
+            assert "stdout:" in run_results[0]
+
+            with open(os.path.join(tmp, "hello.txt"), encoding="utf-8") as file:
+                assert file.read() == "hello"
+            assert vc.VersionControl(tmp).get_current() == "s1"
+
+    def test_no_file_changes_can_pass_on_run_evidence(self):
+        class EvidenceBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({
+                    "messages": [dict(message) for message in messages],
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                })
+
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T1:"):
+                    return text_response("RUN python -B -m pytest -q\nDone")
+                if prompt.startswith("# Review Assignment"):
+                    assert "(no file changes)" in prompt
+                    assert "RUN evidence:" in prompt
+                    assert "exit_code: 0" in prompt
+                    return text_response("ACCEPT\nReason: Successful RUN evidence is enough.")
+                if prompt.startswith("# Completion Review"):
+                    return text_response("COMPLETE\nReason: Done.")
+                raise AssertionError(f"unexpected prompt: {prompt[:80]}")
+
+        backend = EvidenceBackend()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
+            os.makedirs(os.path.join(tmp, "tests"), exist_ok=True)
+
+            with open(os.path.join(tmp, "docs", "task.md"), "w", encoding="utf-8") as file:
+                file.write("# Task\n\nVerify the workspace with pytest, without changing files.\n")
+            with open(os.path.join(tmp, "docs", "todo.md"), "w", encoding="utf-8") as file:
+                file.write(todo_item(1, "Verify the workspace with pytest, without changing files"))
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w", encoding="utf-8") as file:
+                file.write("# Project Status\n\nInitialized.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w", encoding="utf-8") as file:
+                file.write("# Decisions\n\n")
+            with open(os.path.join(tmp, "tests", "test_smoke.py"), "w", encoding="utf-8") as file:
+                file.write("def test_smoke():\n    assert True\n")
+
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+
+            result = harness.run_project(config(tmp), backend=backend)
+            assert result["status"] == "done"
+
+            review_prompt = next(
+                request["messages"][1]["content"]
+                for request in backend.call_history
+                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Review Assignment")
+            )
+            assert "RUN evidence:" in review_prompt
+            assert "exit_code: 0" in review_prompt
+
+            with open(os.path.join(tmp, ".bid", "log.md"), encoding="utf-8") as file:
+                log_text = file.read()
+            assert "RUN evidence:" in log_text
+            assert "command: python -B -m pytest -q" in log_text
+            assert "exit_code: 0" in log_text
+            assert vc.VersionControl(tmp).get_current() == "s1"
+
+    def test_rework_reason_persists_across_restart(self):
+        class FirstBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({
+                    "messages": [dict(message) for message in messages],
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                })
+
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T1:"):
+                    if self.step == 0:
+                        self.step = 1
+                        return text_response("Done")
+                    raise RuntimeError("stop after rework")
+                if prompt.startswith("# Review Assignment"):
+                    assert "RUN evidence:" not in prompt
+                    return text_response("REWORK\nReason: Need evidence.")
+                if prompt.startswith("# Completion Review"):
+                    return text_response("COMPLETE\nReason: Done.")
+                raise AssertionError(f"unexpected prompt: {prompt[:80]}")
+
+        class SecondBackend(model.MockBackend):
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({
+                    "messages": [dict(message) for message in messages],
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                })
+
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T1:"):
+                    assert "Previous reviewer feedback:" in prompt
+                    assert "Need evidence." in prompt
+                    return text_response("Done")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fixed.")
+                if prompt.startswith("# Completion Review"):
+                    return text_response("COMPLETE\nReason: Done.")
+                raise AssertionError(f"unexpected prompt: {prompt[:80]}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
+            with open(os.path.join(tmp, "docs", "task.md"), "w", encoding="utf-8") as file:
+                file.write("# Task\n\nMake no file changes; just verify the task flow.\n")
+            with open(os.path.join(tmp, "docs", "todo.md"), "w", encoding="utf-8") as file:
+                file.write(todo_item(1, "Make no file changes; just verify the task flow"))
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w", encoding="utf-8") as file:
+                file.write("# Project Status\n\nInitialized.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w", encoding="utf-8") as file:
+                file.write("# Decisions\n\n")
+
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+
+            first = harness.run_project(config(tmp), backend=FirstBackend())
+            assert first["status"] == "error"
+
+            second_backend = SecondBackend()
+            second = harness.run_project(config(tmp), backend=second_backend)
+            assert second["status"] == "done"
+
+            worker_prompts = [
+                request["messages"][1]["content"]
+                for request in second_backend.call_history
+                if len(request["messages"]) > 1 and request["messages"][1]["content"].lstrip().startswith("Task T1:")
+            ]
+            assert len(worker_prompts) == 1
+            assert "Previous reviewer feedback:" in worker_prompts[0]
+            assert "Need evidence." in worker_prompts[0]
+
+            with open(os.path.join(tmp, ".bid", "log.md"), encoding="utf-8") as file:
+                log_text = file.read()
+            latest_s2 = log_text.rsplit("### s2\n", 1)[1]
+            assert "Need evidence." not in latest_s2
+            assert "rework_reason:" in latest_s2
+            assert vc.VersionControl(tmp).get_current() == "s2"

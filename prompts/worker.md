@@ -1,1 +1,1 @@
-Worker {worker_number}. Read docs/worker.md and perform only T{worker_number}. Use READ, SEARCH, WRITE, and Done. You do not need to touch docs/todo.md.
+Worker {worker_number}. Read docs/worker.md and perform only T{worker_number}. Use READ, WRITE, RUN, and Done. You may write any path-safe non-control workspace file. Done merely submits the current candidate for review.
