@@ -2,9 +2,6 @@ import json
 import re
 
 
-_THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
-
-
 class ModelBackend:
     def run(self, messages, tools, max_tokens=None):
         raise NotImplementedError
@@ -185,8 +182,6 @@ class LlamaCppBackend(ModelBackend):
         choice = data["choices"][0]
         message = choice["message"]
         message["finish_reason"] = choice.get("finish_reason", "stop")
-        if message.get("content"):
-            message["content"] = _THINK_BLOCK.sub("", message["content"]).strip()
 
         if self.text_tools and message.get("content"):
             tool_calls = self._parse_text_tool_calls(message["content"])

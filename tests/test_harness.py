@@ -62,6 +62,14 @@ END RUN
     ]
 
 
+def test_write_body_preserves_literal_think_text():
+    response = "WRITE note.md\n<think>domain content</think>\nEND WRITE"
+
+    assert adapter._parse_content_into_turns(response) == [
+        {"type": "WRITE", "path": "note.md", "content": "<think>domain content</think>"},
+    ]
+
+
 class TestWorkerSession:
     def test_worker_can_finish_without_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -92,7 +100,7 @@ class TestWorkerSession:
             assert backend.call_history[1]["messages"][-1]["content"] == correction
             assert backend.call_history[2]["messages"][-1]["content"] == "project notes\n"
 
-    def test_qwen_thinking_payload_and_content_cleanup(self, monkeypatch):
+    def test_qwen_thinking_payload_preserves_reasoning(self, monkeypatch):
         captured = {}
 
         class Response:
@@ -103,7 +111,7 @@ class TestWorkerSession:
                 pass
 
             def json(self):
-                return {"choices": [{"message": {"role": "assistant", "content": "<think>private</think>\nDone"}}]}
+                return {"choices": [{"message": {"role": "assistant", "reasoning": "private reasoning", "content": "Done"}}]}
 
         class Client:
             def __init__(self, timeout):
@@ -124,6 +132,7 @@ class TestWorkerSession:
         response = model.LlamaCppBackend("http://model", "qwen", max_tokens=32768).run([], [])
 
         assert response["content"] == "Done"
+        assert response["reasoning"] == "private reasoning"
         assert captured["payload"]["max_tokens"] == 32768
         assert "options" not in captured["payload"]
         assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": True}
