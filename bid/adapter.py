@@ -533,6 +533,7 @@ class WorkerAdapter:
                         control_snapshot = _snapshot_control_state(self.workspace)
                         control_changed = False
                         ordinary_changed = False
+                        evidence_count_before = len(self._run_evidence)
                         try:
                             try:
                                 result = self._run_command(cmd["command"])
@@ -546,7 +547,10 @@ class WorkerAdapter:
                         finally:
                             shutil.rmtree(control_snapshot, ignore_errors=True)
 
-                        denied_deletion = bool(self._run_evidence and self._run_evidence[-1].get("denied_deletion"))
+                        denied_deletion = (
+                            len(self._run_evidence) > evidence_count_before
+                            and self._run_evidence[-1]["denied_deletion"]
+                        )
                         if control_changed or denied_deletion:
                             _log_worker_event(self._vc, "worker result", result)
                             sig = f"RUN {cmd['command']}|policy violation"

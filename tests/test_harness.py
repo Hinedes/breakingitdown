@@ -725,3 +725,36 @@ class TestResumeBehavior:
                 for message in request["messages"]
                 if message.get("role") == "user"
             )
+
+    def test_unrecorded_run_exception_does_not_reuse_denied_deletion_evidence(self, monkeypatch):
+        init_backend = model.MockBackend([text_response(todo_item(1, "Keep working after executor error"))])
+        backend = model.MockBackend([
+            text_response("RUN rm -f docs/todo.md"),
+            text_response("RUN explode"),
+            text_response("WRITE notes.txt\nok\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Fixed."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+
+        original_run = adapter.WorkerAdapter._run_command
+
+        def raise_before_recording(self, command):
+            if command == "explode":
+                raise RuntimeError("boom")
+            return original_run(self, command)
+
+        monkeypatch.setattr(adapter.WorkerAdapter, "_run_command", raise_before_recording)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("Keep working after executor error", cfg, backend=init_backend)["status"] == "success"
+
+            result = harness.run_project(cfg, backend=backend)
+            assert result["status"] == "done"
+
+            with open(os.path.join(tmp, "notes.txt"), encoding="utf-8") as file:
+                assert file.read() == "ok"
+
+            assert "policy violation: protected deletion denied" in backend.call_history[1]["messages"][-1]["content"]
+            assert "error: execution failed: boom" in backend.call_history[2]["messages"][-1]["content"]
+            assert "protected deletion denied" not in backend.call_history[2]["messages"][-1]["content"]
