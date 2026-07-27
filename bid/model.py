@@ -2,6 +2,9 @@ import json
 import re
 
 
+_THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
 class ModelBackend:
     def run(self, messages, tools, max_tokens=None):
         raise NotImplementedError
@@ -14,7 +17,7 @@ class LlamaCppBackend(ModelBackend):
         model="smollm3-3b",
         timeout=120,
         text_tools=False,
-        max_tokens=8192,
+        max_tokens=32768,
     ):
         self.endpoint = endpoint
         self.model = model
@@ -155,8 +158,13 @@ class LlamaCppBackend(ModelBackend):
             "model": self.model,
             "messages": messages,
             "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
-            "temperature": 0.01,
-            "chat_template_kwargs": {"enable_thinking": False},
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "top_k": 20,
+            "min_p": 0.0,
+            "presence_penalty": 0.0,
+            "repetition_penalty": 1.0,
+            "chat_template_kwargs": {"enable_thinking": True},
         }
 
         if tools and self.text_tools:
@@ -177,6 +185,8 @@ class LlamaCppBackend(ModelBackend):
         choice = data["choices"][0]
         message = choice["message"]
         message["finish_reason"] = choice.get("finish_reason", "stop")
+        if message.get("content"):
+            message["content"] = _THINK_BLOCK.sub("", message["content"]).strip()
 
         if self.text_tools and message.get("content"):
             tool_calls = self._parse_text_tool_calls(message["content"])

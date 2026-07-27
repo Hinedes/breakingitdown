@@ -15,7 +15,7 @@ def get_config():
     return {
         "endpoint": os.environ.get("BID_MODEL_ENDPOINT", "http://127.0.0.1:8080/v1/chat/completions"),
         "model_name": os.environ.get("BID_MODEL_NAME", "smollm3-3b"),
-        "max_tokens": int(os.environ.get("BID_MAX_TOKENS", "8192")),
+        "max_tokens": int(os.environ.get("BID_MAX_TOKENS", "32768")),
         "workspace": os.environ.get("BID_WORKSPACE", os.path.join(os.getcwd(), "workspace")),
         "request_timeout": int(os.environ.get("BID_REQUEST_TIMEOUT", "300")),
         "inactivity_timeout": int(os.environ.get("BID_INACTIVITY_TIMEOUT", "600")),

@@ -320,7 +320,7 @@ class ManagerInitAdapter:
 
         for attempt in range(self.RETRY_LIMIT):
             try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 8192))
+                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
             except Exception as exc:
                 return {"status": "error", "reason": f"model request failed: {exc}"}
 
@@ -386,7 +386,7 @@ class WorkerAdapter:
             task_prompt += f"\nPrevious reviewer feedback:\n{self.feedback}\n"
 
         messages = [
-            {"role": "system", "content": f"/no_think\n{worker_policy}"},
+            {"role": "system", "content": worker_policy},
             {
                 "role": "user",
                 "content": (
@@ -407,7 +407,7 @@ class WorkerAdapter:
 
         while time.monotonic() - session_start < hard_ceiling:
             try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 8192))
+                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
             except Exception as exc:
                 return {"status": "error", "reason": f"model request failed: {exc}"}
 
@@ -894,7 +894,7 @@ class TaskReviewAdapter:
 
         for attempt in range(self.RETRY_LIMIT):
             try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 8192))
+                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
             except Exception as exc:
                 return {"verdict": "ERROR", "reason": f"model request failed: {exc}", "task_number": self.task_number}
 
@@ -959,7 +959,7 @@ class CompletionReviewAdapter:
 
         for attempt in range(self.RETRY_LIMIT):
             try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 8192))
+                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
             except Exception as exc:
                 return {"verdict": "ERROR", "reason": f"model request failed: {exc}"}
 
