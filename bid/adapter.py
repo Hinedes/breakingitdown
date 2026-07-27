@@ -436,7 +436,7 @@ class WorkerAdapter:
                 last_sig = sig
                 messages.append({
                     "role": "user",
-                    "content": "No progress. Try a different approach."
+                    "content": "No executable BID command was found. Respond only with actual READ, WRITE, RUN, or Done commands. Do not explain or describe the commands."
                 })
             else:
                 for cmd in commands:

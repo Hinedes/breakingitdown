@@ -73,6 +73,25 @@ class TestWorkerSession:
             assert not backend.call_history[0]["messages"][0]["content"].startswith("/no_think")
             assert vc.VersionControl(tmp).get_current() == "s1"
 
+    def test_analysis_only_response_gets_command_only_retry(self):
+        correction = "No executable BID command was found. Respond only with actual READ, WRITE, RUN, or Done commands. Do not explain or describe the commands."
+        backend = model.MockBackend([
+            text_response("I would inspect README.md first."),
+            text_response("READ README.md"),
+            text_response("Done"),
+        ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Inspect README"))
+            with open(os.path.join(tmp, "README.md"), "w", encoding="utf-8") as file:
+                file.write("project notes\n")
+
+            result = harness.run_worker_session(1, config(tmp), backend=backend)
+
+            assert result["status"] == "submitted"
+            assert backend.call_history[1]["messages"][-1]["content"] == correction
+            assert backend.call_history[2]["messages"][-1]["content"] == "project notes\n"
+
     def test_qwen_thinking_payload_and_content_cleanup(self, monkeypatch):
         captured = {}
 
@@ -514,7 +533,7 @@ class TestResumeBehavior:
             worker_prompt = backend.call_history[0]["messages"][0]["content"]
             assert "RUN <program> [arguments...]" in worker_prompt
             assert "workspace is already the current directory" in worker_prompt
-            assert "Do not use cd, &&, pipes, redirects, or other shell syntax" in worker_prompt
+            assert "Do not use cd, &&, pipes,\nredirects, or other shell syntax" in worker_prompt
             assert "Output" not in worker_prompt
             assert "Inputs" not in worker_prompt
             assert "Accept" not in worker_prompt
