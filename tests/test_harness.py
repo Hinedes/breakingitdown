@@ -1,6 +1,7 @@
 import os
 import sys
 import tempfile
+import types
 
 from bid import adapter, harness, model, vc
 
@@ -47,6 +48,20 @@ def prepare_workspace(tmp, todo_text):
     vc.VersionControl(tmp).init()
 
 
+def test_fenced_qwen_read_run_response_parses_without_fence_or_terminators():
+    response = """```bash
+READ README.md
+END READ
+RUN ls -la
+END RUN
+```"""
+
+    assert adapter._parse_content_into_turns(response) == [
+        {"type": "READ", "path": "README.md"},
+        {"type": "RUN", "command": "ls -la"},
+    ]
+
+
 class TestWorkerSession:
     def test_worker_can_finish_without_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -55,7 +70,47 @@ class TestWorkerSession:
             result = harness.run_worker_session(1, config(tmp), backend=backend)
             assert result["status"] == "submitted"
             assert result["termination"] == "normal"
+            assert not backend.call_history[0]["messages"][0]["content"].startswith("/no_think")
             assert vc.VersionControl(tmp).get_current() == "s1"
+
+    def test_qwen_thinking_payload_and_content_cleanup(self, monkeypatch):
+        captured = {}
+
+        class Response:
+            status_code = 200
+            text = ""
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"choices": [{"message": {"role": "assistant", "content": "<think>private</think>\nDone"}}]}
+
+        class Client:
+            def __init__(self, timeout):
+                captured["timeout"] = timeout
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                pass
+
+            def post(self, endpoint, json):
+                captured["endpoint"] = endpoint
+                captured["payload"] = json
+                return Response()
+
+        monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(Client=Client))
+        response = model.LlamaCppBackend("http://model", "qwen", max_tokens=32768).run([], [])
+
+        assert response["content"] == "Done"
+        assert captured["payload"]["max_tokens"] == 32768
+        assert "options" not in captured["payload"]
+        assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": True}
+        assert {key: captured["payload"][key] for key in ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty")} == {
+            "temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repetition_penalty": 1.0,
+        }
 
     def test_run_command_maps_python_to_interpreter(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmp:
