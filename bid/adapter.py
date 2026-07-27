@@ -187,6 +187,33 @@ def format_run_evidence(entries):
     return "\n".join(lines)
 
 
+def _validate_direct_deletion(argv, workspace):
+    if os.path.basename(argv[0]) not in {"rm", "rmdir", "unlink"}:
+        return None
+
+    operands = []
+    options_done = False
+    for arg in argv[1:]:
+        if arg == "--":
+            options_done = True
+            continue
+        if not options_done and arg.startswith("-"):
+            continue
+        operands.append(arg)
+
+    for path in operands:
+        safe, error, rel = permissions.check_path_safety(path, workspace)
+        if not safe:
+            return f"error: deletion denied: {error}"
+        if rel == ".":
+            return "error: deletion denied: workspace root"
+        for protected in CONTROL_ROOTS:
+            if rel == protected or rel.startswith(protected + "/") or protected.startswith(rel + "/"):
+                return f"error: deletion denied: protected path {rel}"
+
+    return None
+
+
 # ── Command parsing ──────────────────────────────────────────────────
 
 def _parse_content_into_turns(content):
@@ -519,19 +546,24 @@ class WorkerAdapter:
                         finally:
                             shutil.rmtree(control_snapshot, ignore_errors=True)
 
-                        if control_changed:
+                        denied_deletion = bool(self._run_evidence and self._run_evidence[-1].get("denied_deletion"))
+                        if control_changed or denied_deletion:
                             _log_worker_event(self._vc, "worker result", result)
-                            _log_worker_event(self._vc, "worker recovery", "restored protected control state")
                             sig = f"RUN {cmd['command']}|policy violation"
                             if sig == last_sig:
                                 turn_repeat += 1
                             else:
                                 turn_repeat = 0
                             last_sig = sig
+                            if control_changed:
+                                _log_worker_event(self._vc, "worker recovery", "restored protected control state")
+                                violation = "policy violation: protected control state changed; restored"
+                            else:
+                                violation = "policy violation: protected deletion denied"
                             messages.append({
                                 "role": "user",
                                 "content": (
-                                    "policy violation: protected control state changed; restored\n"
+                                    f"{violation}\n"
                                     f"command result:\n{_indented_text(result)}"
                                 ),
                             })
@@ -639,6 +671,10 @@ class WorkerAdapter:
         if argv[0] in {"python", "python3"}:
             argv[0] = sys.executable
 
+        error = _validate_direct_deletion(argv, self.workspace)
+        if error:
+            return self._record_run_evidence(command, error, False, 126, "", "", denied_deletion=True)
+
         timeout = self.config.get("run_timeout", 60)
         try:
             completed = subprocess.run(
@@ -660,7 +696,7 @@ class WorkerAdapter:
         except OSError as exc:
             return self._record_run_evidence(command, f"error: execution failed: {exc}", False, 126, "", str(exc))
 
-    def _record_run_evidence(self, command, result, timed_out, exit_code, stdout, stderr):
+    def _record_run_evidence(self, command, result, timed_out, exit_code, stdout, stderr, denied_deletion=False):
         evidence = {
             "command": command,
             "result": result,
@@ -668,6 +704,7 @@ class WorkerAdapter:
             "exit_code": exit_code,
             "stdout": _bounded_text(stdout),
             "stderr": _bounded_text(stderr),
+            "denied_deletion": denied_deletion,
         }
         self._run_evidence.append(evidence)
         return (

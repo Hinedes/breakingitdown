@@ -92,6 +92,49 @@ class TestWorkerSession:
             assert "stderr:\nstderr-" in result
             assert "b'" not in result
 
+    def test_direct_deletions_cannot_remove_workspace_or_control_state(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Deletion guard"))
+            runner = adapter.WorkerAdapter(config(tmp), 1)
+
+            def fail_if_run(*args, **kwargs):
+                raise AssertionError("blocked deletion reached subprocess")
+
+            monkeypatch.setattr(adapter.subprocess, "run", fail_if_run)
+            for command in (
+                "rm -rf .",
+                "rm -rf ..",
+                "rm -rf docs",
+                "rm -rf .bid",
+                "rm -rf /absolute/path",
+                "rm docs/todo.md",
+                "rmdir docs",
+                "unlink docs/todo.md",
+            ):
+                result = runner._run_command(command)
+                assert "error: deletion denied:" in result
+                assert "exit_code: 126" in result
+                assert runner._run_evidence[-1]["denied_deletion"]
+
+    def test_direct_deletions_allow_ordinary_project_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Deletion guard"))
+            runner = adapter.WorkerAdapter(config(tmp), 1)
+
+            os.makedirs(os.path.join(tmp, "build", "nested"))
+            assert "result: success" in runner._run_command("rm -rf build")
+            assert not os.path.exists(os.path.join(tmp, "build"))
+
+            os.mkdir(os.path.join(tmp, "empty"))
+            assert "result: success" in runner._run_command("rmdir empty")
+            assert not os.path.exists(os.path.join(tmp, "empty"))
+
+            output = os.path.join(tmp, "output.txt")
+            with open(output, "w", encoding="utf-8") as file:
+                file.write("temporary\n")
+            assert "result: success" in runner._run_command("unlink output.txt")
+            assert not os.path.exists(output)
+
     def test_worker_reads_project_file_after_initial_prompt(self):
         class PromptBackend(model.MockBackend):
             def __init__(self):
@@ -674,10 +717,10 @@ class TestResumeBehavior:
             with open(os.path.join(tmp, ".bid", "log.md"), encoding="utf-8") as file:
                 log_text = file.read()
             assert "worker parsed command:\n  RUN rm -f docs/todo.md" in log_text
-            assert "worker recovery:\n  restored protected control state" in log_text
+            assert "deletion denied: protected path docs/todo.md" in log_text
 
             assert any(
-                "policy violation: protected control state changed; restored" in message.get("content", "")
+                "policy violation: protected deletion denied" in message.get("content", "")
                 for request in backend.call_history
                 for message in request["messages"]
                 if message.get("role") == "user"
