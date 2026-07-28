@@ -200,7 +200,10 @@ def init_project(user_task, config, backend=None):
         os.rename(workspace, backup_dir)
 
     try:
-        os.makedirs(workspace, exist_ok=True)
+        if ws_exists:
+            shutil.copytree(backup_dir, workspace, symlinks=True)
+        else:
+            os.makedirs(workspace, exist_ok=True)
         ensure_workspace(workspace)
         write_file_content(os.path.join(workspace, "docs/task.md"), f"# Task\n\n{user_task}\n")
         write_file_content(os.path.join(workspace, "docs/project-status.md"), "# Project Status\n\nInitialized.\n")

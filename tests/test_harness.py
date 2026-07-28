@@ -67,6 +67,126 @@ def prepare_workspace(tmp, todo_text):
     vc.VersionControl(tmp).init()
 
 
+def make_existing_project(workspace):
+    files = {
+        ".git/HEAD": b"ref: refs/heads/main\n",
+        ".gitignore": b"__pycache__/\n",
+        "README.md": b"# Existing project\n",
+        "argus/solve.py": b"def solve():\n    return 42\n",
+        "tests/test_existing.py": b"def test_existing():\n    assert True\n",
+        "script": b"#!/bin/sh\necho existing\n",
+    }
+    for rel, content in files.items():
+        path = os.path.join(workspace, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as file:
+            file.write(content)
+    os.chmod(os.path.join(workspace, "script"), 0o755)
+    os.symlink("argus/solve.py", os.path.join(workspace, "solve-link"))
+    return files
+
+
+def assert_existing_project(workspace, files):
+    for rel, content in files.items():
+        with open(os.path.join(workspace, rel), "rb") as file:
+            assert file.read() == content
+    assert os.stat(os.path.join(workspace, "script")).st_mode & 0o111 == 0o111
+    link = os.path.join(workspace, "solve-link")
+    assert os.path.islink(link)
+    assert os.readlink(link) == "argus/solve.py"
+
+
+class TestInitProject:
+    def test_existing_project_is_preserved_and_snapshotted(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "project")
+            os.mkdir(workspace)
+            files = make_existing_project(workspace)
+            backup = os.path.join(tmp, ".bid_backup")
+            manager_finished = False
+            original_rmtree = harness.shutil.rmtree
+
+            class Backend(model.MockBackend):
+                def run(self, *args, **kwargs):
+                    nonlocal manager_finished
+                    manager_finished = True
+                    return super().run(*args, **kwargs)
+
+            def tracked_rmtree(path, *args, **kwargs):
+                if path == backup:
+                    assert manager_finished
+                return original_rmtree(path, *args, **kwargs)
+
+            monkeypatch.setattr(harness.shutil, "rmtree", tracked_rmtree)
+            result = harness.init_project("Inspect existing project", config(workspace), backend=Backend([text_response(todo_item(1, "Inspect"))]))
+
+            assert result["status"] == "success"
+            assert_existing_project(workspace, files)
+            assert os.path.isdir(os.path.join(workspace, ".bid"))
+            assert vc.VersionControl(workspace).get_current() == "s1"
+            state = os.path.join(workspace, ".bid", "states", "s0")
+            for rel, content in files.items():
+                with open(os.path.join(state, rel), "rb") as file:
+                    assert file.read() == content
+            assert not os.path.exists(backup)
+
+    def test_worker_can_read_existing_project_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "project")
+            os.mkdir(workspace)
+            make_existing_project(workspace)
+            cfg = config(workspace)
+            assert harness.init_project("Read existing file", cfg, backend=model.MockBackend([text_response(todo_item(1, "Read"))]))["status"] == "success"
+
+            backend = model.MockBackend([text_response("READ argus/solve.py"), text_response("Done")])
+            result = harness.run_worker_session(1, cfg, backend=backend)
+
+            assert result["status"] == "submitted"
+            assert "def solve():\n    return 42" in backend.call_history[1]["messages"][-1]["content"]
+
+    def test_manager_failure_restores_existing_project(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "project")
+            os.mkdir(workspace)
+            files = make_existing_project(workspace)
+            backend = model.MockBackend([text_response("invalid")] * 3)
+
+            result = harness.init_project("Fail manager", config(workspace), backend=backend)
+
+            assert result["status"] == "error"
+            assert len(backend.call_history) == 3
+            assert_existing_project(workspace, files)
+            assert not os.path.exists(os.path.join(workspace, ".bid"))
+
+    def test_copy_failure_restores_existing_project(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "project")
+            os.mkdir(workspace)
+            files = make_existing_project(workspace)
+
+            def fail_copytree(source, destination, *args, **kwargs):
+                os.makedirs(destination)
+                with open(os.path.join(destination, "partial"), "w", encoding="utf-8") as file:
+                    file.write("partial")
+                raise OSError("copy failed")
+
+            monkeypatch.setattr(harness.shutil, "copytree", fail_copytree)
+            result = harness.init_project("Fail copy", config(workspace), backend=model.MockBackend())
+
+            assert result == {"status": "error", "reason": "copy failed"}
+            assert_existing_project(workspace, files)
+            assert not os.path.exists(os.path.join(workspace, ".bid"))
+
+    def test_absent_workspace_still_initializes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "new-project")
+
+            result = harness.init_project("Create project", config(workspace), backend=model.MockBackend([text_response(todo_item(1, "Create"))]))
+
+            assert result["status"] == "success"
+            assert os.path.isdir(os.path.join(workspace, ".bid"))
+
+
 def test_fenced_qwen_read_run_response_parses_without_fence_or_terminators():
     response = """```bash
 READ README.md
