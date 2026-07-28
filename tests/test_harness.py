@@ -3,7 +3,7 @@ import sys
 import tempfile
 import types
 
-from bid import adapter, harness, model, vc
+from bid import adapter, harness, model, todo, vc
 
 
 def text_response(text):
@@ -32,6 +32,25 @@ def config(workspace, **overrides):
 def todo_item(number, desc, checked=False):
     mark = "x" if checked else " "
     return f"- [{mark}] T{number} — {desc}\n"
+
+
+PRESERVED_MANAGER_RESPONSES = (
+    """- [ ] Implement fail-closed behavior in `solve_point` when no physically valid beam-constrained solution exists.
+- [ ] Update affected callers to handle the new failure state gracefully.
+- [ ] Add regression tests validating the fix prevents invalid reconstructions.
+- [ ] Run focused ARGUS tests related to point reconstruction.
+- [ ] Execute complete ARGUS test suite and verify stability.""",
+    """- [ ] Implement fail-closed behavior in `solve_point` when no physically valid beam-constrained solution exists.
+- [ ] Update affected callers to handle the new failure state gracefully.
+- [ ] Add regression tests validating the fix prevents invalid reconstructions.
+- [ ] Run focused ARGUS tests related to point reconstruction.
+- [ ] Execute complete ARGUS test suite and verify stability.""",
+    """- [ ] Implement fail-closed behavior in `solve_point` when no physically valid beam-constrained solution exists.
+- [ ] Update affected callers to handle the new failure state gracefully.
+- [ ] Add regression tests validating the fix prevents invalid reconstructions.
+- [ ] Run focused ARGUS tests related to point reconstruction.
+- [ ] Execute complete ARGUS test suite and verify stability.""",
+)
 
 
 def prepare_workspace(tmp, todo_text):
@@ -72,7 +91,7 @@ def test_write_body_preserves_literal_think_text():
 
 class TestReviewerContracts:
     def test_manager_init_uses_manager_checklist_prompt(self):
-        backend = model.MockBackend([text_response(todo_item(1, "Inspect the project"))])
+        backend = model.MockBackend([text_response("- [ ] Inspect the project")])
 
         with tempfile.TemporaryDirectory() as tmp:
             result = harness.init_project("Inspect the project", config(tmp), backend=backend)
@@ -80,6 +99,28 @@ class TestReviewerContracts:
             assert result["status"] == "success"
             with open(os.path.join(tmp, "docs", "manager.md"), encoding="utf-8") as file:
                 assert backend.call_history[0]["messages"][0]["content"] == file.read()
+            assert "- [ ] Description" in backend.call_history[0]["messages"][1]["content"]
+            assert "T1" not in backend.call_history[0]["messages"][1]["content"]
+
+    def test_manager_preserved_unlabelled_responses_get_harness_ids(self):
+        for response in PRESERVED_MANAGER_RESPONSES:
+            with tempfile.TemporaryDirectory() as tmp:
+                result = harness.init_project("Fix solve_point", config(tmp), backend=model.MockBackend([text_response(response)]))
+                assert result["status"] == "success"
+                with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
+                    todo_text = file.read()
+                tasks = todo.parse_todo(todo_text)
+                assert [task["id"] for task in tasks] == ["T1", "T2", "T3", "T4", "T5"]
+                assert tasks[0]["description"].startswith("Implement fail-closed")
+
+    def test_manager_normalizes_wrong_or_duplicate_ids_by_order(self):
+        todo = adapter.ManagerInitAdapter._todo("- [ ] T7 — First\n* [ ] T7 — Second\n- [ ] T99 — Third")
+        assert todo == "- [ ] T1 — First\n- [ ] T2 — Second\n- [ ] T3 — Third"
+
+    def test_manager_rejects_commentary_and_invalid_items(self):
+        assert adapter.ManagerInitAdapter._todo("- [ ] First\nNote: do this too") is None
+        for invalid in ("- [x] Done", "- [ ]", "- [] Missing space", "1. First", "Just prose"):
+            assert adapter.ManagerInitAdapter._todo(invalid) is None
 
     def test_task_review_retries_with_reviewer_contract(self):
         correction = "No valid reviewer verdict was found. Return only:\nACCEPT followed by Reason:, or REWORK followed by Reason:."

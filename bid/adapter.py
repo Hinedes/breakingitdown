@@ -339,11 +339,10 @@ class ManagerInitAdapter:
                 "role": "user",
                 "content": (
                     f"# Task\n\n{task_md}\n\n"
-                    "Create a numbered checklist for this task. Return only Markdown checklist lines.\n"
+                    "Create a checklist for this task. Return only unchecked Markdown checklist lines:\n\n"
+                    "- [ ] Description\n"
+                    "- [ ] Description\n\n"
                     "Keep the steps natural. If a step is a deliberate no-op, that is fine.\n\n"
-                    "Example:\n"
-                    "- [ ] T1 — Short description\n"
-                    "- [ ] T2 — Short description"
                 ),
             },
         ]
@@ -354,12 +353,12 @@ class ManagerInitAdapter:
             except Exception as exc:
                 return {"status": "error", "reason": f"model request failed: {exc}"}
 
-            content = (response.get("content") or "").strip()
-            content = _clean_fences(content)
+            content = response.get("content") or ""
+            todo = self._todo(content)
 
-            if self._valid(content):
-                _write(self.workspace, "docs/todo.md", content)
-                return {"status": "success", "todo": content}
+            if todo:
+                _write(self.workspace, "docs/todo.md", todo)
+                return {"status": "success", "todo": todo}
 
             if attempt < self.RETRY_LIMIT - 1:
                 messages.append({"role": "assistant", "content": content})
@@ -367,22 +366,34 @@ class ManagerInitAdapter:
                     "role": "user",
                     "content": (
                         "Return only checklist lines in this exact format:\n"
-                        "- [ ] T1 — Description\n"
-                        "- [ ] T2 — Description\n\n"
+                        "- [ ] Description\n"
+                        "- [ ] Description\n\n"
                         "No commentary. No code fences. Got:\n\n"
-                        + content[:500]
+                        + content.strip()[:500]
                     ),
                 })
 
         return {"status": "error", "reason": "failed to produce valid TODO after 3 attempts"}
 
     @staticmethod
-    def _valid(text):
-        if not text:
-            return False
-        tasks = todo_mod.parse_todo(text)
-        valid, _ = validate_todo_tasks(tasks)
-        return valid
+    def _todo(text):
+        descriptions = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            match = re.fullmatch(r"\s*[-*]\s+\[ \]\s+(.+?)\s*", line)
+            if not match:
+                return None
+            description = match.group(1).strip()
+            label = re.fullmatch(r"T\d+\b\s*(?:[—–-]\s*)?(.*)", description)
+            if label:
+                description = label.group(1).strip()
+            if not description:
+                return None
+            descriptions.append(description)
+        if not descriptions:
+            return None
+        return "\n".join(f"- [ ] T{index} — {description}" for index, description in enumerate(descriptions, 1))
 
 
 class WorkerAdapter:
