@@ -836,7 +836,7 @@ def _workspace_diff(base_root, candidate_root, limit=12000):
     # ponytail: fixed shares keep an early large file from hiding later changes.
     share = max(0, (limit - len(index) - 2 * len(changes)) // len(changes))
     chunks = [index]
-    marker = "\n...[truncated for this file]"
+    marker = "\n...[middle truncated for this file]...\n"
     for status, rel, detail in changes:
         header = f"### {status} {rel}"
         if not detail or len(header) + 1 + len(detail) <= share:
@@ -846,8 +846,8 @@ def _workspace_diff(base_root, candidate_root, limit=12000):
         if len(detail) > excerpt:
             head = excerpt // 2
             tail = excerpt - head
-            detail = detail[:head] + (detail[-tail:] if tail else "")
-        chunks.append(f"{header}\n{detail}{marker}")
+            detail = detail[:head] + marker + (detail[-tail:] if tail else "")
+        chunks.append(f"{header}\n{detail}")
     return "\n\n".join(chunks)
 
 

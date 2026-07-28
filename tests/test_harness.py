@@ -900,10 +900,10 @@ class TestReviewDiffCoverage:
                 os.makedirs(os.path.join(root, "argus"))
                 os.makedirs(os.path.join(root, "tests"))
             files = {
-                "a_large.py": ("before\n", "A" * 4000),
+                "a_HEAD_SENTINEL_large.py": ("before\n", "A" * 4000 + "\nTAIL_SENTINEL\n"),
                 "argus/solve.py": ("old solve\n", "def solve_point():\n    return None\n"),
                 "argus/sensitivity.py": ("old sensitivity\n", "new sensitivity\n"),
-                "tests/test_solve_point_fail_closed.py": ("old test\n", "def test_fail_closed():\n    assert True\n"),
+                "tests/test_solve_point_fail_closed.py": ("old test\n", "def test_fail_closed():\n    TEST_DETAIL_SENTINEL\n"),
             }
             for rel, (before, after) in files.items():
                 for root, content in ((base, before), (candidate, after)):
@@ -912,12 +912,14 @@ class TestReviewDiffCoverage:
 
             diff = adapter._workspace_diff(base, candidate, limit=800)
 
+            assert len(diff) <= 800
             for rel in files:
                 assert f"- modified {rel}" in diff
                 assert f"### modified {rel}" in diff
             assert "return None" in diff
-            assert "test_fail_closed" in diff
-            assert "...[truncated for this file]" in diff
+            assert "TEST_DETAIL_SENTINEL" in diff
+            large_section = diff.split("### modified a_HEAD_SENTINEL_large.py", 1)[1]
+            assert large_section.index("HEAD_SENTINEL") < large_section.index("...[middle truncated for this file]...") < large_section.index("TAIL_SENTINEL")
 
     def test_small_multi_file_diff_is_complete_without_marker(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -939,7 +941,7 @@ class TestReviewDiffCoverage:
             assert "added" in diff
             assert "-old" in diff
             assert "+new" in diff
-            assert "...[truncated for this file]" not in diff
+            assert "...[middle truncated for this file]..." not in diff
 
     def test_task_reviewer_prompt_includes_late_changed_files(self):
         with tempfile.TemporaryDirectory() as tmp:
