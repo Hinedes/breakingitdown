@@ -889,3 +889,88 @@ class TestResumeBehavior:
             assert "policy violation: protected deletion denied" in backend.call_history[1]["messages"][-1]["content"]
             assert "error: execution failed: boom" in backend.call_history[2]["messages"][-1]["content"]
             assert "protected deletion denied" not in backend.call_history[2]["messages"][-1]["content"]
+
+
+class TestReviewDiffCoverage:
+    def test_large_early_diff_keeps_later_file_details(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.join(tmp, "base")
+            candidate = os.path.join(tmp, "candidate")
+            for root in (base, candidate):
+                os.makedirs(os.path.join(root, "argus"))
+                os.makedirs(os.path.join(root, "tests"))
+            files = {
+                "a_large.py": ("before\n", "A" * 4000),
+                "argus/solve.py": ("old solve\n", "def solve_point():\n    return None\n"),
+                "argus/sensitivity.py": ("old sensitivity\n", "new sensitivity\n"),
+                "tests/test_solve_point_fail_closed.py": ("old test\n", "def test_fail_closed():\n    assert True\n"),
+            }
+            for rel, (before, after) in files.items():
+                for root, content in ((base, before), (candidate, after)):
+                    with open(os.path.join(root, rel), "w", encoding="utf-8") as file:
+                        file.write(content)
+
+            diff = adapter._workspace_diff(base, candidate, limit=800)
+
+            for rel in files:
+                assert f"- modified {rel}" in diff
+                assert f"### modified {rel}" in diff
+            assert "return None" in diff
+            assert "test_fail_closed" in diff
+            assert "...[truncated for this file]" in diff
+
+    def test_small_multi_file_diff_is_complete_without_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.join(tmp, "base")
+            candidate = os.path.join(tmp, "candidate")
+            for root in (base, candidate):
+                os.makedirs(os.path.join(root, "argus"))
+            with open(os.path.join(base, "argus", "solve.py"), "w", encoding="utf-8") as file:
+                file.write("old\n")
+            with open(os.path.join(candidate, "argus", "solve.py"), "w", encoding="utf-8") as file:
+                file.write("new\n")
+            with open(os.path.join(candidate, "added.py"), "w", encoding="utf-8") as file:
+                file.write("added\n")
+
+            diff = adapter._workspace_diff(base, candidate)
+
+            assert "- added added.py" in diff
+            assert "- modified argus/solve.py" in diff
+            assert "added" in diff
+            assert "-old" in diff
+            assert "+new" in diff
+            assert "...[truncated for this file]" not in diff
+
+    def test_task_reviewer_prompt_includes_late_changed_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Review fail-closed solver"))
+            for rel, content in {
+                "a_large.py": "before\n",
+                "argus/solve.py": "old solve\n",
+                "argus/sensitivity.py": "old sensitivity\n",
+                "tests/test_solve_point_fail_closed.py": "old test\n",
+            }.items():
+                path = os.path.join(tmp, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as file:
+                    file.write(content)
+            base_state = vc.VersionControl(tmp).save_state("seed", "causal shape")
+            for rel, content in {
+                "a_large.py": "A" * 20000,
+                "argus/solve.py": "def solve_point():\n    return None\n",
+                "argus/sensitivity.py": "new sensitivity\n",
+                "tests/test_solve_point_fail_closed.py": "def test_fail_closed():\n    assert True\n",
+            }.items():
+                with open(os.path.join(tmp, rel), "w", encoding="utf-8") as file:
+                    file.write(content)
+
+            backend = model.MockBackend([text_response("REWORK\nReason: Continue.")])
+            result = adapter.TaskReviewAdapter(config(tmp), 1, base_state=base_state).run(backend)
+            prompt = backend.call_history[0]["messages"][1]["content"]
+
+            assert result["verdict"] == "REWORK"
+            for rel in ("a_large.py", "argus/solve.py", "argus/sensitivity.py", "tests/test_solve_point_fail_closed.py"):
+                assert f"- modified {rel}" in prompt
+                assert f"### modified {rel}" in prompt
+            assert "return None" in prompt
+            assert "test_fail_closed" in prompt

@@ -799,32 +799,56 @@ def _workspace_tree(root):
 def _workspace_diff(base_root, candidate_root, limit=12000):
     base = _workspace_tree(base_root)
     cand = _workspace_tree(candidate_root)
-    chunks = []
+    changes = []
     for rel in sorted(set(base) | set(cand)):
         before = base.get(rel)
         after = cand.get(rel)
         if before == after:
             continue
         if before is None:
-            chunks.append(f"### added {rel}")
-            if after:
-                chunks.append(after[:2000])
-            continue
-        if after is None:
-            chunks.append(f"### deleted {rel}")
-            continue
-        chunks.append(f"### modified {rel}")
-        chunks.extend(
-            difflib.unified_diff(
+            status, detail = "added", after
+        elif after is None:
+            status, detail = "deleted", before
+        else:
+            status = "modified"
+            detail = "\n".join(difflib.unified_diff(
                 before.splitlines(),
                 after.splitlines(),
                 fromfile=f"a/{rel}",
                 tofile=f"b/{rel}",
                 lineterm="",
-            )
-        )
-    text = "\n".join(chunks).strip()
-    return text[:limit] if text else "(no file changes)"
+            ))
+        changes.append((status, rel, detail or ""))
+
+    if not changes:
+        return "(no file changes)"
+
+    index = "## Changed files\n" + "\n".join(
+        f"- {status} {rel}" for status, rel, _ in changes
+    )
+    full = "\n\n".join(
+        f"### {status} {rel}" + (f"\n{detail}" if detail else "")
+        for status, rel, detail in changes
+    )
+    if len(index) + 2 + len(full) <= limit:
+        return f"{index}\n\n{full}"
+
+    # ponytail: fixed shares keep an early large file from hiding later changes.
+    share = max(0, (limit - len(index) - 2 * len(changes)) // len(changes))
+    chunks = [index]
+    marker = "\n...[truncated for this file]"
+    for status, rel, detail in changes:
+        header = f"### {status} {rel}"
+        if not detail or len(header) + 1 + len(detail) <= share:
+            chunks.append(header + (f"\n{detail}" if detail else ""))
+            continue
+        excerpt = max(0, share - len(header) - len(marker) - 1)
+        if len(detail) > excerpt:
+            head = excerpt // 2
+            tail = excerpt - head
+            detail = detail[:head] + (detail[-tail:] if tail else "")
+        chunks.append(f"{header}\n{detail}{marker}")
+    return "\n\n".join(chunks)
 
 
 def _workspace_listing(root, limit=12000):
