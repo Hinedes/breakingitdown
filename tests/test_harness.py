@@ -70,6 +70,54 @@ def test_write_body_preserves_literal_think_text():
     ]
 
 
+class TestReviewerContracts:
+    def test_manager_init_uses_manager_checklist_prompt(self):
+        backend = model.MockBackend([text_response(todo_item(1, "Inspect the project"))])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = harness.init_project("Inspect the project", config(tmp), backend=backend)
+
+            assert result["status"] == "success"
+            with open(os.path.join(tmp, "docs", "manager.md"), encoding="utf-8") as file:
+                assert backend.call_history[0]["messages"][0]["content"] == file.read()
+
+    def test_task_review_retries_with_reviewer_contract(self):
+        correction = "No valid reviewer verdict was found. Return only:\nACCEPT followed by Reason:, or REWORK followed by Reason:."
+        backend = model.MockBackend([
+            text_response("- [ ] T1 — Review the candidate"),
+            text_response("ACCEPT\nReason: The candidate satisfies the task."),
+        ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Review the candidate"))
+            with open(os.path.join(tmp, "docs", "manager.md"), "w", encoding="utf-8") as file:
+                file.write("Create only a numbered checklist.")
+
+            result = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s0").run(backend)
+
+            assert result["verdict"] == "ACCEPT"
+            assert "numbered checklist" not in backend.call_history[0]["messages"][0]["content"]
+            assert backend.call_history[1]["messages"][-1]["content"] == correction
+
+    def test_completion_review_retries_with_completion_contract(self):
+        correction = "No valid completion verdict was found. Return only COMPLETE with Reason:, or MISSING followed by one or more missing-deliverable bullets."
+        backend = model.MockBackend([
+            text_response("Analysis: the candidate is ready."),
+            text_response("COMPLETE\nReason: The request is satisfied."),
+        ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Review the candidate", checked=True))
+            with open(os.path.join(tmp, "docs", "manager.md"), "w", encoding="utf-8") as file:
+                file.write("Create only a numbered checklist.")
+
+            result = adapter.CompletionReviewAdapter(config(tmp)).run(backend)
+
+            assert result["verdict"] == "COMPLETE"
+            assert "numbered checklist" not in backend.call_history[0]["messages"][0]["content"]
+            assert backend.call_history[1]["messages"][-1]["content"] == correction
+
+
 class TestWorkerSession:
     def test_worker_can_finish_without_changes(self):
         with tempfile.TemporaryDirectory() as tmp:

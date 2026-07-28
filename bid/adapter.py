@@ -70,6 +70,36 @@ CONTROL_ROOTS = (
     "docs/reviews",
 )
 
+TASK_REVIEWER_SYSTEM = """You are BID Task Reviewer.
+Judge whether the candidate satisfies the assigned task using only the
+provided original request, task, fixed-base-to-candidate diff, research,
+and RUN evidence.
+
+Return exactly one of:
+
+ACCEPT
+Reason: <reason>
+
+REWORK
+Reason: <reason>
+
+Return only the verdict and reason. Do not return a checklist, analysis,
+Markdown fences, or additional text."""
+
+COMPLETION_REVIEWER_SYSTEM = """You are BID Manager performing final completion review.
+Judge whether the final workspace satisfies the original request.
+
+Return exactly one of:
+
+COMPLETE
+Reason: <reason>
+
+MISSING
+- <missing deliverable>
+
+Return only the verdict. Do not return a checklist of numbered items, analysis,
+Markdown fences, or additional text."""
+
 
 def _bounded_text(text, limit=RUN_OUTPUT_LIMIT):
     if isinstance(text, bytes):
@@ -888,7 +918,7 @@ class TaskReviewAdapter:
         )
 
         messages = [
-            {"role": "system", "content": _read(self.workspace, "docs/manager.md")},
+            {"role": "system", "content": TASK_REVIEWER_SYSTEM},
             {"role": "user", "content": prompt},
         ]
 
@@ -908,7 +938,7 @@ class TaskReviewAdapter:
                 return result
 
             messages.append({"role": "assistant", "content": raw or "[no output]"})
-            messages.append({"role": "user", "content": "Return ACCEPT or REWORK with Reason."})
+            messages.append({"role": "user", "content": "No valid reviewer verdict was found. Return only:\nACCEPT followed by Reason:, or REWORK followed by Reason:."})
 
         return {"verdict": "ERROR", "reason": "failed to produce valid review after retries", "task_number": self.task_number}
 
@@ -953,7 +983,7 @@ class CompletionReviewAdapter:
         )
 
         messages = [
-            {"role": "system", "content": _read(self.workspace, "docs/manager.md")},
+            {"role": "system", "content": COMPLETION_REVIEWER_SYSTEM},
             {"role": "user", "content": prompt},
         ]
 
@@ -972,7 +1002,7 @@ class CompletionReviewAdapter:
                 return result
 
             messages.append({"role": "assistant", "content": raw or "[no output]"})
-            messages.append({"role": "user", "content": "Return COMPLETE or MISSING."})
+            messages.append({"role": "user", "content": "No valid completion verdict was found. Return only COMPLETE with Reason:, or MISSING followed by one or more missing-deliverable bullets."})
 
         return {"verdict": "ERROR", "reason": "failed to produce valid completion review"}
 
