@@ -98,7 +98,12 @@ class TestReviewerContracts:
 
             assert result["status"] == "success"
             with open(os.path.join(tmp, "docs", "manager.md"), encoding="utf-8") as file:
-                assert backend.call_history[0]["messages"][0]["content"] == file.read()
+                system = file.read()
+            assert backend.call_history[0]["messages"][0]["content"] == system
+            assert "- [ ] Description" in system
+            assert "numbered checklist" not in system
+            assert "T1" not in system
+            assert "T2" not in system
             assert "- [ ] Description" in backend.call_history[0]["messages"][1]["content"]
             assert "T1" not in backend.call_history[0]["messages"][1]["content"]
 
