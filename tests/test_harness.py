@@ -494,6 +494,44 @@ class TestWorkerSession:
 
 
 class TestRunProject:
+    def test_accept_continues_to_next_task_then_runs_completion_review(self):
+        backend = model.MockBackend([
+            text_response("Done"),
+            text_response("ACCEPT\nReason: First task complete."),
+            text_response("Done"),
+            text_response("ACCEPT\nReason: Second task complete."),
+            text_response("COMPLETE\nReason: All tasks complete."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project(
+                "Complete two tasks",
+                cfg,
+                backend=model.MockBackend([text_response(todo_item(1, "First") + todo_item(2, "Second"))]),
+            )["status"] == "success"
+
+            result = harness.run_project(cfg, backend=backend)
+
+            assert result["status"] == "done"
+            worker_prompts = [
+                request["messages"][1]["content"]
+                for request in backend.call_history
+                if len(request["messages"]) > 1 and request["messages"][1]["content"].lstrip().startswith("Task T")
+            ]
+            assert len(worker_prompts) == 2
+            assert "Task T1:" in worker_prompts[0]
+            assert "Task T2:" in worker_prompts[1]
+            completion_prompts = [
+                request["messages"][1]["content"]
+                for request in backend.call_history
+                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Completion Review")
+            ]
+            assert len(completion_prompts) == 1
+            with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
+                assert "[x] T1" in file.read()
+            with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
+                assert "[x] T2" in file.read()
+
     def test_rework_then_accept_retries_same_task(self):
         responses = [
             text_response(todo_item(1, "Write result")),

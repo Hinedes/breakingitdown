@@ -346,6 +346,7 @@ def run_project(config, backend=None):
                     write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
                     continue
                 return {"status": "error", "reason": completion.get("reason", "completion review error"), "detail": completion}
+            continue
 
         return {"status": "error", "reason": f"unexpected review verdict: {review.get('verdict', '?')}"}
 
