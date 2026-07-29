@@ -246,7 +246,10 @@ def _validate_direct_deletion(argv, workspace):
 
 # ── Command parsing ──────────────────────────────────────────────────
 
-def _parse_content_into_turns(content):
+_KNOWN_CMDS = {"READ ", "WRITE ", "RUN ", "Done", "SEARCH "}
+
+
+def _parse_content_into_turns(content, finish_reason="stop"):
     lines = content.split("\n")
     commands = []
     i = 0
@@ -284,7 +287,18 @@ def _parse_content_into_turns(content):
                 body_lines.append(lines[i])
                 i += 1
             if not terminated:
-                # Unterminated WRITE: reject, perform no write
+                if finish_reason == "stop" and body_lines and any(l.strip() for l in body_lines):
+                    has_trailing_cmd = any(
+                        l.strip().startswith(cmd)
+                        for l in body_lines
+                        for cmd in ("READ ", "WRITE ", "RUN ", "Done")
+                    )
+                    if not has_trailing_cmd:
+                        commands.append({
+                            "type": "WRITE", "path": path,
+                            "content": "\n".join(body_lines),
+                        })
+                        continue
                 commands.append({"type": "WRITE_UNTERMINATED", "path": path})
                 continue
             commands.append({"type": "WRITE", "path": path, "content": "\n".join(body_lines)})
@@ -299,6 +313,40 @@ def _parse_content_into_turns(content):
         i += 1
 
     return commands
+
+
+def _find_unknown_commands(content, commands):
+    lines = content.split("\n")
+    consumed = set()
+    li = 0
+    while li < len(lines):
+        s = lines[li].strip()
+        if s == "Done" or s.startswith("SEARCH ") or s.startswith("READ ") or s.startswith("RUN "):
+            consumed.add(li); li += 1; continue
+        if s.startswith("WRITE "):
+            consumed.add(li); li += 1
+            while li < len(lines) and lines[li].strip() != "END WRITE":
+                consumed.add(li); li += 1
+            if li < len(lines) and lines[li].strip() == "END WRITE":
+                consumed.add(li); li += 1
+            continue
+        li += 1
+    unknown = []
+    for i, line in enumerate(lines):
+        if i in consumed:
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        tokens = stripped.split()
+        if len(tokens) > 2:
+            continue
+        if any(stripped.startswith(p) for p in _KNOWN_CMDS):
+            continue
+        import re
+        if re.match(r"^[A-Z]{2,}$", tokens[0]):
+            unknown.append(stripped)
+    return unknown
 # ── TODO validation ──────────────────────────────────────────────────
 
 
@@ -454,6 +502,7 @@ class WorkerAdapter:
 
             raw_content = response.get("content") or ""
             content = raw_content.strip()
+            finish_reason = response.get("finish_reason", "stop")
 
             messages.append({"role": "assistant", "content": content or "[no output]"})
             _log_worker_event(self._vc, "worker raw response", raw_content)
@@ -463,7 +512,7 @@ class WorkerAdapter:
             policy_violation = False
 
             if content:
-                commands = _parse_content_into_turns(content)
+                commands = _parse_content_into_turns(content, finish_reason)
             else:
                 commands = []
 
@@ -643,6 +692,16 @@ class WorkerAdapter:
                     result = f"error: unknown command {cmd['type']}"
                     _log_worker_event(self._vc, "worker result", result)
                     messages.append({"role": "user", "content": result})
+
+            # Unknown-command feedback
+            unknown_cmds = _find_unknown_commands(raw_content, commands)
+            if unknown_cmds:
+                err_msg = ("error: unknown command(s): " + ", ".join(unknown_cmds[:3])
+                           + "\nAllowed commands are READ, WRITE, RUN, Done."
+                           + "\nTo inspect directories, use RUN ls.")
+                messages.append({"role": "user", "content": err_msg})
+                _log_worker_event(self._vc, "worker result", err_msg)
+                # NOT counted as useful or changed; does NOT reset repeat
 
             # Done processing
             if policy_violation:

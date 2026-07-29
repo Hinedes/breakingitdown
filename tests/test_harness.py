@@ -209,6 +209,63 @@ def test_write_body_preserves_literal_think_text():
     ]
 
 
+# ── BID-v2 parser interface: EOF WRITE + unknown-command feedback ──
+
+def test_eof_write_accepted_when_stop():
+    """EOF-terminated WRITE with finish_reason=stop is accepted."""
+    cmds = adapter._parse_content_into_turns("WRITE a.py\nprint(1)", "stop")
+    writes = [c for c in cmds if c["type"] == "WRITE"]
+    assert len(writes) == 1
+    assert writes[0]["path"] == "a.py"
+    assert writes[0]["content"] == "print(1)"
+
+
+def test_eof_write_rejected_when_length():
+    """EOF-terminated WRITE with finish_reason=length is rejected."""
+    cmds = adapter._parse_content_into_turns("WRITE a.py\nbody", "length")
+    unterminated = [c for c in cmds if c["type"] == "WRITE_UNTERMINATED"]
+    assert len(unterminated) == 1
+
+
+def test_eof_write_rejected_when_trailing_cmd():
+    """EOF WRITE with a trailing RUN after the body is rejected."""
+    cmds = adapter._parse_content_into_turns("WRITE a.py\nbody\nRUN python -c pass", "stop")
+    writes = [c for c in cmds if c["type"] == "WRITE"]
+    unterminated = [c for c in cmds if c["type"] == "WRITE_UNTERMINATED"]
+    assert len(writes) == 0
+
+
+def test_eof_write_rejected_empty_body():
+    """Empty EOF body is rejected."""
+    cmds = adapter._parse_content_into_turns("WRITE a.py\n", "stop")
+    unterminated = [c for c in cmds if c["type"] == "WRITE_UNTERMINATED"]
+    assert len(unterminated) == 1
+
+
+def test_explicit_end_write_still_accepted():
+    """Explicit END WRITE is still accepted (unchanged from original)."""
+    cmds = adapter._parse_content_into_turns("WRITE a.md\nhello\nEND WRITE\nREAD b.md", "stop")
+    writes = [c for c in cmds if c["type"] == "WRITE" and c["path"] == "a.md"]
+    reads = [c for c in cmds if c["type"] == "READ"]
+    assert len(writes) == 1 and writes[0]["content"] == "hello"
+    assert len(reads) == 1
+
+
+def test_find_unknown_commands_catches_listdirs():
+    """LISTDIRS is detected as an unknown command."""
+    assert adapter._find_unknown_commands("READ a\nLISTDIRS", [{"type":"READ"}]) == ["LISTDIRS"]
+
+
+def test_find_unknown_commands_ignores_prose():
+    """Prose (3+ tokens, not all-caps) is not flagged."""
+    assert adapter._find_unknown_commands("This is prose", []) == []
+
+
+def test_find_unknown_commands_inside_write_body():
+    """Content inside a WRITE body is not flagged."""
+    assert adapter._find_unknown_commands("WRITE a.py\nARGUS knows\ngo DO something\nEND WRITE", [{"type":"WRITE"}]) == []
+
+
 class TestReviewerContracts:
     def test_manager_init_uses_manager_checklist_prompt(self):
         backend = model.MockBackend([text_response("- [ ] Inspect the project")])

@@ -21,6 +21,7 @@ def get_config():
         "inactivity_timeout": int(os.environ.get("BID_INACTIVITY_TIMEOUT", "600")),
         "worker_timeout": int(os.environ.get("BID_WORKER_TIMEOUT", "3600")),
         "repeat_action_limit": int(os.environ.get("BID_REPEAT_ACTION_LIMIT", "5")),
+        "run_timeout": int(os.environ.get("BID_RUN_TIMEOUT", "900")),
         "max_searches_per_worker": int(os.environ.get("BID_MAX_SEARCHES", "10")),
         "search_endpoint": os.environ.get("BID_SEARCH_ENDPOINT", ""),
     }
