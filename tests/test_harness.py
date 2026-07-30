@@ -788,7 +788,7 @@ class TestRunProject:
                 assert file.read() == "final"
             with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
                 assert "[x] T1" in file.read()
-            assert vc.VersionControl(tmp).get_current() == "s3"
+            assert vc.VersionControl(tmp).get_current() == "s4"
             review_prompts = [
                 request["messages"][1]["content"]
                 for request in backend.call_history
@@ -1229,9 +1229,7 @@ class TestResumeBehavior:
 
             with open(os.path.join(tmp, ".bid", "log.md"), encoding="utf-8") as file:
                 log_text = file.read()
-            latest_s1 = log_text.rsplit("### s1\n", 1)[1]
-            assert "Need evidence." not in latest_s1
-            assert "rework_reason:" in latest_s1
+            assert "rework_reason: task=T1 base=s0 candidate=s1 reason=Need evidence." in log_text
             assert vc.VersionControl(tmp).get_current() == "s1"
 
     def test_malformed_write_is_rejected_and_logged(self):
@@ -1535,15 +1533,61 @@ class TestReworkFixedBase:
             harness.ensure_workspace(tmp)
             vc.VersionControl(tmp).init()
             harness.run_project(config(tmp), backend=backend)
-            # The rejected state directory should not exist (deleted by restore),
-            # but the rework_reason should appear in the log under the base state
-            log_text = open(os.path.join(tmp, ".bid", "log.md")).read()
-            assert "rework_reason:" in log_text
-            assert "Low quality." in log_text
-            # The rejected state's filesystem snapshot was deleted by restore,
-            # but its rework_reason is preserved in the log under the base state
+            # Rejected candidate snapshot still exists and is byte-identical
             states_dir = os.path.join(tmp, ".bid", "states")
-            remaining = sorted(os.listdir(states_dir))
+            s = sorted(os.listdir(states_dir))
+            assert "s1" in s, f"rejected candidate state should exist in {s}"
+            rejected_notes = open(os.path.join(states_dir, "s1", "notes.txt")).read().strip()
+            assert rejected_notes == "rejected draft", \
+                f"expected 'rejected draft', got {rejected_notes!r}"
+            # Active workspace has the accepted content
+            ws_notes = open(os.path.join(tmp, "notes.txt")).read().strip()
+            assert ws_notes == "accepted draft", f"expected 'accepted draft', got {ws_notes!r}"
+            # Log has structured rework provenance
+            log_text = open(os.path.join(tmp, ".bid", "log.md")).read()
+            assert "task=T1 base=s0 candidate=s1 reason=Low quality." in log_text
+
+    def test_multiple_rejected_candidates_independently_preserved(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Edit notes.txt")),
+            text_response("WRITE notes.txt\nv1\nEND WRITE\nDone"),
+            text_response("REWORK\nReason: v1 bad."),
+            text_response("WRITE notes.txt\nv2\nEND WRITE\nDone"),
+            text_response("REWORK\nReason: v2 bad."),
+            text_response("WRITE notes.txt\nv3\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: v3 good."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Edit notes.txt"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nEdit notes.txt.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            with open(os.path.join(tmp, "notes.txt"), "w") as f:
+                f.write("ORIGINAL")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            harness.run_project(config(tmp), backend=backend)
+            states_dir = os.path.join(tmp, ".bid", "states")
+            s = sorted(os.listdir(states_dir))
+            assert "s1" in s, f"rejected attempt 1 should exist in {s}"
+            assert "s2" in s, f"rejected attempt 2 should exist in {s}"
+            assert "s3" in s, f"accepted attempt should exist in {s}"
+            # Each attempt has its own content
+            assert open(os.path.join(states_dir, "s1", "notes.txt")).read().strip() == "v1"
+            assert open(os.path.join(states_dir, "s2", "notes.txt")).read().strip() == "v2"
+            assert open(os.path.join(states_dir, "s3", "notes.txt")).read().strip() == "v3"
+            # Active workspace has the accepted content
+            assert open(os.path.join(tmp, "notes.txt")).read().strip() == "v3"
+            # Log has structured provenance for each rework
+            log_text = open(os.path.join(tmp, ".bid", "log.md")).read()
+            assert "base=s0 candidate=s1 reason=v1 bad." in log_text
+            assert "base=s0 candidate=s2 reason=v2 bad." in log_text
 
 
 class TestReviewDiffCoverage:

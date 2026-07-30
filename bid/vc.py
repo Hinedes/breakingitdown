@@ -136,6 +136,59 @@ class VersionControl:
         finally:
             self._release_lock()
 
+    def restore_workspace(self, state_name, preserve_todo=False):
+        if not re.fullmatch(r"s\d+", state_name):
+            raise ValueError(f"invalid state name: {state_name!r}")
+        snapshot = os.path.realpath(os.path.join(self.states_dir, state_name))
+        if not snapshot.startswith(os.path.realpath(self.states_dir) + os.sep):
+            raise ValueError(f"state path traversal denied: {state_name!r}")
+        if not os.path.isdir(snapshot):
+            raise ValueError(f"state {state_name} not found")
+
+        todo_text = None
+        if preserve_todo:
+            todo_path = os.path.join(self.workspace, "docs", "todo.md")
+            if os.path.exists(todo_path):
+                with open(todo_path, encoding="utf-8") as file:
+                    todo_text = file.read()
+
+        self._acquire_lock()
+        try:
+            restore_tmp = tempfile.mkdtemp(dir=self.bid_dir, prefix="restore_")
+            try:
+                for item in os.listdir(snapshot):
+                    src = os.path.join(snapshot, item)
+                    dst = os.path.join(restore_tmp, item)
+                    if os.path.isdir(src):
+                        shutil.copytree(src, dst)
+                    else:
+                        shutil.copy2(src, dst)
+                for item in os.listdir(self.workspace):
+                    if item == ".bid":
+                        continue
+                    path = os.path.join(self.workspace, item)
+                    if os.path.isdir(path):
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
+                for item in os.listdir(restore_tmp):
+                    shutil.move(os.path.join(restore_tmp, item), self.workspace)
+            finally:
+                shutil.rmtree(restore_tmp, ignore_errors=True)
+            if todo_text is not None:
+                todo_path = os.path.join(self.workspace, "docs", "todo.md")
+                os.makedirs(os.path.dirname(todo_path), exist_ok=True)
+                with open(todo_path, "w", encoding="utf-8") as file:
+                    file.write(todo_text)
+        finally:
+            self._release_lock()
+
+    def set_current(self, name):
+        self._validate_state_name(name)
+        if not os.path.isdir(os.path.join(self.states_dir, name)):
+            raise ValueError(f"state {name} not found")
+        self._set_current(name)
+
     def get_log(self):
         if not os.path.exists(self.log_file):
             return "(no log)"

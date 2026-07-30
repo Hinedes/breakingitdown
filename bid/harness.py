@@ -326,9 +326,11 @@ def run_project(config, backend=None):
             reviewer_feedback[number] = " ".join(review.get("reason", "").split()).strip()
             print(f"Worker {number} rework: {reviewer_feedback[number]}")
             if current_task_base_state:
-                vc_system.restore(current_task_base_state, preserve_todo=True)
-            log_state = current_task_base_state or result["state"]
-            vc_system._append_log(log_state, f"rework_reason: {reviewer_feedback[number]}")
+                vc_system.restore_workspace(current_task_base_state, preserve_todo=True)
+                vc_system.set_current(current_task_base_state)
+            vc_system._append_log(current_task_base_state or result["state"],
+                f"rework_reason: task=T{number} base={current_task_base_state} "
+                f"candidate={result['state']} reason={reviewer_feedback[number]}")
             continue
 
         if review.get("verdict") == "ACCEPT":
