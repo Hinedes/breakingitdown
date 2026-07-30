@@ -249,7 +249,7 @@ def _validate_direct_deletion(argv, workspace):
 _KNOWN_CMDS = {"READ ", "WRITE ", "RUN ", "Done", "SEARCH "}
 
 
-def _parse_content_into_turns(content, finish_reason="stop"):
+def _parse_content_into_turns(content, finish_reason=None):
     lines = content.split("\n")
     commands = []
     i = 0
@@ -297,6 +297,7 @@ def _parse_content_into_turns(content, finish_reason="stop"):
                         commands.append({
                             "type": "WRITE", "path": path,
                             "content": "\n".join(body_lines),
+                            "implicit": True,
                         })
                         continue
                 commands.append({"type": "WRITE_UNTERMINATED", "path": path})
@@ -459,6 +460,7 @@ class WorkerAdapter:
         self._cache_hits = 0
         self.feedback = feedback or ""
         self._run_evidence = []
+        self._implicit_write_count = 0
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -502,7 +504,10 @@ class WorkerAdapter:
 
             raw_content = response.get("content") or ""
             content = raw_content.strip()
-            finish_reason = response.get("finish_reason", "stop")
+            if os.environ.get("BID_IMPLICIT_WRITE") == "1":
+                finish_reason = response.get("finish_reason", "stop")
+            else:
+                finish_reason = None
 
             messages.append({"role": "assistant", "content": content or "[no output]"})
             _log_worker_event(self._vc, "worker raw response", raw_content)
@@ -605,6 +610,8 @@ class WorkerAdapter:
                             result = self._write_command(cmd["path"], cmd["content"])
                             if not result.startswith("error"):
                                 useful = True
+                                if cmd.get("implicit"):
+                                    self._implicit_write_count += 1
                             if observer.poll_changes():
                                 changed = True
                         except ValueError as e:

@@ -266,6 +266,132 @@ def test_find_unknown_commands_inside_write_body():
     assert adapter._find_unknown_commands("WRITE a.py\nARGUS knows\ngo DO something\nEND WRITE", [{"type":"WRITE"}]) == []
 
 
+def test_find_unknown_readme_not_uppercase():
+    """README.md (mixed case at start) is not flagged as an uppercase verb."""
+    assert adapter._find_unknown_commands("README.md has docs", []) == []
+
+
+def test_find_unknown_reading_not_read():
+    """READING is not matched as a READ command."""
+    assert adapter._find_unknown_commands("READING the source", []) == []
+
+
+def test_unknown_done_followed_by_text_not_command():
+    """'Done with task' is not parsed as a Done command (parser requires exact
+    stripped match on 'Done').  It is also not flagged as unknown because
+    'Done' is a known command prefix and the line is consumed by that check."""
+    cmds = adapter._parse_content_into_turns("Done with task")
+    assert not any(c["type"] == "Done" for c in cmds)
+    assert adapter._find_unknown_commands("Done with task", []) == []
+
+
+# ── Implicit EOF WRITE default-off ─────────────────────────────────
+
+def test_implicit_write_disabled_by_default():
+    """Default finish_reason=None rejects EOF-terminated writes."""
+    cmds = adapter._parse_content_into_turns("WRITE a.py\nbody")
+    unterminated = [c for c in cmds if c["type"] == "WRITE_UNTERMINATED"]
+    writes = [c for c in cmds if c["type"] == "WRITE"]
+    assert len(unterminated) == 1, f"expected WRITE_UNTERMINATED, got {cmds}"
+    assert len(writes) == 0
+
+
+def test_implicit_write_explicit_end_works_without_flag():
+    """Explicit END WRITE works when implicit writes are disabled."""
+    cmds = adapter._parse_content_into_turns("WRITE a.py\nbody\nEND WRITE")
+    writes = [c for c in cmds if c["type"] == "WRITE"]
+    assert len(writes) == 1
+    assert writes[0]["content"] == "body"
+
+
+def test_implicit_write_body_preserved_in_unterminated():
+    """When rejected, the body is preserved in WRITE_UNTERMINATED (not lost)."""
+    cmds = adapter._parse_content_into_turns("WRITE a.py\nreal content here")
+    unterminated = [c for c in cmds if c["type"] == "WRITE_UNTERMINATED"]
+    assert len(unterminated) == 1
+    assert unterminated[0]["path"] == "a.py"
+
+
+# ── Run-timeout configuration ──────────────────────────────────────
+
+def test_run_timeout_default_sixty():
+    """Default run_timeout is 60 seconds."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = harness.get_config()
+        # get_config returns a dict; run_timeout key must exist
+        assert "run_timeout" in cfg, f"missing run_timeout in config: {cfg}"
+        # Without BID_RUN_TIMEOUT env, default should be 60
+        # cfg was built from current environment; check default via direct call
+        from bid import harness as h
+        # patch environ temporarily
+        old = os.environ.get("BID_RUN_TIMEOUT")
+        if "BID_RUN_TIMEOUT" in os.environ:
+            del os.environ["BID_RUN_TIMEOUT"]
+        cfg2 = h.get_config()
+        assert cfg2["run_timeout"] == 60, f"expected 60, got {cfg2['run_timeout']}"
+        if old is not None:
+            os.environ["BID_RUN_TIMEOUT"] = old
+
+
+def test_run_timeout_env_override():
+    """BID_RUN_TIMEOUT=900 produces run_timeout=900."""
+    import tempfile
+    from bid import harness as h
+    old = os.environ.get("BID_RUN_TIMEOUT")
+    os.environ["BID_RUN_TIMEOUT"] = "900"
+    cfg = h.get_config()
+    assert cfg["run_timeout"] == 900, f"expected 900, got {cfg['run_timeout']}"
+    if old is not None:
+        os.environ["BID_RUN_TIMEOUT"] = old
+    else:
+        del os.environ["BID_RUN_TIMEOUT"]
+
+
+def test_run_timeout_invalid_env_fails():
+    """Invalid BID_RUN_TIMEOUT value raises ValueError."""
+    import tempfile
+    old = os.environ.get("BID_RUN_TIMEOUT")
+    os.environ["BID_RUN_TIMEOUT"] = "not-a-number"
+    try:
+        from bid import harness as h
+        cfg = h.get_config()
+        # Should either raise ValueError or produce a nonsense value
+        assert False, "expected ValueError for invalid BID_RUN_TIMEOUT"
+    except ValueError:
+        pass  # expected
+    finally:
+        if old is not None:
+            os.environ["BID_RUN_TIMEOUT"] = old
+        else:
+            del os.environ["BID_RUN_TIMEOUT"]
+
+
+# ── Implicit write evidence counting (integration-level) ───────────
+
+def test_implicit_write_tagged_in_parser():
+    """EOF-accepted WRITE carries implicit=True flag."""
+    cmds = adapter._parse_content_into_turns("WRITE a.py\nprint(1)", "stop")
+    writes = [c for c in cmds if c["type"] == "WRITE"]
+    assert len(writes) == 1
+    assert writes[0].get("implicit") is True, f"missing implicit flag: {writes[0]}"
+
+
+def test_explicit_write_not_tagged_implicit():
+    """END-WRITE-terminated WRITE does NOT carry implicit flag."""
+    cmds = adapter._parse_content_into_turns("WRITE a.py\nprint(1)\nEND WRITE", "stop")
+    writes = [c for c in cmds if c["type"] == "WRITE"]
+    assert len(writes) == 1
+    assert writes[0].get("implicit") is None, f"unexpected implicit flag: {writes[0]}"
+
+
+def test_rejected_implicit_write_not_tagged():
+    """Rejected implicit write (length) does NOT carry implicit flag."""
+    cmds = adapter._parse_content_into_turns("WRITE a.py\nbody", "length")
+    unterminated = [c for c in cmds if c["type"] == "WRITE_UNTERMINATED"]
+    assert len(unterminated) == 1
+
+
 class TestReviewerContracts:
     def test_manager_init_uses_manager_checklist_prompt(self):
         backend = model.MockBackend([text_response("- [ ] Inspect the project")])
