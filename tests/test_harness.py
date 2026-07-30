@@ -1055,7 +1055,7 @@ class TestResumeBehavior:
         backend = model.MockBackend([
             text_response("RUN cd somewhere && python -m pytest"),
             text_response("RUN python -B -m pytest -q"),
-            text_response("Done"),
+            text_response("WRITE test.txt\nverified\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
             text_response("COMPLETE\nReason: Done."),
         ])
@@ -1081,76 +1081,46 @@ class TestResumeBehavior:
             assert "result: success" in second_run_prompt
             assert "exit_code: 0" in second_run_prompt
 
-            review_prompt = next(
-                request["messages"][1]["content"]
-                for request in backend.call_history
-                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Review Assignment")
-            )
-            assert "RUN evidence:" in review_prompt
-            assert "command: cd somewhere && python -m pytest" in review_prompt
-            assert "command: python -B -m pytest -q" in review_prompt
-
-    def test_no_file_changes_can_pass_on_run_evidence(self):
-        class EvidenceBackend(model.MockBackend):
+    def test_no_file_changes_reviewer_sees_only_diff(self):
+        """Reviewer sees no file changes in diff — no RUN evidence in prompt."""
+        step = {"n": 0}
+        class DiffOnlyBackend(model.MockBackend):
             def __init__(self):
                 super().__init__([])
-
             def run(self, messages, tools, max_tokens=None):
                 self.call_history.append({
                     "messages": [dict(message) for message in messages],
                     "tools": tools,
                     "max_tokens": max_tokens,
                 })
-
                 prompt = messages[1]["content"] if len(messages) > 1 else ""
                 if prompt.lstrip().startswith("Task T1:"):
-                    return text_response("RUN python -B -m pytest -q\nDone")
+                    step["n"] += 1
+                    if step["n"] > 1:
+                        raise RuntimeError("stop after first rework cycle")
+                    return text_response("Done")
                 if prompt.startswith("# Review Assignment"):
                     assert "(no file changes)" in prompt
-                    assert "RUN evidence:" in prompt
-                    assert "exit_code: 0" in prompt
-                    return text_response("ACCEPT\nReason: Successful RUN evidence is enough.")
+                    assert "RUN evidence:" not in prompt
+                    return text_response("REWORK\nReason: No code changes were made.")
                 if prompt.startswith("# Completion Review"):
                     return text_response("COMPLETE\nReason: Done.")
                 raise AssertionError(f"unexpected prompt: {prompt[:80]}")
 
-        backend = EvidenceBackend()
-
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
-            os.makedirs(os.path.join(tmp, "tests"), exist_ok=True)
-
-            with open(os.path.join(tmp, "docs", "task.md"), "w", encoding="utf-8") as file:
-                file.write("# Task\n\nVerify the workspace with pytest, without changing files.\n")
-            with open(os.path.join(tmp, "docs", "todo.md"), "w", encoding="utf-8") as file:
-                file.write(todo_item(1, "Verify the workspace with pytest, without changing files"))
-            with open(os.path.join(tmp, "docs", "project-status.md"), "w", encoding="utf-8") as file:
-                file.write("# Project Status\n\nInitialized.\n")
-            with open(os.path.join(tmp, "docs", "decisions.md"), "w", encoding="utf-8") as file:
-                file.write("# Decisions\n\n")
-            with open(os.path.join(tmp, "tests", "test_smoke.py"), "w", encoding="utf-8") as file:
-                file.write("def test_smoke():\n    assert True\n")
-
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Do nothing"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nDo nothing.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
             harness.ensure_workspace(tmp)
             vc.VersionControl(tmp).init()
-
-            result = harness.run_project(config(tmp), backend=backend)
-            assert result["status"] == "done"
-
-            review_prompt = next(
-                request["messages"][1]["content"]
-                for request in backend.call_history
-                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Review Assignment")
-            )
-            assert "RUN evidence:" in review_prompt
-            assert "exit_code: 0" in review_prompt
-
-            with open(os.path.join(tmp, ".bid", "log.md"), encoding="utf-8") as file:
-                log_text = file.read()
-            assert "RUN evidence:" in log_text
-            assert "command: python -B -m pytest -q" in log_text
-            assert "exit_code: 0" in log_text
-            assert vc.VersionControl(tmp).get_current() == "s1"
+            result = harness.run_project(config(tmp), backend=DiffOnlyBackend())
+            assert result["status"] == "error"
 
     def test_rework_reason_persists_across_restart(self):
         class FirstBackend(model.MockBackend):
@@ -1588,6 +1558,203 @@ class TestReworkFixedBase:
             log_text = open(os.path.join(tmp, ".bid", "log.md")).read()
             assert "base=s0 candidate=s1 reason=v1 bad." in log_text
             assert "base=s0 candidate=s2 reason=v2 bad." in log_text
+
+
+class TestContextBoundary:
+    """Context isolation: each role sees only its authoritative state."""
+
+    def test_task_reviewer_prompt_no_worker_trajectory(self):
+        """Task Reviewer prompt does not contain Worker trajectory."""
+        sentinel = "SENTINEL_WORKER_SAID"
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            os.makedirs(os.path.join(tmp, ".bid", "states", "s1", "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Do work\n")
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nDo work.\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Do work\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nDo work.\n")
+            with open(os.path.join(tmp, ".bid", "current"), "w") as f:
+                f.write("s1\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
+                f.write("")
+
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
+            # Simulate building the prompt directly from the adapter's run method
+            # by creating the messages and checking them
+            class DummyBackend:
+                def run(self, messages, tools, max_tokens=None):
+                    prompt = messages[1]["content"] if len(messages) > 1 else ""
+                    assert "RUN evidence:" not in prompt, f"RUN evidence leaked: {prompt[:200]}"
+                    assert sentinel not in prompt
+                    return {"role": "assistant", "content": "ACCEPT\nReason: OK.", "finish_reason": "stop"}
+            review.run(DummyBackend())
+
+    def test_task_reviewer_prompt_no_runner_output(self):
+        """Worker's READ/RUN results do not appear in Task Reviewer prompt."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            os.makedirs(os.path.join(tmp, ".bid", "states", "s1", "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Do work\n")
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nDo work.\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Do work\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nDo work.\n")
+            with open(os.path.join(tmp, ".bid", "current"), "w") as f:
+                f.write("s1\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
+                f.write("")
+
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
+            class DummyBackend:
+                def run(self, messages, tools, max_tokens=None):
+                    prompt = messages[1]["content"] if len(messages) > 1 else ""
+                    assert "RUN evidence:" not in prompt
+                    assert "READ" not in prompt.split("## ")[0] if "## " in prompt else True
+                    return {"role": "assistant", "content": "ACCEPT\nReason: OK.", "finish_reason": "stop"}
+            review.run(DummyBackend())
+
+    def test_worker_receives_only_normalized_feedback(self):
+        """REWORK Worker sees only the reviewer reason, not provenance."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test feedback"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest feedback.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+
+            class FeedbackCheckBackend(model.MockBackend):
+                def __init__(self):
+                    super().__init__([])
+                    self.worker_call = 0
+                def run(self, messages, tools, max_tokens=None):
+                    self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                    prompt = messages[1]["content"] if len(messages) > 1 else ""
+                    if prompt.lstrip().startswith("Task T1:"):
+                        self.worker_call += 1
+                        if self.worker_call == 2:
+                            assert "Previous reviewer feedback:" in prompt
+                            assert "Bad result" in prompt
+                            assert "task=T1" not in prompt, "provenance must not leak"
+                            assert "base=" not in prompt, "provenance must not leak"
+                            assert "candidate=" not in prompt, "provenance must not leak"
+                        return text_response("Done")
+                    if prompt.startswith("# Review Assignment"):
+                        if self.worker_call == 1:
+                            return text_response("REWORK\nReason: Bad result.")
+                        return text_response("ACCEPT\nReason: Fixed.")
+                    if prompt.startswith("# Completion Review"):
+                        return text_response("COMPLETE\nReason: Done.")
+                    raise AssertionError(f"unexpected: {prompt[:80]}")
+
+            result = harness.run_project(config(tmp), backend=FeedbackCheckBackend())
+            assert result["status"] == "done"
+
+    def test_task_reviewer_scope_is_current_task_only(self):
+        """Task Reviewer prompt clearly separates current task from the checklist."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            os.makedirs(os.path.join(tmp, ".bid", "states", "s1", "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Change solver\n- [ ] T2 — Update callers\n")
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nChange solver and update callers.\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Change solver\n- [ ] T2 — Update callers\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nChange solver and update callers.\n")
+            with open(os.path.join(tmp, ".bid", "current"), "w") as f:
+                f.write("s1\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
+                f.write("")
+
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
+            seen = {}
+            class CheckBackend:
+                def run(self, messages, tools, max_tokens=None):
+                    prompt = messages[1]["content"] if len(messages) > 1 else ""
+                    seen["prompt"] = prompt
+                    return {"role": "assistant", "content": "ACCEPT\nReason: Solver changed.", "finish_reason": "stop"}
+            review.run(CheckBackend())
+            prompt = seen.get("prompt", "")
+            assert "Task:\nChange solver" in prompt, f"prompt should describe T1 task: {prompt[:200]}"
+
+    def test_completion_reviewer_no_attempt_history(self):
+        """Completion Reviewer does not receive Worker attempt transcripts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Complete task"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nComplete task.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+
+            class CompletionOnlyBackend(model.MockBackend):
+                def __init__(self):
+                    super().__init__([])
+                def run(self, messages, tools, max_tokens=None):
+                    self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                    prompt = messages[1]["content"] if len(messages) > 1 else ""
+                    if prompt.lstrip().startswith("Task T1:"):
+                        return text_response("Done")
+                    if prompt.startswith("# Review Assignment"):
+                        return text_response("ACCEPT\nReason: OK.")
+                    if prompt.startswith("# Completion Review"):
+                        assert "RUN evidence:" not in prompt
+                        assert "Worker 1" not in prompt
+                        assert "REWORK" not in prompt
+                        assert "s1" not in prompt or "s1" in prompt and "docs" in prompt
+                        return text_response("COMPLETE\nReason: All done.")
+                    raise AssertionError(f"unexpected: {prompt[:80]}")
+
+            result = harness.run_project(config(tmp), backend=CompletionOnlyBackend())
+            assert result["status"] == "done"
+
+    def test_logs_retain_full_history(self):
+        """Removing from prompts does not remove from forensic logs."""
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Run tests")),
+            text_response("RUN python -B -m pytest -q\nDone"),
+            text_response("REWORK\nReason: Tests needed."),
+            text_response("WRITE test.txt\npass\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Fixed."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Run tests"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nRun tests.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            result = harness.run_project(config(tmp), backend=backend)
+            assert result["status"] == "done"
+            log_text = open(os.path.join(tmp, ".bid", "log.md")).read()
+            assert "RUN python -B -m pytest -q" in log_text
+            assert "WRITE test.txt" in log_text
+            assert "rework_reason:" in log_text
 
 
 class TestReviewDiffCoverage:

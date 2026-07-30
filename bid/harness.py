@@ -319,7 +319,6 @@ def run_project(config, backend=None):
                 config,
                 number,
                 base_state=current_task_base_state,
-                run_evidence=result.get("run_evidence", []),
             ).run(backend)
         except Exception as exc:
             return {"status": "error", "reason": f"review exception: {exc}"}

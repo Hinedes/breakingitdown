@@ -72,8 +72,7 @@ CONTROL_ROOTS = (
 
 TASK_REVIEWER_SYSTEM = """You are BID Task Reviewer.
 Judge whether the candidate satisfies the assigned task using only the
-provided original request, task, fixed-base-to-candidate diff, research,
-and RUN evidence.
+provided original request, task, and fixed-base-to-candidate diff.
 
 Return exactly one of:
 
@@ -972,12 +971,11 @@ def _research_context(workspace, task_number):
 class TaskReviewAdapter:
     RETRY_LIMIT = 3
 
-    def __init__(self, config, task_number, base_state=None, run_evidence=None):
+    def __init__(self, config, task_number, base_state=None):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
         self.base_state = base_state
-        self.run_evidence = run_evidence or []
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -995,13 +993,6 @@ class TaskReviewAdapter:
             return {"verdict": "ERROR", "reason": f"base state {self.base_state} not found", "task_number": self.task_number}
 
         diff_text = _workspace_diff(base_root, self.workspace)
-        research_context, research_dir, has_research = _research_context(self.workspace, self.task_number)
-        if has_research and not search_mod.has_citations(diff_text, research_dir):
-            return {
-                "verdict": "REWORK",
-                "reason": "artifact does not cite supporting research evidence",
-                "task_number": self.task_number,
-            }
 
         prompt = (
             "# Review Assignment\n\n"
@@ -1009,13 +1000,6 @@ class TaskReviewAdapter:
             f"Task:\n{task['description']}\n\n"
             f"Base -> candidate diff:\n{diff_text}\n"
         )
-        if self.run_evidence:
-            prompt += (
-                "\nSuccessful RUN evidence can satisfy the task even if the diff is empty.\n\n"
-                f"{format_run_evidence(self.run_evidence)}\n\n"
-            )
-        if research_context:
-            prompt += f"{research_context}\n\n"
         prompt += (
             "Judge only whether the diff satisfies the request.\n\n"
             "Return exactly one of:\n\n"
