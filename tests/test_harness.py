@@ -1635,8 +1635,9 @@ class TestContextBoundary:
             assert "Fixed base: s1" in prompt
             assert "Submitted candidate: s2" in prompt
             assert "No harness-owned verification was executed" in prompt
-            assert "completes the current task" in prompt
+            assert "satisfies the stated current task" in prompt
             assert "Unfinished later checklist tasks are not grounds for REWORK" in prompt
+            assert "not require production-source modifications" in prompt
             assert "RUN evidence:" not in prompt
 
     def test_worker_receives_only_normalized_feedback(self):
@@ -1780,6 +1781,96 @@ class TestContextBoundary:
             assert "RUN python -B -m pytest -q" in log_text
             assert "WRITE test.txt" in log_text
             assert "rework_reason:" in log_text
+
+
+class TestAcceptanceContract:
+    """Task Reviewer must not invent requirements beyond the stated task."""
+
+    def test_prompt_contains_no_source_edit_rule(self):
+        """Reviewer prompt instructs not to require production-source changes."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            os.makedirs(os.path.join(tmp, ".bid", "states", "s1", "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Test\n")
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Test\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, ".bid", "current"), "w") as f:
+                f.write("s1\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
+                f.write("")
+
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
+            captured = {}
+            class CheckBackend:
+                def run(self, messages, tools, max_tokens=None):
+                    prompt = messages[1]["content"] if len(messages) > 1 else ""
+                    captured["prompt"] = prompt
+                    return {"role": "assistant", "content": "ACCEPT\nReason: OK.", "finish_reason": "stop"}
+            review.run(CheckBackend())
+            prompt = captured["prompt"]
+            assert "not require production-source modifications" in prompt
+            assert "Return REWORK only for a concrete unmet task requirement" in prompt
+
+    def test_test_only_candidate_not_rejected_for_missing_source(self):
+        """A test-only candidate should not be rejected merely because production code is unchanged."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            os.makedirs(os.path.join(tmp, ".bid", "states", "s1", "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Verify return type is ndarray\n")
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nVerify return type is ndarray.\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Verify return type is ndarray\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nVerify return type is ndarray.\n")
+            with open(os.path.join(tmp, ".bid", "current"), "w") as f:
+                f.write("s1\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
+                f.write("")
+            os.makedirs(os.path.join(tmp, "tests"), exist_ok=True)
+            with open(os.path.join(tmp, "tests", "test_return_type.py"), "w") as f:
+                f.write("import numpy as np\nfrom argus.solve import solve_point\n\ndef test_returns_ndarray():\n    result = solve_point(np.array([0.001, 0.0011, 0.0012, 0.0013]))\n    assert isinstance(result, np.ndarray)\n")
+
+            # Run Reviewer — should not reject for missing production changes
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
+            captured = {}
+            class DummyBackend:
+                def run(self, messages, tools, max_tokens=None):
+                    captured["prompt"] = messages[1]["content"] if len(messages) > 1 else ""
+                    return {"role": "assistant", "content": "ACCEPT\nReason: Test verifies ndarray return type.", "finish_reason": "stop"}
+            result = review.run(DummyBackend())
+            assert result["verdict"] == "ACCEPT", f"Reviewer rejected test-only candidate: {result}"
+
+    def test_reviewer_may_still_reject_defective_test(self):
+        """Reviewer may reject a test-only candidate if the test itself is defective."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Test\n")
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            os.makedirs(os.path.join(tmp, ".bid", "states", "s1", "docs"))
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "todo.md"), "w") as f:
+                f.write("- [ ] T1 — Test\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, ".bid", "current"), "w") as f:
+                f.write("s1\n")
+            with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
+                f.write("")
+
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
+            class RejectBackend:
+                def run(self, messages, tools, max_tokens=None):
+                    return {"role": "assistant", "content": "REWORK\nReason: The added test file imports a module that does not exist in the workspace (src.fake). A test that cannot be collected is not a valid completion.", "finish_reason": "stop"}
+            result = review.run(RejectBackend())
+            assert result["verdict"] == "REWORK", "Reviewer should reject defective tests"
 
 
 class TestReviewDiffCoverage:
