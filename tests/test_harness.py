@@ -1329,6 +1329,223 @@ class TestResumeBehavior:
             assert "protected deletion denied" not in backend.call_history[2]["messages"][-1]["content"]
 
 
+class TestReworkFixedBase:
+    """Verify beta-gate/rework-fixed-base: rollback after REWORK."""
+
+    def test_rework_restores_workspace_byte_for_byte(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Edit notes.txt")),
+            text_response("WRITE notes.txt\nmodified\nEND WRITE\nDone"),
+            text_response("REWORK\nReason: Wrong content."),
+            text_response("WRITE notes.txt\nsecond attempt\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Fixed."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Edit notes.txt"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nEdit notes.txt.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            with open(os.path.join(tmp, "notes.txt"), "w") as f:
+                f.write("ORIGINAL")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            harness.run_project(config(tmp), backend=backend)
+            with open(os.path.join(tmp, "notes.txt")) as f:
+                assert f.read() == "second attempt"
+
+    def test_rework_removes_shadow_file(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Edit notes.txt")),
+            text_response("WRITE notes.txt\nmoved\nEND WRITE\nWRITE shadow.txt\nSHADOW\nEND WRITE\nDone"),
+            text_response("REWORK\nReason: Shadow file detected."),
+            text_response("WRITE notes.txt\nclean\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Fixed."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Edit notes.txt"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nEdit notes.txt.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            with open(os.path.join(tmp, "notes.txt"), "w") as f:
+                f.write("ORIGINAL")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            base_entries = set(os.listdir(tmp))
+            harness.run_project(config(tmp), backend=backend)
+            final_entries = set(os.listdir(tmp))
+            # shadow.txt should not exist after REWORK restored to base
+            assert "shadow.txt" not in final_entries
+
+    def test_rework_preserves_todo(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Edit notes.txt")),
+            text_response("WRITE notes.txt\nbad\nEND WRITE\nDone"),
+            text_response("REWORK\nReason: Wrong content."),
+            text_response("WRITE notes.txt\ngood\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Fixed."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Edit notes.txt"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nEdit notes.txt.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            with open(os.path.join(tmp, "notes.txt"), "w") as f:
+                f.write("ORIGINAL")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            harness.run_project(config(tmp), backend=backend)
+            with open(os.path.join(tmp, "docs", "todo.md")) as f:
+                todo_text = f.read()
+            assert "[x] T1" in todo_text
+
+    def test_rework_worker_receives_feedback(self):
+        class FeedbackCheckBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.seen_feedback = False
+                self.review_count = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools, "max_tokens": max_tokens})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T1:"):
+                    if not self.seen_feedback:
+                        self.seen_feedback = True
+                        return text_response("WRITE notes.txt\nfirst\nEND WRITE\nDone")
+                    else:
+                        assert "Previous reviewer feedback:" in prompt, f"missing feedback in: {prompt[:200]}"
+                        assert "Wrong content." in prompt
+                        return text_response("WRITE notes.txt\nsecond\nEND WRITE\nDone")
+                if prompt.startswith("# Review Assignment"):
+                    self.review_count += 1
+                    if self.review_count == 1:
+                        return text_response("REWORK\nReason: Wrong content.")
+                    return text_response("ACCEPT\nReason: Fixed.")
+                if prompt.startswith("# Completion Review"):
+                    return text_response("COMPLETE\nReason: Done.")
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Edit notes.txt"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nEdit notes.txt.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            result = harness.run_project(config(tmp), backend=FeedbackCheckBackend())
+            assert result["status"] == "done"
+
+    def test_multiple_rework_both_restore_same_base(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Edit notes.txt")),
+            text_response("WRITE notes.txt\nv1\nEND WRITE\nDone"),
+            text_response("REWORK\nReason: v1 bad."),
+            text_response("WRITE notes.txt\nv2\nEND WRITE\nDone"),
+            text_response("REWORK\nReason: v2 bad."),
+            text_response("WRITE notes.txt\nv3\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: v3 good."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Edit notes.txt"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nEdit notes.txt.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            with open(os.path.join(tmp, "notes.txt"), "w") as f:
+                f.write("ORIGINAL")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            harness.run_project(config(tmp), backend=backend)
+            with open(os.path.join(tmp, "notes.txt")) as f:
+                assert f.read() == "v3"
+
+    def test_accept_does_not_restore_base(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Edit a.txt")),
+            text_response("WRITE a.txt\nA-content\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Good."),
+            text_response("WRITE b.txt\nB-content\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Good."),
+            text_response("COMPLETE\nReason: All done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Edit a.txt") + todo_item(2, "Edit b.txt"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nEdit both.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            harness.run_project(config(tmp), backend=backend)
+            # Both files should exist and have the accepted content
+            with open(os.path.join(tmp, "a.txt")) as f:
+                assert f.read() == "A-content"
+            with open(os.path.join(tmp, "b.txt")) as f:
+                assert f.read() == "B-content"
+
+    def test_rejected_candidate_preserved_in_vc(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Edit notes.txt")),
+            text_response("WRITE notes.txt\nrejected draft\nEND WRITE\nDone"),
+            text_response("REWORK\nReason: Low quality."),
+            text_response("WRITE notes.txt\naccepted draft\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Good."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Edit notes.txt"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nEdit notes.txt.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            harness.run_project(config(tmp), backend=backend)
+            # The rejected state directory should not exist (deleted by restore),
+            # but the rework_reason should appear in the log under the base state
+            log_text = open(os.path.join(tmp, ".bid", "log.md")).read()
+            assert "rework_reason:" in log_text
+            assert "Low quality." in log_text
+            # The rejected state's filesystem snapshot was deleted by restore,
+            # but its rework_reason is preserved in the log under the base state
+            states_dir = os.path.join(tmp, ".bid", "states")
+            remaining = sorted(os.listdir(states_dir))
+
+
 class TestReviewDiffCoverage:
     def test_large_early_diff_keeps_later_file_details(self):
         with tempfile.TemporaryDirectory() as tmp:
