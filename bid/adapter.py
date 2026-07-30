@@ -971,11 +971,12 @@ def _research_context(workspace, task_number):
 class TaskReviewAdapter:
     RETRY_LIMIT = 3
 
-    def __init__(self, config, task_number, base_state=None):
+    def __init__(self, config, task_number, base_state=None, candidate_state=None):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
         self.base_state = base_state
+        self.candidate_state = candidate_state
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -993,15 +994,19 @@ class TaskReviewAdapter:
             return {"verdict": "ERROR", "reason": f"base state {self.base_state} not found", "task_number": self.task_number}
 
         diff_text = _workspace_diff(base_root, self.workspace)
+        candidate_id = self.candidate_state or "(unknown)"
 
         prompt = (
             "# Review Assignment\n\n"
             f"Original request:\n{task_md}\n\n"
             f"Task:\n{task['description']}\n\n"
-            f"Base -> candidate diff:\n{diff_text}\n"
-        )
-        prompt += (
-            "Judge only whether the diff satisfies the request.\n\n"
+            f"Fixed base: {self.base_state}\n"
+            f"Submitted candidate: {candidate_id}\n\n"
+            f"Base -> candidate diff:\n{diff_text}\n\n"
+            "No harness-owned verification was executed against this submitted candidate.\n\n"
+            "Judge only whether the submitted candidate completes the current task. "
+            "Use the original request only as background constraints. "
+            "Unfinished later checklist tasks are not grounds for REWORK.\n\n"
             "Return exactly one of:\n\n"
             "ACCEPT\n"
             "Reason: ...\n\n"
@@ -1061,10 +1066,21 @@ class CompletionReviewAdapter:
     def run(self, backend):
         task_md = _read(self.workspace, "docs/task.md")
         workspace_text = _workspace_listing(self.workspace)
+        todo_text = _read(self.workspace, "docs/todo.md")
+        tasks = todo_mod.parse_todo(todo_text)
+        checked = [t for t in tasks if t["checked"]]
+        unchecked = [t for t in tasks if not t["checked"]]
+        checklist_lines = []
+        for t in checked:
+            checklist_lines.append(f"[x] T{t['number']} — {t['description']}")
+        for t in unchecked:
+            checklist_lines.append(f"[ ] T{t['number']} — {t['description']}")
+        checklist = "\n".join(checklist_lines) if checklist_lines else "(empty)"
 
         prompt = (
             "# Completion Review\n\n"
             f"Original request:\n{task_md}\n\n"
+            f"Completed checklist:\n{checklist}\n\n"
             f"Final workspace:\n{workspace_text}\n\n"
             "Return exactly one of:\n\n"
             "COMPLETE\n"

@@ -319,6 +319,7 @@ def run_project(config, backend=None):
                 config,
                 number,
                 base_state=current_task_base_state,
+                candidate_state=result.get("state"),
             ).run(backend)
         except Exception as exc:
             return {"status": "error", "reason": f"review exception: {exc}"}

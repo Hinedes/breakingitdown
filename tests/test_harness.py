@@ -1563,62 +1563,81 @@ class TestReworkFixedBase:
 class TestContextBoundary:
     """Context isolation: each role sees only its authoritative state."""
 
-    def test_task_reviewer_prompt_no_worker_trajectory(self):
-        """Task Reviewer prompt does not contain Worker trajectory."""
-        sentinel = "SENTINEL_WORKER_SAID"
+    def test_stale_worker_run_excluded_from_reviewer(self):
+        """RUN output from before the final WRITE does not reach the Reviewer."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Create file"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nCreate a file and verify it does not exist yet.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+
+            RUN_SENTINEL = "STALE_RUN_OUTPUT_THIS_SHOULD_NOT_APPEAR"
+            class StaleRunBackend(model.MockBackend):
+                def __init__(self):
+                    super().__init__([])
+                    self.phase = 0
+                def run(self, messages, tools, max_tokens=None):
+                    self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                    prompt = messages[1]["content"] if len(messages) > 1 else ""
+                    if prompt.lstrip().startswith("Task T1:"):
+                        self.phase += 1
+                        if self.phase == 1:
+                            return text_response(
+                                f"RUN echo {RUN_SENTINEL}\n"
+                                "WRITE output.txt\ncreated\nEND WRITE\n"
+                                "Done"
+                            )
+                        raise RuntimeError("stop after one attempt")
+                    if prompt.startswith("# Review Assignment"):
+                        prompt_text = messages[1]["content"]
+                        assert RUN_SENTINEL not in prompt_text, \
+                            f"Stale RUN output leaked into reviewer prompt: {RUN_SENTINEL}"
+                        return text_response("REWORK\nReason: Need more work.")
+                    raise AssertionError(f"unexpected: {prompt[:80]}")
+
+            result = harness.run_project(config(tmp), backend=StaleRunBackend())
+            assert result["status"] == "error"
+
+    def test_reviewer_prompt_includes_identity_and_verification_status(self):
+        """Reviewer prompt includes state IDs and explicitly states no verification."""
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
             os.makedirs(os.path.join(tmp, ".bid", "states", "s1", "docs"))
             with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
-                f.write("- [ ] T1 — Do work\n")
+                f.write("- [ ] T1 — Test\n")
             with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
-                f.write("# Task\n\nDo work.\n")
+                f.write("# Task\n\nTest.\n")
             with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "todo.md"), "w") as f:
-                f.write("- [ ] T1 — Do work\n")
+                f.write("- [ ] T1 — Test\n")
             with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "task.md"), "w") as f:
-                f.write("# Task\n\nDo work.\n")
+                f.write("# Task\n\nTest.\n")
             with open(os.path.join(tmp, ".bid", "current"), "w") as f:
                 f.write("s1\n")
             with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
                 f.write("")
 
-            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
-            # Simulate building the prompt directly from the adapter's run method
-            # by creating the messages and checking them
-            class DummyBackend:
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1", candidate_state="s2")
+            captured = {}
+            class CheckBackend:
                 def run(self, messages, tools, max_tokens=None):
                     prompt = messages[1]["content"] if len(messages) > 1 else ""
-                    assert "RUN evidence:" not in prompt, f"RUN evidence leaked: {prompt[:200]}"
-                    assert sentinel not in prompt
+                    captured["prompt"] = prompt
                     return {"role": "assistant", "content": "ACCEPT\nReason: OK.", "finish_reason": "stop"}
-            review.run(DummyBackend())
-
-    def test_task_reviewer_prompt_no_runner_output(self):
-        """Worker's READ/RUN results do not appear in Task Reviewer prompt."""
-        with tempfile.TemporaryDirectory() as tmp:
-            os.makedirs(os.path.join(tmp, "docs"))
-            os.makedirs(os.path.join(tmp, ".bid", "states", "s1", "docs"))
-            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
-                f.write("- [ ] T1 — Do work\n")
-            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
-                f.write("# Task\n\nDo work.\n")
-            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "todo.md"), "w") as f:
-                f.write("- [ ] T1 — Do work\n")
-            with open(os.path.join(tmp, ".bid", "states", "s1", "docs", "task.md"), "w") as f:
-                f.write("# Task\n\nDo work.\n")
-            with open(os.path.join(tmp, ".bid", "current"), "w") as f:
-                f.write("s1\n")
-            with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
-                f.write("")
-
-            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
-            class DummyBackend:
-                def run(self, messages, tools, max_tokens=None):
-                    prompt = messages[1]["content"] if len(messages) > 1 else ""
-                    assert "RUN evidence:" not in prompt
-                    assert "READ" not in prompt.split("## ")[0] if "## " in prompt else True
-                    return {"role": "assistant", "content": "ACCEPT\nReason: OK.", "finish_reason": "stop"}
-            review.run(DummyBackend())
+            review.run(CheckBackend())
+            prompt = captured["prompt"]
+            assert "Fixed base: s1" in prompt
+            assert "Submitted candidate: s2" in prompt
+            assert "No harness-owned verification was executed" in prompt
+            assert "completes the current task" in prompt
+            assert "Unfinished later checklist tasks are not grounds for REWORK" in prompt
+            assert "RUN evidence:" not in prompt
 
     def test_worker_receives_only_normalized_feedback(self):
         """REWORK Worker sees only the reviewer reason, not provenance."""
@@ -1709,18 +1728,24 @@ class TestContextBoundary:
             class CompletionOnlyBackend(model.MockBackend):
                 def __init__(self):
                     super().__init__([])
+                    self.worker_call = 0
                 def run(self, messages, tools, max_tokens=None):
                     self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
                     prompt = messages[1]["content"] if len(messages) > 1 else ""
                     if prompt.lstrip().startswith("Task T1:"):
-                        return text_response("Done")
+                        self.worker_call += 1
+                        if self.worker_call == 1:
+                            return text_response("RUN echo REJECTED_HISTORY\nWRITE output.txt\nfail\nEND WRITE\nDone")
+                        return text_response("WRITE output.txt\npass\nEND WRITE\nDone")
                     if prompt.startswith("# Review Assignment"):
-                        return text_response("ACCEPT\nReason: OK.")
+                        if self.worker_call == 1:
+                            return text_response("REWORK\nReason: Wrong content.")
+                        return text_response("ACCEPT\nReason: Fixed.")
                     if prompt.startswith("# Completion Review"):
                         assert "RUN evidence:" not in prompt
-                        assert "Worker 1" not in prompt
                         assert "REWORK" not in prompt
-                        assert "s1" not in prompt or "s1" in prompt and "docs" in prompt
+                        assert "REJECTED_HISTORY" not in prompt
+                        assert "[x] T1" in prompt
                         return text_response("COMPLETE\nReason: All done.")
                     raise AssertionError(f"unexpected: {prompt[:80]}")
 
