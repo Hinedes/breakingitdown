@@ -788,7 +788,7 @@ class TestRunProject:
                 assert file.read() == "final"
             with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
                 assert "[x] T1" in file.read()
-            assert vc.VersionControl(tmp).get_current() == "s4"
+            assert vc.VersionControl(tmp).get_current() == "s3"
             review_prompts = [
                 request["messages"][1]["content"]
                 for request in backend.call_history
@@ -1229,10 +1229,10 @@ class TestResumeBehavior:
 
             with open(os.path.join(tmp, ".bid", "log.md"), encoding="utf-8") as file:
                 log_text = file.read()
-            latest_s2 = log_text.rsplit("### s2\n", 1)[1]
-            assert "Need evidence." not in latest_s2
-            assert "rework_reason:" in latest_s2
-            assert vc.VersionControl(tmp).get_current() == "s2"
+            latest_s1 = log_text.rsplit("### s1\n", 1)[1]
+            assert "Need evidence." not in latest_s1
+            assert "rework_reason:" in latest_s1
+            assert vc.VersionControl(tmp).get_current() == "s1"
 
     def test_malformed_write_is_rejected_and_logged(self):
         init_backend = model.MockBackend([text_response(todo_item(1, "Verify malformed write rejection"))])
