@@ -115,7 +115,12 @@ def _task_rework_reason(vc_system):
             break
         match = re.search(r"\brework_reason:\s*(.*)", stripped)
         if match:
-            reason = match.group(1).strip() or None
+            raw = match.group(1).strip() or ""
+            reason_match = re.search(r"\breason=(\S.*)", raw)
+            if reason_match:
+                reason = reason_match.group(1).strip()
+            else:
+                reason = raw or None
     return reason
 
 
