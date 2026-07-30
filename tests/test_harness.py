@@ -276,13 +276,33 @@ def test_find_unknown_reading_not_read():
     assert adapter._find_unknown_commands("READING the source", []) == []
 
 
-def test_unknown_done_followed_by_text_not_command():
-    """'Done with task' is not parsed as a Done command (parser requires exact
-    stripped match on 'Done').  It is also not flagged as unknown because
-    'Done' is a known command prefix and the line is consumed by that check."""
+def test_standalone_done_valid():
+    """Standalone 'Done' is valid (not flagged as unknown)."""
+    cmds = adapter._parse_content_into_turns("Done")
+    assert any(c["type"] == "Done" for c in cmds)
+    assert adapter._find_unknown_commands("Done", cmds) == []
+
+
+def test_done_followed_by_text_flagged_unknown():
+    """'Done with task' is not a valid Done command; it IS flagged as unknown."""
     cmds = adapter._parse_content_into_turns("Done with task")
     assert not any(c["type"] == "Done" for c in cmds)
-    assert adapter._find_unknown_commands("Done with task", []) == []
+    # _find_unknown_commands takes the raw content and the parsed commands
+    assert adapter._find_unknown_commands("Done with task\n", cmds) == ["Done with task"]
+
+
+def test_prose_containing_done_not_flagged():
+    """Ordinary prose containing the word 'done' is not flagged."""
+    assert adapter._find_unknown_commands("the task is done now", []) == []
+
+
+def test_done_mixed_with_valid_read():
+    """A valid READ followed by 'Done now' executes READ and flags Done."""
+    cmds = adapter._parse_content_into_turns("READ a.txt\nDone now", "stop")
+    reads = [c for c in cmds if c["type"] == "READ"]
+    assert len(reads) == 1
+    unk = adapter._find_unknown_commands("READ a.txt\nDone now", cmds)
+    assert "Done now" in unk
 
 
 # ── Implicit EOF WRITE default-off ─────────────────────────────────
@@ -390,6 +410,37 @@ def test_rejected_implicit_write_not_tagged():
     cmds = adapter._parse_content_into_turns("WRITE a.py\nbody", "length")
     unterminated = [c for c in cmds if c["type"] == "WRITE_UNTERMINATED"]
     assert len(unterminated) == 1
+
+
+def test_run_timeout_propagated_to_subprocess(monkeypatch):
+    """WorkerAdapter configured with run_timeout=900 passes timeout=900 to subprocess."""
+    import tempfile, subprocess as sp
+    captured = {}
+    original_run = sp.run
+
+    def fake_run(argv, **kwargs):
+        captured["timeout"] = kwargs.get("timeout")
+        captured["argv"] = argv
+        # Return a fake CompletedProcess
+        return sp.CompletedProcess(argv, 0, b"", b"")
+
+    monkeypatch.setattr(sp, "run", fake_run)
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = config(tmp, run_timeout=900)
+        wa = adapter.WorkerAdapter(cfg, 1)
+        result = wa._run_command("python -c 'print(1)'")
+        assert captured.get("timeout") == 900, f"expected timeout=900, got {captured}"
+
+
+def test_implicit_write_count_wired():
+    """WorkerAdapter has _implicit_write_count and the parser tags implicit writes."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = config(tmp)
+        wa = adapter.WorkerAdapter(cfg, 1)
+        assert hasattr(wa, "_implicit_write_count")
+        assert wa._implicit_write_count == 0
+    # Parser tags: verified by test_implicit_write_tagged_in_parser
+    # Parser does NOT tag: verified by test_explicit_write_not_tagged_implicit
 
 
 class TestReviewerContracts:

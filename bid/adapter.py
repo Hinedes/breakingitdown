@@ -246,7 +246,7 @@ def _validate_direct_deletion(argv, workspace):
 
 # ── Command parsing ──────────────────────────────────────────────────
 
-_KNOWN_CMDS = {"READ ", "WRITE ", "RUN ", "Done", "SEARCH "}
+_KNOWN_CMDS = {"READ ", "WRITE ", "RUN ", "SEARCH "}
 
 
 def _parse_content_into_turns(content, finish_reason=None):
@@ -340,6 +340,13 @@ def _find_unknown_commands(content, commands):
         if not stripped:
             continue
         tokens = stripped.split()
+        # "Done" with trailing text is malformed — produce UNKNOWN.
+        # This check must come before the token-count restriction.
+        if tokens[0] == "Done" and len(tokens) > 1:
+            unknown.append(stripped)
+            continue
+        if tokens[0] == "Done" and len(tokens) == 1:
+            continue  # standalone Done — consumed above
         if len(tokens) > 2:
             continue
         if any(stripped.startswith(p) for p in _KNOWN_CMDS):
