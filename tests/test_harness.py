@@ -2047,6 +2047,155 @@ class TestRespawnRollback:
             with open(os.path.join(tmp, "notes.txt")) as f:
                 assert f.read() == "final"
 
+    def test_cross_task_base_ignores_prior_candidate_base_annotation(self):
+        """T3's _task_base_state returns current s2, not s1 from T1's candidate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Write f1.txt") + todo_item(3, "Write f3.txt"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nCreate f1 and f3.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            cfg = config(tmp, repeat_action_limit=1)
+
+            # T1 Worker submits f1.txt → s2 with log "T1 candidate base=s0"
+            t1_backend = model.MockBackend([
+                text_response("WRITE f1.txt\nvalid\nEND WRITE\nDone"),
+            ])
+            with open(os.path.join(tmp, ".bid", "current"), "w") as f:
+                f.write("s0\n")
+            r1 = harness.run_worker_session(1, cfg, backend=t1_backend)
+            assert r1["status"] == "submitted"
+            # Log now has "T1 candidate base=s0" under ### s2
+
+            # For same task (T1), base=s0 IS reused
+            bs = harness._task_base_state(vc.VersionControl(tmp), task_number=1)
+            assert bs == "s0", f"same-task T1 should reuse base=s0, got {bs}"
+
+            # For different task (T3), base=s0 is IGNORED — returns current s2
+            bs3 = harness._task_base_state(vc.VersionControl(tmp), task_number=3)
+            assert bs3 in ("s1", "s2"), f"cross-task T3 should return current, got {bs3}"
+
+    def test_accepted_t1_survives_t3_stall_rollback(self):
+        """After T1 is accepted and T3 stalls, f1.txt survives."""
+        class T3StallBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                self.step += 1
+                if self.step == 1:
+                    return text_response("WRITE f3.txt\nbroken\nEND WRITE")
+                return text_response("READ noexist.txt")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Write f1.txt") + todo_item(3, "Write f3.txt"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nCreate f1 and f3.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            cfg = config(tmp, repeat_action_limit=1)
+
+            # T1 succeeds → saves s2 (f1.txt written)
+            t1_backend = model.MockBackend([
+                text_response("WRITE f1.txt\nvalid\nEND WRITE\nDone"),
+            ])
+            r1 = harness.run_worker_session(1, cfg, backend=t1_backend)
+            assert r1["status"] == "submitted"
+            with open(os.path.join(tmp, ".bid", "log.md")) as f:
+                assert "T1 candidate base=s0" in f.read()
+
+            # Simulate T1 accepted: check T1 in TODO
+            txt = open(os.path.join(tmp, "docs", "todo.md")).read()
+            txt = todo.set_task_checked(txt, 1, True)
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(txt)
+
+            # T3 Worker stalls after writing f3.txt
+            t3r = harness.run_worker_session(3, cfg, backend=T3StallBackend())
+            assert t3r["status"] == "stalled"
+
+            # f1.txt must survive (accepted T1), f3.txt removed (stalled T3 rollback)
+            assert os.path.exists(os.path.join(tmp, "f1.txt")), "accepted T1 file must survive"
+            assert open(os.path.join(tmp, "f1.txt")).read() == "valid"
+            assert not os.path.exists(os.path.join(tmp, "f3.txt")), "stalled T3 file must be removed"
+
+    def test_same_task_restart_recovers_base_from_log(self):
+        """For the same task, base=sN from a candidate log entry IS reused."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+
+            # T1 Worker saves s1 with base=s0
+            backend1 = model.MockBackend([
+                text_response("WRITE f.txt\nfirst\nEND WRITE\nDone"),
+            ])
+            r1 = harness.run_worker_session(1, config(tmp), backend=backend1)
+            assert r1["status"] == "submitted"
+
+            # Simulate restart: run_project for T1 again
+            # _task_base_state with task_number=1 should find base=s0 in s1's log
+            bs = harness._task_base_state(vc.VersionControl(tmp), task_number=1)
+            assert bs == "s0", f"same-task restart should reuse base=s0, got {bs}"
+
+    def test_single_rollback_event_per_stall(self):
+        """Only one rollback event is logged per stalled Worker."""
+        class StallBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                self.step += 1
+                if self.step == 1:
+                    return text_response("WRITE f.txt\nstale\nEND WRITE")
+                return text_response("READ noexist.txt")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            cfg = config(tmp, repeat_action_limit=1)
+            harness.run_worker_session(1, cfg, backend=StallBackend())
+            path = os.path.join(
+                os.path.dirname(tmp),
+                os.path.basename(tmp) + "-events",
+                "events.jsonl",
+            )
+            if os.path.exists(path):
+                events = [json.loads(l) for l in open(path) if l.strip()]
+                rollbacks = [e for e in events if e["event"] == "rollback"]
+                assert len(rollbacks) == 1, f"expected 1 rollback event, got {len(rollbacks)}"
+
 
 class TestTimingObservability:
     """Structured event log: order, durations, usage, behavior unchanged."""

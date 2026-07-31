@@ -75,7 +75,7 @@ def _append_missing_tasks(todo_text, missing):
     return todo_text
 
 
-def _task_base_state(vc_system):
+def _task_base_state(vc_system, task_number=None):
     current = vc_system.get_current()
     if not current:
         return None
@@ -93,7 +93,11 @@ def _task_base_state(vc_system):
             break
         match = re.search(r"\bbase=(s\d+)\b", stripped)
         if match:
-                return match.group(1)
+            if task_number:
+                task_match = re.search(r"T(\d+)\s", stripped)
+                if task_match and int(task_match.group(1)) != task_number:
+                    continue  # belongs to a different task, ignore
+            return match.group(1)
     return current
 
 
@@ -136,11 +140,11 @@ def ensure_workspace(workspace):
 
 MAX_WORKER_RESPAWNS = 3
 
-def run_worker_session(number, config, backend=None, feedback=None):
+def run_worker_session(number, config, backend=None, feedback=None, task_base_state=None):
     workspace = config["workspace"]
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
-    base_state = vc_system.get_current()
+    base_state = task_base_state or vc_system.get_current()
     obs = get_log(workspace)
 
     sess_tok = obs.start("worker_session", task=f"T{number}", base_state=base_state, has_feedback=bool(feedback))
@@ -310,24 +314,20 @@ def _run_project_inner(config, backend=None):
         number = unchecked["number"]
         if current_task_number != number or current_task_base_state is None:
             current_task_number = number
-            current_task_base_state = _task_base_state(vc_system)
+            current_task_base_state = _task_base_state(vc_system, task_number=number)
         feedback = reviewer_feedback.get(number) or _task_rework_reason(vc_system)
         if feedback:
             reviewer_feedback[number] = feedback
         print(f"Worker {number}...")
         try:
-            result = run_worker_session(number, config, backend=backend, feedback=feedback)
+            result = run_worker_session(number, config, backend=backend, feedback=feedback,
+                                         task_base_state=current_task_base_state)
         except Exception as exc:
             return {"status": "error", "reason": f"Worker {number} exception: {exc}"}
         if result["status"] in {"stalled", "timeout"}:
             respawn_counts[number] = respawn_counts.get(number, 0) + 1
             obs.event("respawn", task=f"T{number}", reason=result.get("status"), count=respawn_counts[number])
             print(f"Worker {number} {result['status']}: {result.get('reason', 'unknown')}")
-            if current_task_base_state:
-                vc_system.restore_workspace(current_task_base_state, preserve_todo=True)
-                vc_system.set_current(current_task_base_state)
-                obs.event("rollback", task=f"T{number}", reason=result.get("status"),
-                          to_state=current_task_base_state)
             if respawn_counts[number] > MAX_WORKER_RESPAWNS:
                 return {
                     "status": "error",
