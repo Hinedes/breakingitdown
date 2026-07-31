@@ -1874,6 +1874,180 @@ class TestAcceptanceContract:
             assert result["verdict"] == "REWORK", "Reviewer should reject defective tests"
 
 
+class TestRespawnRollback:
+    """Stalled/timeout Worker attempts are aborted transactions: workspace restored."""
+
+    def test_stalled_modifications_removed(self):
+        """File written by a stalled Worker is removed by rollback."""
+        class StallAfterWrite(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                self.step += 1
+                if self.step == 1:
+                    return text_response("WRITE f.txt\nstale\nEND WRITE")
+                return text_response("READ noexist.txt")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test stall rollback"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            cfg = config(tmp, repeat_action_limit=1)
+            result = harness.run_worker_session(1, cfg, backend=StallAfterWrite())
+            assert result["status"] == "stalled", f"expected stalled, got {result}"
+            assert not os.path.exists(os.path.join(tmp, "f.txt")), "stalled Worker writes must be removed"
+
+    def test_timeout_modifications_removed(self):
+        """File written by a timed-out Worker is removed by rollback."""
+        class TimeoutAfterWrite(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                self.step += 1
+                if self.step == 1:
+                    return text_response("WRITE f.txt\nstale\nEND WRITE")
+                return text_response("READ noexist.txt")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test timeout rollback"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            cfg = config(tmp, worker_timeout=2, inactivity_timeout=1, repeat_action_limit=10000)
+            result = harness.run_worker_session(1, cfg, backend=TimeoutAfterWrite())
+            assert result["status"] == "timeout", f"expected timeout, got {result}"
+            assert not os.path.exists(os.path.join(tmp, "f.txt")), "timed-out Worker writes must be removed"
+
+    def test_todo_preserved_after_respawn_rollback(self):
+        """TODO.md survives workspace restoration after stall."""
+        class StallBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                self.step += 1
+                if self.step == 1:
+                    return text_response("WRITE f.txt\nx\nEND WRITE")
+                return text_response("READ noexist.txt")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test todo preservation"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            cfg = config(tmp, repeat_action_limit=1)
+            harness.run_worker_session(1, cfg, backend=StallBackend())
+            with open(os.path.join(tmp, "docs", "todo.md")) as f:
+                assert "Test todo preservation" in f.read()
+
+    def test_no_candidate_state_created_for_stalled(self):
+        """Stalled Worker produces no saved VC state."""
+        class StallBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                self.step += 1
+                if self.step == 1:
+                    return text_response("WRITE f.txt\nx\nEND WRITE")
+                return text_response("READ noexist.txt")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test no state on stall"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            cfg = config(tmp, repeat_action_limit=1)
+            states_before = set(os.listdir(os.path.join(tmp, ".bid", "states")))
+            harness.run_worker_session(1, cfg, backend=StallBackend())
+            states_after = set(os.listdir(os.path.join(tmp, ".bid", "states")))
+            assert states_before == states_after, "stalled Worker must not create a candidate state"
+
+    def test_multiple_respawns_same_fixed_base(self):
+        """Each respawn restores the same fixed base."""
+        class MultiStallBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                self.step += 1
+                return text_response("WRITE f.txt\nstale\nEND WRITE") if self.step == 1 else text_response("READ noexist.txt")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test multi-stall"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            cfg = config(tmp, repeat_action_limit=1)
+            for attempt in range(3):
+                harness.run_worker_session(1, cfg, backend=MultiStallBackend())
+                assert not os.path.exists(os.path.join(tmp, "f.txt")), f"stale file survived attempt {attempt}"
+
+    def test_normal_submission_accept_and_rework_unchanged(self):
+        """Normal flow is unaffected by respawn rollback changes."""
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Write result")),
+            text_response("WRITE notes.txt\ndraft\nEND WRITE\nDone"),
+            text_response("REWORK\nReason: Draft too weak."),
+            text_response("WRITE notes.txt\nfinal\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Fixed."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("Write result", cfg, backend=backend)["status"] == "success"
+            with open(os.path.join(tmp, "notes.txt"), "w", encoding="utf-8") as f:
+                f.write("BASE_SENTINEL")
+            vc.VersionControl(tmp).save_state("prep", "seed sentinel")
+            result = harness.run_project(cfg, backend=backend)
+            assert result["status"] == "done", f"expected done, got {result}"
+            with open(os.path.join(tmp, "notes.txt")) as f:
+                assert f.read() == "final"
+
+
 class TestTimingObservability:
     """Structured event log: order, durations, usage, behavior unchanged."""
 

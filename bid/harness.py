@@ -178,6 +178,9 @@ def run_worker_session(number, config, backend=None, feedback=None):
         }
 
     if result.get("status") in {"stalled", "timeout"}:
+        obs.event("rollback", task=f"T{number}", reason=result.get("status"), to_state=base_state)
+        vc_system.restore_workspace(base_state, preserve_todo=True)
+        vc_system.set_current(base_state)
         obs.end(sess_tok, status=result.get("status"), reason=result.get("reason"))
         return {
             "status": result.get("status"),
@@ -320,6 +323,11 @@ def _run_project_inner(config, backend=None):
             respawn_counts[number] = respawn_counts.get(number, 0) + 1
             obs.event("respawn", task=f"T{number}", reason=result.get("status"), count=respawn_counts[number])
             print(f"Worker {number} {result['status']}: {result.get('reason', 'unknown')}")
+            if current_task_base_state:
+                vc_system.restore_workspace(current_task_base_state, preserve_todo=True)
+                vc_system.set_current(current_task_base_state)
+                obs.event("rollback", task=f"T{number}", reason=result.get("status"),
+                          to_state=current_task_base_state)
             if respawn_counts[number] > MAX_WORKER_RESPAWNS:
                 return {
                     "status": "error",
