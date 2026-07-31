@@ -128,6 +128,8 @@ def _command_label(cmd):
         return f"WRITE {cmd['path']}"
     if cmd["type"] == "WRITE_UNTERMINATED":
         return f"WRITE {cmd['path']} [unterminated]"
+    if cmd["type"] == "WRITE_FENCE_POLLUTED":
+        return f"WRITE {cmd['path']} [fence]"
     if cmd["type"] == "RUN":
         return f"RUN {cmd['command']}"
     if cmd["type"] == "Done":
@@ -286,6 +288,15 @@ def _parse_content_into_turns(content, finish_reason=None):
                     break
                 body_lines.append(lines[i])
                 i += 1
+            # Reject bodies whose first non-empty line is a Markdown code fence on non-`.md` targets
+            first_body = ""
+            for line in body_lines:
+                if line.strip():
+                    first_body = line.strip()
+                    break
+            if first_body.startswith("```") and not path.endswith(".md") and any(l.strip() for l in body_lines):
+                commands.append({"type": "WRITE_FENCE_POLLUTED", "path": path})
+                continue
             if not terminated:
                 if finish_reason == "stop" and body_lines and any(l.strip() for l in body_lines):
                     has_trailing_cmd = any(
@@ -543,6 +554,7 @@ class WorkerAdapter:
             changed = False
             useful = False
             saw_done = False
+            fence_violation = False
             policy_violation = False
 
             if content:
@@ -720,6 +732,20 @@ class WorkerAdapter:
                         self.obs.end(cmd_tok)
                         continue
 
+                    if cmd["type"] == "WRITE_FENCE_POLLUTED":
+                        result = f"error: WRITE {cmd['path']} body starts with a Markdown code fence. Send raw file content without ``` fences, code blocks, or formatting."
+                        fence_violation = True
+                        sig = f"WRITE_FENCE_POLLUTED"
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
+                        messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
+                        continue
+
                     if cmd["type"] == "WRITE_UNTERMINATED":
                         result = f"error: WRITE {cmd['path']} must end with END WRITE on its own line"
                         sig = f"WRITE_UNTERMINATED"
@@ -749,7 +775,7 @@ class WorkerAdapter:
                 # NOT counted as useful or changed; does NOT reset repeat
 
             # Done processing
-            if policy_violation:
+            if policy_violation or fence_violation:
                 saw_done = False
 
             if saw_done:

@@ -2328,6 +2328,98 @@ class TestTimingObservability:
                 assert "[x] T1" in f.read()
 
 
+class TestFenceProtocol:
+    """Fence-guarded WRITE: reject Markdown fence bodies on non-.md targets."""
+
+    def _run_worker(self, tmp, response_text):
+        os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
+        with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+            f.write(todo_item(1, "Test write"))
+        with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+            f.write("# Task\n\nTest write.\n")
+        with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+            f.write("# Project Status\n\nInit.\n")
+        with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+            f.write("# Decisions\n\n")
+        harness.ensure_workspace(tmp)
+        vc.VersionControl(tmp).init()
+        backend = model.MockBackend([text_response(response_text)])
+        return harness.run_worker_session(1, config(tmp), backend=backend)
+
+    def test_fenced_py_write_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_worker(
+                tmp,
+                'WRITE solver.py\n```python\ndef solve():\n    return 42\n\nEND WRITE\nDone',
+            )
+            assert result["status"] == "stalled"
+            assert not os.path.exists(os.path.join(tmp, "solver.py")), "fenced write must not create file"
+
+    def test_fenced_py_plus_done_suppressed(self):
+        class FenceCheckBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T1:"):
+                    return text_response('WRITE solver.py\n```python\nx=1\n\nEND WRITE\nDone')
+                if prompt.startswith("# Review Assignment"):
+                    assert "(no file changes)" in prompt, "fence violation + Done must produce empty diff"
+                    return text_response("REWORK\nReason: No changes.")
+                if prompt.startswith("# Completion Review"):
+                    return text_response("COMPLETE\nReason: Done.")
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test fence+Done"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest fence+Done.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            result = harness.run_project(config(tmp), backend=FenceCheckBackend())
+            assert result["status"] == "error"
+            assert not os.path.exists(os.path.join(tmp, "solver.py")), "fenced write must not create file"
+
+    def test_valid_raw_source_write_still_works(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_worker(
+                tmp,
+                'WRITE solver.py\ndef solve():\n    return 42\n\nEND WRITE\nDone',
+            )
+            assert result["status"] == "submitted"
+            assert os.path.exists(os.path.join(tmp, "solver.py")), "valid write must create file"
+            content = open(os.path.join(tmp, "solver.py")).read()
+            assert "def solve()" in content
+
+    def test_markdown_file_with_fenced_code_preserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_worker(
+                tmp,
+                'WRITE README.md\n# Title\n\n```python\nprint("hello")\n```\n\nEND WRITE\nDone',
+            )
+            assert result["status"] == "submitted"
+            assert os.path.exists(os.path.join(tmp, "README.md")), "markdown file must be created"
+            content = open(os.path.join(tmp, "README.md")).read()
+            assert "```python" in content
+            assert 'print("hello")' in content
+
+    def test_unterminated_fence_on_py_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_worker(
+                tmp,
+                'WRITE solver.py\n```python\ndef solve():\n    return 42\n',
+            )
+            assert result["status"] == "stalled"
+            assert not os.path.exists(os.path.join(tmp, "solver.py")), "unterminated fenced write must not create file"
+
+
 class TestReviewDiffCoverage:
     def test_large_early_diff_keeps_later_file_details(self):
         with tempfile.TemporaryDirectory() as tmp:
