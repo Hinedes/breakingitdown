@@ -182,6 +182,8 @@ class LlamaCppBackend(ModelBackend):
         choice = data["choices"][0]
         message = choice["message"]
         message["finish_reason"] = choice.get("finish_reason", "stop")
+        if "usage" in data:
+            message["usage"] = data["usage"]
 
         if self.text_tools and message.get("content"):
             tool_calls = self._parse_text_tool_calls(message["content"])

@@ -6,6 +6,7 @@ from . import adapter as adapter_mod
 from . import model as model_mod
 from . import todo as todo_mod
 from . import vc as vc_mod
+from .observability import get_log
 
 
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
@@ -140,7 +141,9 @@ def run_worker_session(number, config, backend=None, feedback=None):
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
     base_state = vc_system.get_current()
+    obs = get_log(workspace)
 
+    sess_tok = obs.start("worker_session", task=f"T{number}", base_state=base_state, has_feedback=bool(feedback))
     try:
         worker_adapter = adapter_mod.WorkerAdapter(config, number, feedback=feedback)
         b = backend or create_backend(config)
@@ -159,9 +162,12 @@ def run_worker_session(number, config, backend=None, feedback=None):
                 description,
             )
         except Exception:
+            obs.end(sess_tok, status="error", reason="vc save failed")
             if base_state:
                 vc_system.restore(base_state, preserve_todo=True)
             return {"status": "error", "reason": "vc save failed after worker"}
+        obs.event("candidate_submitted", task=f"T{number}", base_state=base_state, candidate_state=state)
+        obs.end(sess_tok, status="submitted", candidate_state=state)
         return {
             "status": "submitted",
             "summary": f"T{number} submitted",
@@ -172,6 +178,7 @@ def run_worker_session(number, config, backend=None, feedback=None):
         }
 
     if result.get("status") in {"stalled", "timeout"}:
+        obs.end(sess_tok, status=result.get("status"), reason=result.get("reason"))
         return {
             "status": result.get("status"),
             "reason": result.get("reason", f"T{number} {result.get('status', 'error')}"),
@@ -183,7 +190,9 @@ def run_worker_session(number, config, backend=None, feedback=None):
         try:
             vc_system.restore(base_state, preserve_todo=True)
         except Exception as exc:
+            obs.end(sess_tok, status="error", reason=f"rollback failed: {exc}")
             return {"status": "error", "reason": f"rollback failed: {exc}"}
+    obs.end(sess_tok, status="error", reason=result.get("reason"))
     return {
         "status": "error",
         "reason": result.get("reason", f"T{number} was not submitted"),
@@ -252,6 +261,15 @@ def init_project(user_task, config, backend=None):
 # ── Project runner ───────────────────────────────────────────────────
 
 def run_project(config, backend=None):
+    obs = get_log(config["workspace"])
+    run_tok = obs.start("run_project")
+    try:
+        return _run_project_inner(config, backend)
+    finally:
+        obs.end(run_tok)
+
+
+def _run_project_inner(config, backend=None):
     workspace = config["workspace"]
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
@@ -260,6 +278,7 @@ def run_project(config, backend=None):
     respawn_counts = {}
     current_task_number = None
     current_task_base_state = None
+    obs = get_log(workspace)
 
     while True:
         todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
@@ -299,6 +318,7 @@ def run_project(config, backend=None):
             return {"status": "error", "reason": f"Worker {number} exception: {exc}"}
         if result["status"] in {"stalled", "timeout"}:
             respawn_counts[number] = respawn_counts.get(number, 0) + 1
+            obs.event("respawn", task=f"T{number}", reason=result.get("status"), count=respawn_counts[number])
             print(f"Worker {number} {result['status']}: {result.get('reason', 'unknown')}")
             if respawn_counts[number] > MAX_WORKER_RESPAWNS:
                 return {
@@ -322,17 +342,23 @@ def run_project(config, backend=None):
                 candidate_state=result.get("state"),
             ).run(backend)
         except Exception as exc:
+            obs.event("review_exception", task=f"T{number}", error=str(exc))
             return {"status": "error", "reason": f"review exception: {exc}"}
 
+        obs.event("reviewer_verdict", task=f"T{number}", verdict=review.get("verdict"),
+                  base_state=current_task_base_state, candidate_state=result.get("state"))
         if review.get("verdict") == "ERROR":
             return {"status": "error", "reason": review.get("reason", "review error"), "detail": review}
 
         if review.get("verdict") == "REWORK":
             reviewer_feedback[number] = " ".join(review.get("reason", "").split()).strip()
             print(f"Worker {number} rework: {reviewer_feedback[number]}")
+            obs.event("rework", task=f"T{number}", base_state=current_task_base_state,
+                      candidate_state=result.get("state"))
             if current_task_base_state:
                 vc_system.restore_workspace(current_task_base_state, preserve_todo=True)
                 vc_system.set_current(current_task_base_state)
+                obs.event("rollback", task=f"T{number}", to_state=current_task_base_state)
             vc_system._append_log(current_task_base_state or result["state"],
                 f"rework_reason: task=T{number} base={current_task_base_state} "
                 f"candidate={result['state']} reason={reviewer_feedback[number]}")
@@ -340,6 +366,7 @@ def run_project(config, backend=None):
 
         if review.get("verdict") == "ACCEPT":
             reviewer_feedback.pop(number, None)
+            obs.event("accept", task=f"T{number}", candidate_state=result.get("state"))
             vc_system._append_log(result["state"], "rework_reason:")
             todo_text = read_file_content(os.path.join(workspace, "docs/todo.md"))
             todo_text = todo_mod.set_task_checked(todo_text, number, True)

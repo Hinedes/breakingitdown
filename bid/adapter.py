@@ -13,6 +13,7 @@ from . import permissions
 from . import search as search_mod
 from . import todo as todo_mod
 from . import vc as vc_mod
+from .observability import get_log
 from .observer import Observer
 
 
@@ -383,6 +384,7 @@ class ManagerInitAdapter:
     def __init__(self, config):
         self.config = config
         self.workspace = config["workspace"]
+        self.obs = get_log(self.workspace)
 
     def run(self, backend):
         manager_md = _read(self.workspace, "docs/manager.md")
@@ -403,10 +405,20 @@ class ManagerInitAdapter:
         ]
 
         for attempt in range(self.RETRY_LIMIT):
+            req_tok = self.obs.start("model_request", role="manager", retry=attempt)
             try:
                 response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
             except Exception as exc:
+                self.obs.end(req_tok, error=str(exc))
                 return {"status": "error", "reason": f"model request failed: {exc}"}
+            usage = response.get("usage") or {}
+            self.obs.end(
+                req_tok,
+                finish_reason=response.get("finish_reason"),
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
 
             content = response.get("content") or ""
             todo = self._todo(content)
@@ -467,6 +479,7 @@ class WorkerAdapter:
         self.feedback = feedback or ""
         self._run_evidence = []
         self._implicit_write_count = 0
+        self.obs = get_log(self.workspace)
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -503,10 +516,20 @@ class WorkerAdapter:
         _read_tracker = {}  # canonical_rel_path → (useful_count, last_hash)
 
         while time.monotonic() - session_start < hard_ceiling:
+            req_tok = self.obs.start("model_request", role="worker", task=f"T{self.task_number}", attempt=1)
             try:
                 response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
             except Exception as exc:
+                self.obs.end(req_tok, error=str(exc))
                 return {"status": "error", "reason": f"model request failed: {exc}"}
+            usage = response.get("usage") or {}
+            self.obs.end(
+                req_tok,
+                finish_reason=response.get("finish_reason"),
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
 
             raw_content = response.get("content") or ""
             content = raw_content.strip()
@@ -542,9 +565,11 @@ class WorkerAdapter:
             else:
                 for cmd in commands:
                     _log_worker_event(self._vc, "worker parsed command", _command_label(cmd))
+                    cmd_tok = self.obs.start("command", task=f"T{self.task_number}", type=cmd["type"])
                     if cmd["type"] == "Done":
                         saw_done = True
                         _log_worker_event(self._vc, "worker result", "done")
+                        self.obs.end(cmd_tok)
                         continue
 
                     if cmd["type"] == "READ":
@@ -581,6 +606,7 @@ class WorkerAdapter:
                         last_sig = sig
                         _log_worker_event(self._vc, "worker result", result)
                         messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
                         continue
 
                     if cmd["type"] == "SEARCH":
@@ -609,6 +635,7 @@ class WorkerAdapter:
                         last_sig = sig
                         _log_worker_event(self._vc, "worker result", result)
                         messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
                         continue
 
                     if cmd["type"] == "WRITE":
@@ -630,6 +657,7 @@ class WorkerAdapter:
                         last_sig = sig
                         _log_worker_event(self._vc, "worker result", result)
                         messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
                         continue
 
                     if cmd["type"] == "RUN":
@@ -676,6 +704,7 @@ class WorkerAdapter:
                             })
                             policy_violation = True
                             observer.mark_activity()
+                            self.obs.end(cmd_tok, policy_violation=True)
                             break
 
                         _log_worker_event(self._vc, "worker result", result)
@@ -688,6 +717,7 @@ class WorkerAdapter:
                         if ordinary_changed:
                             changed = True
                         messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
                         continue
 
                     if cmd["type"] == "WRITE_UNTERMINATED":
@@ -700,11 +730,13 @@ class WorkerAdapter:
                         last_sig = sig
                         _log_worker_event(self._vc, "worker result", result)
                         messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
                         continue
 
                     result = f"error: unknown command {cmd['type']}"
                     _log_worker_event(self._vc, "worker result", result)
                     messages.append({"role": "user", "content": result})
+                    self.obs.end(cmd_tok)
 
             # Unknown-command feedback
             unknown_cmds = _find_unknown_commands(raw_content, commands)
@@ -773,6 +805,22 @@ class WorkerAdapter:
         return f"wrote {len(content)} bytes to {rel}"
 
     def _run_command(self, command):
+        t0 = time.monotonic()
+        try:
+            return self._run_command_inner(command)
+        finally:
+            evidence = self._run_evidence[-1] if self._run_evidence else None
+            if evidence is not None and evidence.get("command") == (command or "").strip():
+                self.obs.event(
+                    "run_command",
+                    command=(command or "").strip()[:200],
+                    duration_s=round(time.monotonic() - t0, 3),
+                    exit_code=evidence.get("exit_code"),
+                    timed_out=evidence.get("timed_out"),
+                    result=evidence.get("result"),
+                )
+
+    def _run_command_inner(self, command):
         command = (command or "").strip()
         if not command:
             return self._record_run_evidence(command, "error: command required", False, 127, "", "")
@@ -977,6 +1025,7 @@ class TaskReviewAdapter:
         self.task_number = task_number
         self.base_state = base_state
         self.candidate_state = candidate_state
+        self.obs = get_log(self.workspace)
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -1026,10 +1075,24 @@ class TaskReviewAdapter:
         ]
 
         for attempt in range(self.RETRY_LIMIT):
+            req_tok = self.obs.start(
+                "model_request", role="reviewer", task=f"T{self.task_number}",
+                base_state=self.base_state, candidate_state=self.candidate_state,
+                retry=attempt,
+            )
             try:
                 response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
             except Exception as exc:
+                self.obs.end(req_tok, error=str(exc))
                 return {"verdict": "ERROR", "reason": f"model request failed: {exc}", "task_number": self.task_number}
+            usage = response.get("usage") or {}
+            self.obs.end(
+                req_tok,
+                finish_reason=response.get("finish_reason"),
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
 
             content = (response.get("content") or "").strip()
             raw = content
@@ -1068,6 +1131,7 @@ class CompletionReviewAdapter:
     def __init__(self, config):
         self.config = config
         self.workspace = config["workspace"]
+        self.obs = get_log(self.workspace)
 
     def run(self, backend):
         task_md = _read(self.workspace, "docs/task.md")
@@ -1102,10 +1166,20 @@ class CompletionReviewAdapter:
         ]
 
         for attempt in range(self.RETRY_LIMIT):
+            req_tok = self.obs.start("model_request", role="completion_reviewer", retry=attempt)
             try:
                 response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
             except Exception as exc:
+                self.obs.end(req_tok, error=str(exc))
                 return {"verdict": "ERROR", "reason": f"model request failed: {exc}"}
+            usage = response.get("usage") or {}
+            self.obs.end(
+                req_tok,
+                finish_reason=response.get("finish_reason"),
+                prompt_tokens=usage.get("prompt_tokens"),
+                completion_tokens=usage.get("completion_tokens"),
+                total_tokens=usage.get("total_tokens"),
+            )
 
             content = (response.get("content") or "").strip()
             raw = content

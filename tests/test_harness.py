@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import tempfile
@@ -1871,6 +1872,137 @@ class TestAcceptanceContract:
                     return {"role": "assistant", "content": "REWORK\nReason: The added test file imports a module that does not exist in the workspace (src.fake). A test that cannot be collected is not a valid completion.", "finish_reason": "stop"}
             result = review.run(RejectBackend())
             assert result["verdict"] == "REWORK", "Reviewer should reject defective tests"
+
+
+class TestTimingObservability:
+    """Structured event log: order, durations, usage, behavior unchanged."""
+
+    def _events(self, tmp):
+        path = os.path.join(os.path.dirname(tmp), os.path.basename(tmp) + "-events", "events.jsonl")
+        if not os.path.exists(path):
+            return []
+        events = []
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    events.append(json.loads(line))
+        return events
+
+    def test_event_log_created_append_only(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "No-op")),
+            text_response("Done"),
+            text_response("ACCEPT\nReason: OK."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("No-op", cfg, backend=backend)["status"] == "success"
+            harness.run_project(cfg, backend=backend)
+            events = self._events(tmp)
+            assert len(events) > 0, "event log should exist"
+            for ev in events:
+                assert "ts_utc" in ev, f"missing ts_utc: {ev}"
+                assert "elapsed_s" in ev, f"missing elapsed_s: {ev}"
+            kinds = {ev["event"] for ev in events}
+            assert "worker_session" in kinds
+            assert "model_request" in kinds
+
+    def test_event_order(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Do work")),
+            text_response("WRITE f.txt\nx\nEND WRITE\nRUN echo hi\nDone"),
+            text_response("ACCEPT\nReason: OK."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("Do work", cfg, backend=backend)["status"] == "success"
+            harness.run_project(cfg, backend=backend)
+            events = self._events(tmp)
+            # find worker_session start, model_request, command, worker_session end
+            sess_starts = [i for i, e in enumerate(events) if e["event"] == "worker_session" and e.get("phase") == "start"]
+            sess_ends = [i for i, e in enumerate(events) if e["event"] == "worker_session" and e.get("phase") == "end"]
+            assert sess_starts and sess_ends, "worker_session start/end present"
+            assert sess_starts[0] < sess_ends[-1], "session start precedes end"
+            cmd_idxs = [i for i, e in enumerate(events) if e["event"] == "command"]
+            assert cmd_idxs, "command events present"
+            # command events occur between session start and end
+            assert sess_starts[0] < cmd_idxs[0] < sess_ends[-1]
+
+    def test_duration_fields_present(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Do work")),
+            text_response("RUN echo hi\nDone"),
+            text_response("ACCEPT\nReason: OK."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("Do work", cfg, backend=backend)["status"] == "success"
+            harness.run_project(cfg, backend=backend)
+            events = self._events(tmp)
+            end_events = [e for e in events if e.get("phase") == "end"]
+            assert end_events, "end-phase events present"
+            for e in end_events:
+                assert "duration_s" in e, f"missing duration_s: {e}"
+                assert isinstance(e["duration_s"], (int, float))
+                assert e["duration_s"] >= 0
+            run_cmds = [e for e in events if e["event"] == "run_command"]
+            assert run_cmds, "run_command events present"
+            assert "exit_code" in run_cmds[0]
+
+    def test_usage_preserved(self):
+        class UsageBackend(model.MockBackend):
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({
+                    "messages": [dict(message) for message in messages],
+                    "tools": tools,
+                    "max_tokens": max_tokens,
+                })
+                response = text_response("Done")
+                response["usage"] = {"prompt_tokens": 111, "completion_tokens": 22, "total_tokens": 133}
+                return response
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "No-op"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nNo-op.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            harness.run_worker_session(1, config(tmp), backend=UsageBackend())
+            events = self._events(tmp)
+            worker_reqs = [e for e in events if e["event"] == "model_request" and e.get("role") == "worker" and e.get("phase") == "end"]
+            assert worker_reqs, "worker model_request end events present"
+            assert worker_reqs[0]["prompt_tokens"] == 111
+            assert worker_reqs[0]["completion_tokens"] == 22
+            assert worker_reqs[0]["total_tokens"] == 133
+
+    def test_execution_behavior_unchanged(self):
+        backend = model.MockBackend([
+            text_response(todo_item(1, "Write result")),
+            text_response("WRITE notes.txt\ndraft\nEND WRITE\nDone"),
+            text_response("REWORK\nReason: Draft too weak."),
+            text_response("WRITE notes.txt\nfinal\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Fixed."),
+            text_response("COMPLETE\nReason: Done."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("Write result", cfg, backend=backend)["status"] == "success"
+            result = harness.run_project(cfg, backend=backend)
+            assert result["status"] == "done"
+            with open(os.path.join(tmp, "notes.txt"), encoding="utf-8") as f:
+                assert f.read() == "final"
+            with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as f:
+                assert "[x] T1" in f.read()
 
 
 class TestReviewDiffCoverage:
