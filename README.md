@@ -68,31 +68,44 @@ READ, preserving indentation.
 4. If rejected, the workspace rolls back to the task's fixed base.
 5. If accepted, the checklist advances to the next task.
 6. **Completion Reviewer** decides whether the final workspace satisfies the
-   original request.
+   original request. It may append additional tasks when it judges the
+   checklist incomplete.
 
 Workspace snapshots are preserved at every candidate submission for forensic
 replay. An append-only JSONL event log captures timing, usage, and transitions.
 
 ## Known Limitations
 
-- **No repository navigation assistance.** The Worker must be told which files
-  to edit in the task description.
+- **No automatic repository map or specialized code-search helper.** Workers
+  may discover files through RUN commands such as `ls`, `find`, and `grep`,
+  or receive paths in the task description.
 - **No fuzzy or line-based editing.** REPLACE requires exact text matching.
 - **No parallelism.** Only one Worker runs at a time.
 - **No candidate salvage.** Rejected work is preserved for analysis but not
   recovered automatically into subsequent attempts.
 - **No GUI.** Command-line only.
-- **REVIEWER model must judge correctly.** The harness holds no acceptance
-  oracle.
-- **This release has only been tested with one ARGUS benchmark.** General
-  task performance varies.
+- **Semantic acceptance is model-judged and may be wrong.** Diffs, tests,
+  and RUN results provide evidence but do not independently determine
+  semantic correctness.
+- **No automatic harness-owned verification pipeline.** Workers may run tests
+  through RUN commands, but the harness does not automatically execute or
+  validate them.
+- **Completion Review may extend the checklist** when it judges the original
+  request incomplete, potentially adding tasks beyond the initial plan.
+- **Validated with the automated test suite, a deterministic CLI smoke
+  workflow, and one substantial but incomplete ARGUS evaluation.** General
+  performance across unrelated repositories remains unproven.
 
-## Deferred
+## Possible Future Work
 
-- Repository search/navigation assistance
+- Repository navigation helpers (search, directory maps)
 - Fuzzy or line-range editing
-- Worker parallelism and graphs
-- Candidate salvage and recombination
 - Built-in verification commands
 - GUI/web interface
 - Additional benchmark validation
+
+## Out of Scope Unless Evidence Justifies Them
+
+- Worker parallelism and inter-Worker graphs
+- Candidate salvage and recombination
+
