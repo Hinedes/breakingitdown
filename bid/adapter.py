@@ -1141,27 +1141,6 @@ def _workspace_listing(root, limit=12000):
     return text[:limit] if text else "(no workspace files)"
 
 
-def _research_context(workspace, task_number):
-    research_dir = search_mod._research_dir(workspace, task_number)
-    if not os.path.isdir(research_dir):
-        return "", research_dir, False
-
-    parts = ["", "## Supporting research", ""]
-    for fname in sorted(os.listdir(research_dir)):
-        fpath = os.path.join(research_dir, fname)
-        if not os.path.isfile(fpath):
-            continue
-        try:
-            with open(fpath, encoding="utf-8") as file:
-                content = file.read()
-        except (OSError, UnicodeDecodeError):
-            continue
-        parts.append(f"### {fname}")
-        parts.append(content[:500])
-        parts.append("")
-    return ("\n".join(parts).strip(), research_dir, True)
-
-
 class TaskReviewAdapter:
     RETRY_LIMIT = 3
 
