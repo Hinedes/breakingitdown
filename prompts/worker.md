@@ -8,6 +8,12 @@ READ <path>
 
 RUN <program> [arguments...]
 
+REPLACE <path>
+<exact old text>
+---REPLACE_WITH---
+<exact new text>
+END REPLACE
+
 WRITE <path>
 <complete file content>
 END WRITE

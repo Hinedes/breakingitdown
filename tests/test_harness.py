@@ -2420,6 +2420,129 @@ class TestFenceProtocol:
             assert not os.path.exists(os.path.join(tmp, "solver.py")), "unterminated fenced write must not create file"
 
 
+class TestReplaceProtocol:
+    """REPLACE command: exact-text substitution with atomicity and contention checks."""
+
+    def _run_worker(self, tmp, response_text):
+        os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
+        with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+            f.write(todo_item(1, "Test replace"))
+        with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+            f.write("# Task\n\nTest replace.\n")
+        with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+            f.write("# Project Status\n\nInit.\n")
+        with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+            f.write("# Decisions\n\n")
+        harness.ensure_workspace(tmp)
+        vc.VersionControl(tmp).init()
+        backend = model.MockBackend([text_response(response_text)])
+        return harness.run_worker_session(1, config(tmp), backend=backend)
+
+    def test_successful_replace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "target.txt"), "w") as f:
+                f.write("line one\nOLD_TEXT\nline three\n")
+            result = self._run_worker(
+                tmp,
+                'REPLACE target.txt\nOLD_TEXT\n---REPLACE_WITH---\nNEW_TEXT\nEND REPLACE\nDone',
+            )
+            assert result["status"] == "submitted"
+            assert open(os.path.join(tmp, "target.txt")).read() == "line one\nNEW_TEXT\nline three\n"
+
+    def test_zero_matches_no_modification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "target.txt"), "w") as f:
+                f.write("line one\nline two\n")
+            result = self._run_worker(
+                tmp,
+                'REPLACE target.txt\nNOT_FOUND\n---REPLACE_WITH---\nNEW\nEND REPLACE\nDone',
+            )
+            assert open(os.path.join(tmp, "target.txt")).read() == "line one\nline two\n"
+            assert result["status"] == "stalled", "zero-match REPLACE should stall (Done suppressed)"
+
+    def test_multiple_matches_no_modification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "target.txt"), "w") as f:
+                f.write("DUP\nmiddle\nDUP\n")
+            result = self._run_worker(
+                tmp,
+                'REPLACE target.txt\nDUP\n---REPLACE_WITH---\nSINGLE\nEND REPLACE\nDone',
+            )
+            assert open(os.path.join(tmp, "target.txt")).read() == "DUP\nmiddle\nDUP\n"
+            assert result["status"] == "stalled", "multi-match REPLACE should stall"
+
+    def test_rep_unterminated_no_modification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "target.txt"), "w") as f:
+                f.write("original\n")
+            result = self._run_worker(
+                tmp,
+                'REPLACE target.txt\noriginal\n',  # no ---REPLACE_WITH--- or END REPLACE
+            )
+            assert open(os.path.join(tmp, "target.txt")).read() == "original\n"
+
+    def test_failed_replace_suppresses_done(self):
+        class ReplaceCheckBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T1:"):
+                    return text_response('REPLACE target.txt\nNOT_FOUND\n---REPLACE_WITH---\nNEW\nEND REPLACE\nDone')
+                if prompt.startswith("# Review Assignment"):
+                    assert "(no file changes)" in prompt, "failed REPLACE + Done must produce empty diff"
+                    return text_response("REWORK\nReason: No changes.")
+                if prompt.startswith("# Completion Review"):
+                    return text_response("COMPLETE\nReason: Done.")
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "target.txt"), "w") as f:
+                f.write("line one\nline two\n")
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test replace+Done"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest replace+Done.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            result = harness.run_project(config(tmp), backend=ReplaceCheckBackend())
+            assert result["status"] == "error"
+
+    def test_multiple_replaces_in_one_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "target.txt"), "w") as f:
+                f.write("AAA\nBBB\n")
+            result = self._run_worker(
+                tmp,
+                'REPLACE target.txt\nAAA\n---REPLACE_WITH---\n111\nEND REPLACE\nREPLACE target.txt\nBBB\n---REPLACE_WITH---\n222\nEND REPLACE\nDone',
+            )
+            assert result["status"] == "submitted"
+            assert open(os.path.join(tmp, "target.txt")).read() == "111\n222\n"
+
+    def test_small_edit_in_large_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Synthetic large file: 200 lines
+            large = "\n".join(f"line {i}" for i in range(200)) + "\n"
+            with open(os.path.join(tmp, "big.txt"), "w") as f:
+                f.write(large)
+            result = self._run_worker(
+                tmp,
+                'REPLACE big.txt\nline 50\n---REPLACE_WITH---\nEDITED LINE 50\nEND REPLACE\nDone',
+            )
+            assert result["status"] == "submitted"
+            content = open(os.path.join(tmp, "big.txt")).read()
+            assert "EDITED LINE 50" in content
+            assert "line 50\n" not in content
+            assert "line 49" in content
+            assert "line 51" in content  # unchanged lines preserved
+
+
 class TestReviewDiffCoverage:
     def test_large_early_diff_keeps_later_file_details(self):
         with tempfile.TemporaryDirectory() as tmp:

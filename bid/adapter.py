@@ -130,6 +130,10 @@ def _command_label(cmd):
         return f"WRITE {cmd['path']} [unterminated]"
     if cmd["type"] == "WRITE_FENCE_POLLUTED":
         return f"WRITE {cmd['path']} [fence]"
+    if cmd["type"] == "REPLACE":
+        return f"REPLACE {cmd['path']}"
+    if cmd["type"] == "REPLACE_UNTERMINATED":
+        return f"REPLACE {cmd['path']} [unterminated]"
     if cmd["type"] == "RUN":
         return f"RUN {cmd['command']}"
     if cmd["type"] == "Done":
@@ -320,6 +324,40 @@ def _parse_content_into_turns(content, finish_reason=None):
             command = stripped[4:].strip()
             commands.append({"type": "RUN", "command": command})
             i += 1
+            continue
+
+        if stripped.startswith("REPLACE "):
+            path = stripped[8:].strip()
+            i += 1
+            old_lines = []
+            old_complete = False
+            while i < len(lines):
+                if lines[i].strip() == "---REPLACE_WITH---":
+                    old_complete = True
+                    i += 1
+                    break
+                old_lines.append(lines[i])
+                i += 1
+            if not old_complete:
+                commands.append({"type": "REPLACE_UNTERMINATED", "path": path})
+                continue
+            new_lines = []
+            new_complete = False
+            while i < len(lines):
+                if lines[i].strip() == "END REPLACE":
+                    new_complete = True
+                    i += 1
+                    break
+                new_lines.append(lines[i])
+                i += 1
+            if not new_complete:
+                commands.append({"type": "REPLACE_UNTERMINATED", "path": path})
+                continue
+            commands.append({
+                "type": "REPLACE", "path": path,
+                "old_text": "\n".join(old_lines),
+                "new_text": "\n".join(new_lines),
+            })
             continue
 
         i += 1
@@ -555,6 +593,7 @@ class WorkerAdapter:
             useful = False
             saw_done = False
             fence_violation = False
+            replace_failed = False
             policy_violation = False
 
             if content:
@@ -746,6 +785,39 @@ class WorkerAdapter:
                         self.obs.end(cmd_tok)
                         continue
 
+                    if cmd["type"] == "REPLACE":
+                        result = self._replace_text(cmd["path"], cmd["old_text"], cmd["new_text"])
+                        if result.startswith("error"):
+                            replace_failed = True
+                        if not result.startswith("error"):
+                            useful = True
+                            if observer.poll_changes():
+                                changed = True
+                        sig = f"REPLACE {cmd['path']}|{result[:50]}"
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
+                        messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
+                        continue
+
+                    if cmd["type"] == "REPLACE_UNTERMINATED":
+                        result = f"error: REPLACE {cmd['path']} missing ---REPLACE_WITH--- or END REPLACE delimiter"
+                        replace_failed = True
+                        sig = f"REPLACE_UNTERMINATED"
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
+                        messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
+                        continue
+
                     if cmd["type"] == "WRITE_UNTERMINATED":
                         result = f"error: WRITE {cmd['path']} must end with END WRITE on its own line"
                         sig = f"WRITE_UNTERMINATED"
@@ -775,7 +847,7 @@ class WorkerAdapter:
                 # NOT counted as useful or changed; does NOT reset repeat
 
             # Done processing
-            if policy_violation or fence_violation:
+            if policy_violation or fence_violation or replace_failed:
                 saw_done = False
 
             if saw_done:
@@ -829,6 +901,43 @@ class WorkerAdapter:
 
         _write(self.workspace, rel, content)
         return f"wrote {len(content)} bytes to {rel}"
+
+    def _replace_text(self, path, old_text, new_text):
+        if not old_text:
+            return "error: old_text required"
+        safe, err, rel = permissions.check_path_safety(path, self.workspace)
+        if not safe:
+            return err
+        allowed, err_msg = permissions.check_write_permission(
+            rel, permissions.ROLE_WORKER, self.task_number, self.workspace
+        )
+        if not allowed:
+            return f"permission denied: {err_msg}"
+        abs_path = os.path.join(self.workspace, rel)
+        if not os.path.exists(abs_path):
+            return f"file not found: {path}"
+        try:
+            with open(abs_path, "r", encoding="utf-8") as f:
+                current = f.read()
+        except Exception as exc:
+            return f"error reading {rel}: {exc}"
+        count = current.count(old_text)
+        if count == 0:
+            return f"error: old_text not found in {rel}"
+        if count > 1:
+            return f"error: old_text matches {count} occurrences in {rel}; must match exactly one"
+        updated = current.replace(old_text, new_text, 1)
+        try:
+            with open(abs_path, "w", encoding="utf-8") as f:
+                f.write(updated)
+            if self._obs_check_changes(abs_path, current):
+                pass
+            return f"replaced text in {rel}"
+        except Exception as exc:
+            return f"error writing {rel}: {exc}"
+
+    def _obs_check_changes(self, path, before):
+        pass  # hook for observer; real check via poll_changes in dispatch
 
     def _run_command(self, command):
         t0 = time.monotonic()
