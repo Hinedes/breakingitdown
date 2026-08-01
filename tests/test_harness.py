@@ -2542,6 +2542,106 @@ class TestReplaceProtocol:
             assert "line 49" in content
             assert "line 51" in content  # unchanged lines preserved
 
+    def test_replace_no_unknown_command_feedback(self):
+        """Valid REPLACE produces no unknown-command error in messages."""
+        from bid.adapter import _parse_content_into_turns, _find_unknown_commands
+        raw = ("REPLACE target.txt\nOLD\n---REPLACE_WITH---\nNEW\nEND REPLACE\nDone")
+        cmds = _parse_content_into_turns(raw)
+        unknowns = _find_unknown_commands(raw, cmds)
+        assert len(unknowns) == 0, f"expected no unknown commands, got {unknowns}"
+
+    def test_replace_end_replace_not_reported_as_unknown(self):
+        """REPLACE header and END REPLACE are not flagged as unknown."""
+        from bid.adapter import _parse_content_into_turns, _find_unknown_commands
+        raw = ("REPLACE target.txt\nOLD\n---REPLACE_WITH---\nNEW\nEND REPLACE")
+        cmds = _parse_content_into_turns(raw)
+        unknowns = _find_unknown_commands(raw, cmds)
+        assert "REPLACE target.txt" not in unknowns, f"REPLACE header flagged: {unknowns}"
+        assert "END REPLACE" not in unknowns, f"END REPLACE flagged: {unknowns}"
+
+    def test_replace_body_lines_not_classified_as_commands(self):
+        """Body lines resembling command words are not separately classified."""
+        from bid.adapter import _parse_content_into_turns, _find_unknown_commands
+        raw = ("REPLACE target.txt\nREAD src/main.py\nRUN pytest\n---REPLACE_WITH---\nDONE\nEND REPLACE\nDone")
+        cmds = _parse_content_into_turns(raw)
+        unknowns = _find_unknown_commands(raw, cmds)
+        assert len(unknowns) == 0, f"body lines misclassified: {unknowns}"
+
+    def test_multiple_replaces_no_unknown_feedback(self):
+        """Multiple REPLACE commands in one response produce no unknowns."""
+        from bid.adapter import _parse_content_into_turns, _find_unknown_commands
+        raw = ("REPLACE a.txt\nX\n---REPLACE_WITH---\nY\nEND REPLACE\n"
+               "REPLACE b.txt\nP\n---REPLACE_WITH---\nQ\nEND REPLACE\nDone")
+        cmds = _parse_content_into_turns(raw)
+        unknowns = _find_unknown_commands(raw, cmds)
+        assert len(unknowns) == 0, f"expected no unknowns, got {unknowns}"
+
+    def test_malformed_replace_still_reports_error_no_mutation(self):
+        """Malformed REPLACE reports termination error, file unchanged."""
+        import json
+        class CheckMessages(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T1:"):
+                    return text_response("REPLACE target.txt\nOLD\nNEW\n")  # missing both delimiters
+                raise RuntimeError("stop")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "target.txt"), "w") as f:
+                f.write("original\n")
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            backend = CheckMessages()
+            harness.run_worker_session(1, config(tmp), backend=backend)
+            # Malformed REPLACE must not mutate the file
+            assert open(os.path.join(tmp, "target.txt")).read() == "original\n"
+
+    def test_successful_replace_plus_done_submits(self):
+        """Successful REPLACE + Done submits normally."""
+        class ReplaceSubmitBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T1:"):
+                    return text_response('REPLACE target.txt\nORIG\n---REPLACE_WITH---\nCHGD\nEND REPLACE\nDone')
+                if prompt.startswith("# Review Assignment"):
+                    assert "CHGD" in prompt, "diff should show replacement"
+                    return text_response("ACCEPT\nReason: Good.")
+                if prompt.startswith("# Completion Review"):
+                    return text_response("COMPLETE\nReason: Done.")
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"))
+            with open(os.path.join(tmp, "target.txt"), "w") as f:
+                f.write("ORIG\n")
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            result = harness.run_project(config(tmp), backend=ReplaceSubmitBackend())
+            assert result["status"] == "done"
+
 
 class TestReviewDiffCoverage:
     def test_large_early_diff_keeps_later_file_details(self):

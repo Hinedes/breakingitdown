@@ -252,7 +252,7 @@ def _validate_direct_deletion(argv, workspace):
 
 # ── Command parsing ──────────────────────────────────────────────────
 
-_KNOWN_CMDS = {"READ ", "WRITE ", "RUN ", "SEARCH "}
+_KNOWN_CMDS = {"READ ", "WRITE ", "RUN ", "SEARCH ", "REPLACE "}
 
 
 def _parse_content_into_turns(content, finish_reason=None):
@@ -378,6 +378,17 @@ def _find_unknown_commands(content, commands):
             while li < len(lines) and lines[li].strip() != "END WRITE":
                 consumed.add(li); li += 1
             if li < len(lines) and lines[li].strip() == "END WRITE":
+                consumed.add(li); li += 1
+            continue
+        if s.startswith("REPLACE "):
+            consumed.add(li); li += 1
+            while li < len(lines) and lines[li].strip() != "---REPLACE_WITH---":
+                consumed.add(li); li += 1
+            if li < len(lines) and lines[li].strip() == "---REPLACE_WITH---":
+                consumed.add(li); li += 1
+            while li < len(lines) and lines[li].strip() != "END REPLACE":
+                consumed.add(li); li += 1
+            if li < len(lines) and lines[li].strip() == "END REPLACE":
                 consumed.add(li); li += 1
             continue
         li += 1
