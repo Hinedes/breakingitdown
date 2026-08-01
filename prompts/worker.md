@@ -9,10 +9,16 @@ READ <path>
 RUN <program> [arguments...]
 
 REPLACE <path>
-<exact old text>
+<smallest exact old text, copied verbatim from a recent READ>
 ---REPLACE_WITH---
 <exact new text>
 END REPLACE
+
+The old text must be copied byte-for-byte from the output of a recent READ
+command, preserving every space, tab, newline, and punctuation character. Use
+the smallest block that uniquely identifies the location. Do not insert
+labels, XML tags, placeholder markers, angle brackets, or explanatory text
+inside the old text or new text bodies.
 
 WRITE <path>
 <complete file content>

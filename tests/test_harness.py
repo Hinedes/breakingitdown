@@ -2642,6 +2642,38 @@ class TestReplaceProtocol:
             result = harness.run_project(config(tmp), backend=ReplaceSubmitBackend())
             assert result["status"] == "done"
 
+    def test_prompt_has_no_xml_placeholder_body_lines(self):
+        """Worker prompt does not present <exact old text> as literal body labels."""
+        import os
+        text = open(os.path.join(os.path.dirname(__file__), "..", "prompts", "worker.md")).read()
+        assert "copied verbatim" in text
+        assert "smallest block" in text
+
+    def test_zero_match_returns_actionable_feedback(self):
+        """Zero-match tells Worker to READ again and copy a smaller block."""
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "docs"), exist_ok=True)
+            with open(os.path.join(tmp, "target.txt"), "w") as f:
+                f.write("original content\n")
+            with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:
+                f.write(todo_item(1, "Test"))
+            with open(os.path.join(tmp, "docs", "task.md"), "w") as f:
+                f.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, "docs", "project-status.md"), "w") as f:
+                f.write("# Project Status\n\nInit.\n")
+            with open(os.path.join(tmp, "docs", "decisions.md"), "w") as f:
+                f.write("# Decisions\n\n")
+            harness.ensure_workspace(tmp)
+            vc.VersionControl(tmp).init()
+            backend = model.MockBackend([text_response(
+                'REPLACE target.txt\nno such text\n---REPLACE_WITH---\nnew\nEND REPLACE\nDone'
+            )])
+            harness.run_worker_session(1, config(tmp), backend=backend)
+            log = open(os.path.join(tmp, ".bid", "log.md")).read()
+            assert "READ the file again" in log
+            assert "copy a smaller exact block" in log
+            assert "verbatim" in log
+
 
 class TestReviewDiffCoverage:
     def test_large_early_diff_keeps_later_file_details(self):

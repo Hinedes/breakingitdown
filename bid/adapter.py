@@ -934,7 +934,7 @@ class WorkerAdapter:
             return f"error reading {rel}: {exc}"
         count = current.count(old_text)
         if count == 0:
-            return f"error: old_text not found in {rel}"
+            return f"error: old_text not found in {rel}. READ the file again and copy a smaller exact block (verbatim, preserving indentation)."
         if count > 1:
             return f"error: old_text matches {count} occurrences in {rel}; must match exactly one"
         updated = current.replace(old_text, new_text, 1)
