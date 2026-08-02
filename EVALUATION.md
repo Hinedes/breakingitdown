@@ -149,3 +149,41 @@ it shows the protocol operating end to end on a deliberately calibrated task
 that the model can realistically finish, ending in an external evaluator
 PASS. It is not compared against Direct and is not used to claim capability
 improvement. The negative ARGUS pair remains the evaluation result.
+
+### Eval 3 — Calibrated mechanism demonstration (2026-08-02, v0.2.0-rc1)
+
+**Label:** mechanism demonstration. Not a benchmark, not compared with
+Direct, not a capability claim. The negative ARGUS pair (Eval 1/2) remains
+the evaluation result.
+
+**Task (calibrated, externally verified):** create `stats_tools.py` in the
+workspace root with `mean`, `median`, `stddev` (population) using only the
+Python standard library. Task text sha `4621b2f0…`; evaluator sha
+`7926d08c…` (deterministic: imports + exact values for `[1,2,3,4]`).
+
+**Result: PASS (4/4 evaluator checks), BID status `done`.**
+
+Full loop operated live with the local 4B model:
+
+```
+Manager PLAN (5 tasks)
+→ T1..T4 Workers → TaskReview ACCEPT → provisional ([-]) records
+→ batch boundary → Manager reconciliation → CONTINUE, ratified T1..T4
+→ T5 (verification task) → provisional → Manager COMPLETE
+→ Task completed!, all [x], evaluator PASS
+```
+
+VC log shows all 5 `provisional:` records paired with `ratified:` records;
+Manager decisions recorded (`CONTINUE done=[1,2,3,4]`, `COMPLETE done=[5]`).
+One live REWORK was correctly handled: T5 was rejected once for "no file
+changes" (a verification-only task), corrected, accepted.
+
+**Honest observations from calibration attempts (not part of the pass
+rule):** the model left stray exploratory files (`mean.py`, `functions.py`)
+in earlier attempts, and a "verify by running a command" final task was
+rejected by the Reviewer because it produced no file changes. These are
+model-hygiene and task-design observations, recorded for calibration, not
+hidden.
+
+**Evidence:** `evidence/demo-calibrated/final/` (123 files, hashed), outcome
+sha `ab79b7a1…`.
