@@ -3127,3 +3127,67 @@ class TestProvisionalReconciliation:
             assert "[x] T1" in todo_text
             assert "[-]" not in todo_text
             assert open(os.path.join(tmp, "notes.txt")).read() == "final"
+
+
+class TestReworkLimit:
+    """Harness-owned bound on Task Reviewer REWORK retries per task."""
+
+    def test_rework_limit_terminates_after_nth_rework(self):
+        """After max_task_reworks REWORKs on the same task, BID stops with error."""
+        class ReworkLoopBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.worker_calls = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T1:"):
+                    self.worker_calls += 1
+                    return text_response("Done")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("REWORK\nReason: Still inadequate.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Attempt"))
+            result = harness.run_project(config(tmp, max_task_reworks=3), backend=ReworkLoopBackend())
+            assert result["status"] == "error"
+            assert "exceeded Task Reviewer REWORK limit" in result["reason"]
+            assert result["detail"]["rework_count"] == 4
+            assert result["detail"]["rework_limit"] == 3
+            assert result["detail"]["last_rejected_candidate"] is not None
+            assert result["detail"]["last_reason"] == "Still inadequate."
+            log_text = open(os.path.join(tmp, ".bid", "log.md")).read()
+            assert "rework_limit: task=T1 count=4 limit=3" in log_text
+            todo_text = open(os.path.join(tmp, "docs", "todo.md")).read()
+            assert "[x]" not in todo_text
+            assert "[-]" not in todo_text
+
+    def test_rework_below_limit_continues_and_completes(self):
+        """REWORKs up to the limit do not abort; a later ACCEPT proceeds."""
+        class ReworkThenAccept(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.worker_calls = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T1:"):
+                    self.worker_calls += 1
+                    return text_response("WRITE notes.txt\nok\nEND WRITE\nDone")
+                if prompt.startswith("# Review Assignment"):
+                    if self.worker_calls <= 2:
+                        return text_response("REWORK\nReason: Improve it.")
+                    return text_response("ACCEPT\nReason: Fixed.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Attempt"))
+            result = harness.run_project(config(tmp, max_task_reworks=3), backend=ReworkThenAccept())
+            assert result["status"] == "done"
+            todo_text = open(os.path.join(tmp, "docs", "todo.md")).read()
+            assert "[x] T1" in todo_text

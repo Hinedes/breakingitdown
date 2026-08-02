@@ -38,6 +38,7 @@ bid.py run
 | `BID_RUN_TIMEOUT` | `60` | Per-`RUN` command timeout |
 | `BID_REPEAT_ACTION_LIMIT` | `5` | Repeat stall threshold |
 | `BID_PROVISIONAL_BATCH` | `4` | Provisional submissions before Manager reconciliation |
+| `BID_MAX_TASK_REWORKS` | `3` | Task Reviewer REWORKs per task before BID stops with a terminal error |
 
 ## Worker Protocol
 

@@ -26,6 +26,7 @@ def get_config():
         "max_searches_per_worker": int(os.environ.get("BID_MAX_SEARCHES", "10")),
         "search_endpoint": os.environ.get("BID_SEARCH_ENDPOINT", ""),
         "provisional_batch": int(os.environ.get("BID_PROVISIONAL_BATCH", "4")),
+        "max_task_reworks": int(os.environ.get("BID_MAX_TASK_REWORKS", "3")),
     }
 
 
@@ -673,6 +674,7 @@ def _run_project_inner(config, backend=None):
     backend = backend or create_backend(config)
     reviewer_feedback = {}
     respawn_counts = {}
+    rework_counts = {}
     current_task_number = None
     current_task_base_state = None
     obs = get_log(workspace)
@@ -756,10 +758,41 @@ def _run_project_inner(config, backend=None):
             return {"status": "error", "reason": review.get("reason", "review error"), "detail": review}
 
         if review.get("verdict") == "REWORK":
+            rework_counts[number] = rework_counts.get(number, 0) + 1
             reviewer_feedback[number] = " ".join(review.get("reason", "").split()).strip()
-            print(f"Worker {number} rework: {reviewer_feedback[number]}")
+            print(f"Worker {number} rework {rework_counts[number]}: {reviewer_feedback[number]}")
             obs.event("rework", task=f"T{number}", base_state=current_task_base_state,
-                      candidate_state=result.get("state"))
+                      candidate_state=result.get("state"), count=rework_counts[number])
+
+            max_reworks = config.get("max_task_reworks", 3)
+            if rework_counts[number] > max_reworks:
+                # Harness-owned bound on Reviewer-triggered retries. The last
+                # rejected candidate remains preserved as a VC state; record
+                # the reason and counts, then stop.
+                vc_system.append_log(
+                    f"rework_limit: task=T{number} count={rework_counts[number]} "
+                    f"limit={max_reworks} candidate={result['state']} "
+                    f"reason={reviewer_feedback[number]}"
+                )
+                obs.event("rework_limit", task=f"T{number}",
+                          count=rework_counts[number], limit=max_reworks,
+                          candidate_state=result.get("state"))
+                return {
+                    "status": "error",
+                    "reason": (
+                        f"T{number} exceeded Task Reviewer REWORK limit "
+                        f"({rework_counts[number]} > {max_reworks}); "
+                        f"last reason: {reviewer_feedback[number]}"
+                    ),
+                    "detail": {
+                        "task": number,
+                        "rework_count": rework_counts[number],
+                        "rework_limit": max_reworks,
+                        "last_rejected_candidate": result.get("state"),
+                        "last_reason": reviewer_feedback[number],
+                    },
+                }
+
             if current_task_base_state:
                 vc_system.restore_workspace(current_task_base_state, preserve_todo=True)
                 vc_system.set_current(current_task_base_state)
@@ -771,6 +804,7 @@ def _run_project_inner(config, backend=None):
 
         if review.get("verdict") == "ACCEPT":
             reviewer_feedback.pop(number, None)
+            rework_counts.pop(number, None)
             obs.event("accept", task=f"T{number}", candidate_state=result.get("state"))
             # Record-first admission: the provisional record is appended to the
             # append-only VC log BEFORE the TODO marker is flipped to `[-]`.
