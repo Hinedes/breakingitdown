@@ -1,8 +1,9 @@
 # BID — Break It Down
 
 A local-first agent harness that breaks a task into a Markdown checklist,
-assigns each step to a disposable Worker, and validates results through
-a Task Reviewer before continuing.
+assigns each step to a disposable Worker, validates results through
+a Task Reviewer, and lets a returning Manager reconcile provisional
+submissions into permanently DONE work.
 
 ## Installation
 
@@ -36,6 +37,7 @@ bid.py run
 | `BID_INACTIVITY_TIMEOUT` | `600` | Inactivity boundary |
 | `BID_RUN_TIMEOUT` | `60` | Per-`RUN` command timeout |
 | `BID_REPEAT_ACTION_LIMIT` | `5` | Repeat stall threshold |
+| `BID_PROVISIONAL_BATCH` | `4` | Provisional submissions before Manager reconciliation |
 
 ## Worker Protocol
 
@@ -61,15 +63,36 @@ READ, preserving indentation.
 
 ## Architecture
 
+TODO states:
+
+- `[ ]` — unchecked, executable
+- `[-]` — provisional (Task Reviewer admitted the candidate; awaiting Manager)
+- `[x]` — DONE (Manager-ratified; only reconciliation may produce this)
+
 1. **Manager** reads the task and produces a sequential checklist in
    `docs/todo.md`.
 2. **Worker** processes one unchecked task using READ/RUN/WRITE/REPLACE/Done.
 3. **Task Reviewer** judges the candidate against the fixed-base→candidate diff.
-4. If rejected, the workspace rolls back to the task's fixed base.
-5. If accepted, the checklist advances to the next task.
-6. **Completion Reviewer** decides whether the final workspace satisfies the
-   original request. It may append additional tasks when it judges the
-   checklist incomplete.
+   If rejected, the workspace rolls back to the task's fixed base. If accepted,
+   the candidate becomes **provisional** (`[-]`) — never DONE.
+4. When the provisional count reaches `BID_PROVISIONAL_BATCH` (default 4) or no
+   unchecked task remains, **Manager reconciliation** reviews every provisional
+   submission (description, fixed base, candidate, diff, RUN evidence, ACCEPT
+   verdict) and returns one batch decision: `# Done`, `# Rework` (with reason),
+   `# Add`, `# Replace Remaining Plan` (unchecked tasks only), and a mandatory
+   `# Project` (`CONTINUE`/`COMPLETE`).
+5. The harness validates the complete decision before any mutation, then
+   applies it: ratification (`[x]`), suffix invalidation on REWORK (restore to
+   the task's fixed base, uncheck the suffix, invalidate its records), plan
+   additions/replacement, and termination.
+6. A Worker submission remains provisional until a returning Manager
+   reconciliation converts it to permanently DONE work. Only the Manager
+   declares `COMPLETE`.
+
+Provisional identity is durable across restarts: the append-only VC log
+records `provisional:`, `ratified:`, and `invalidate:` entries per task; the
+TODO marker is repaired from the log on admission interruption, and
+inconsistent TODO/log state fails closed.
 
 Workspace snapshots are preserved at every candidate submission for forensic
 replay. An append-only JSONL event log captures timing, usage, and transitions.
@@ -90,8 +113,10 @@ replay. An append-only JSONL event log captures timing, usage, and transitions.
 - **No automatic harness-owned verification pipeline.** Workers may run tests
   through RUN commands, but the harness does not automatically execute or
   validate them.
-- **Completion Review may extend the checklist** when it judges the original
-  request incomplete, potentially adding tasks beyond the initial plan.
+- **Manager reconciliation may extend the checklist** when it judges the
+  original request incomplete, potentially adding tasks beyond the initial
+  plan; a REWORK invalidates the reworked task and every later provisional
+  task, restoring the workspace to the reworked task's fixed base.
 - **Validated with the automated test suite, a deterministic CLI smoke
   workflow, and one substantial but incomplete ARGUS evaluation.** General
   performance across unrelated repositories remains unproven.

@@ -1250,6 +1250,169 @@ class TaskReviewAdapter:
 ArtifactReviewAdapter = TaskReviewAdapter
 
 
+RECONCILIATION_SYSTEM = """You are BID Manager performing project reconciliation.
+
+Provisional Worker submissions await your decision. Return ONE batch decision
+using only these sections, in any order, ending with the mandatory project section:
+
+# Done
+- T1
+- T2
+
+# Rework
+- T3 — reason for rework
+
+# Add
+- new task description
+
+# Replace Remaining Plan
+- [ ] T1 — new description
+- [ ] T2 — new description
+
+# Project
+CONTINUE
+
+Rules:
+- Without # Rework, every active provisional task must appear in # Done.
+- With # Rework Tn, every earlier active provisional task must appear in
+  # Done; Tn and every later provisional task are automatically invalidated,
+  and no task at or after Tn may appear in # Done.
+- # Rework contains exactly one task with a non-empty reason.
+- # Done, # Rework and # Add may coexist.
+- # Replace Remaining Plan may coexist with # Done but not with # Rework or
+  # Add; it changes only currently unchecked future tasks, never provisional
+  or DONE tasks.
+- # Project must be exactly CONTINUE or COMPLETE.
+- CONTINUE is valid only when unchecked work remains after application.
+- COMPLETE is valid only when every task is DONE after application.
+
+Return only the sections. No commentary, analysis, or code fences."""
+
+
+class ManagerReconcileAdapter:
+    """Manager reconciles the provisional batch into its final disposition."""
+
+    RETRY_LIMIT = 3
+
+    def __init__(self, config, task_md, todo_text, evidence):
+        self.config = config
+        self.workspace = config["workspace"]
+        self.task_md = task_md
+        self.todo_text = todo_text
+        self.evidence = evidence
+        self.obs = get_log(self.workspace)
+        self._last_raw = ""
+
+    def run_once(self, backend, correction=None):
+        """One model call + structural parse. Returns (decision, error)."""
+        messages = [
+            {"role": "system", "content": RECONCILIATION_SYSTEM},
+            {"role": "user", "content": self._build_prompt()},
+        ]
+        if correction:
+            messages.append({"role": "assistant", "content": self._last_raw or "[no output]"})
+            messages.append({"role": "user", "content": correction})
+
+        req_tok = self.obs.start("model_request", role="manager_reconcile", retry=0)
+        try:
+            response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
+        except Exception as exc:
+            self.obs.end(req_tok, error=str(exc))
+            return None, f"model request failed: {exc}"
+        usage = response.get("usage") or {}
+        self.obs.end(
+            req_tok,
+            finish_reason=response.get("finish_reason"),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            total_tokens=usage.get("total_tokens"),
+        )
+
+        content = (response.get("content") or "").strip()
+        self._last_raw = content
+        content = _clean_fences(content)
+        return self._parse(content)
+
+    def _build_prompt(self):
+        parts = [
+            "# Manager Reconciliation\n\n",
+            f"Original request:\n{self.task_md}\n\n",
+            f"Current checklist:\n{self.todo_text}\n\n",
+            "Provisional submissions:\n\n",
+            f"{self.evidence}\n\n" if self.evidence else "(no provisional submissions)\n\n",
+            "Return your reconciliation decision.",
+        ]
+        return "".join(parts)
+
+    @staticmethod
+    def _parse(content):
+        if not content or not content.strip():
+            return None, "no output"
+        decision = {"done": [], "rework": None, "add": [], "replace": None, "project": None}
+        current = None
+        seen_project = False
+        for line in content.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("# "):
+                header = stripped[2:].strip()
+                if seen_project:
+                    return None, f"unrecognized text after # Project: {stripped}"
+                if header == "Done":
+                    current = "done"
+                elif header == "Rework":
+                    current = "rework"
+                elif header == "Add":
+                    current = "add"
+                elif header == "Replace Remaining Plan":
+                    current = "replace"
+                elif header == "Project":
+                    current = "project"
+                    seen_project = True
+                else:
+                    return None, f"unrecognized section: {stripped}"
+                continue
+            if current is None:
+                return None, f"text outside a section: {stripped}"
+            if current == "project":
+                if stripped not in ("CONTINUE", "COMPLETE"):
+                    return None, f"invalid # Project value: {stripped}"
+                decision["project"] = stripped
+                continue
+            if not stripped.startswith("- "):
+                return None, f"malformed item: {stripped}"
+            item = stripped[2:].strip()
+            if current == "done":
+                match = re.fullmatch(r"(T\d+)\b\s*(.*)", item)
+                if not match:
+                    return None, f"malformed # Done item: {stripped}"
+                decision["done"].append(int(match.group(1)[1:]))
+            elif current == "rework":
+                match = re.fullmatch(r"(T\d+)\b\s*[—–-]\s*(.+)", item)
+                if not match or not match.group(2).strip():
+                    return None, f"malformed # Rework item (need reason): {stripped}"
+                if decision["rework"] is not None:
+                    return None, "# Rework must contain exactly one task"
+                decision["rework"] = {
+                    "task": int(match.group(1)[1:]),
+                    "reason": match.group(2).strip(),
+                }
+            elif current == "add":
+                decision["add"].append(item)
+            elif current == "replace":
+                match = re.fullmatch(r"\[[ x-]\]\s*(?:T\d+\b\s*[—–-]\s*)?(.*)", item)
+                description = match.group(1).strip() if match else item
+                if not description:
+                    return None, f"malformed # Replace Remaining Plan item: {stripped}"
+                if decision["replace"] is None:
+                    decision["replace"] = []
+                decision["replace"].append(description)
+        if decision["project"] is None:
+            return None, "missing # Project section"
+        return decision, None
+
+
 class CompletionReviewAdapter:
     RETRY_LIMIT = 3
 

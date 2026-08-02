@@ -35,6 +35,26 @@ def todo_item(number, desc, checked=False):
     return f"- [{mark}] T{number} — {desc}\n"
 
 
+def manager_response(done=None, rework=None, add=None, replace=None, project="COMPLETE"):
+    """Build a Manager reconciliation response."""
+    lines = []
+    if done:
+        lines.append("# Done")
+        lines.extend(f"- T{n}" for n in done)
+    if rework:
+        lines.append("# Rework")
+        lines.append(f"- T{rework[0]} — {rework[1]}")
+    if add:
+        lines.append("# Add")
+        lines.extend(f"- {item}" for item in add)
+    if replace:
+        lines.append("# Replace Remaining Plan")
+        lines.extend(f"- [ ] {item}" for item in replace)
+    lines.append("# Project")
+    lines.append(project)
+    return text_response("\n".join(lines))
+
+
 PRESERVED_MANAGER_RESPONSES = (
     """- [ ] Implement fail-closed behavior in `solve_point` when no physically valid beam-constrained solution exists.
 - [ ] Update affected callers to handle the new failure state gracefully.
@@ -500,23 +520,29 @@ class TestReviewerContracts:
             assert "numbered checklist" not in backend.call_history[0]["messages"][0]["content"]
             assert backend.call_history[1]["messages"][-1]["content"] == correction
 
-    def test_completion_review_retries_with_completion_contract(self):
-        correction = "No valid completion verdict was found. Return only COMPLETE with Reason:, or MISSING followed by one or more missing-deliverable bullets."
+    def test_manager_reconcile_retries_with_reconciliation_contract(self):
         backend = model.MockBackend([
-            text_response("Analysis: the candidate is ready."),
-            text_response("COMPLETE\nReason: The request is satisfied."),
+            text_response("Analysis: everything looks fine."),
+            manager_response(done=[1]),
         ])
 
         with tempfile.TemporaryDirectory() as tmp:
-            prepare_workspace(tmp, todo_item(1, "Review the candidate", checked=True))
+            prepare_workspace(tmp, todo_item(1, "Review the candidate"))
+            vc.VersionControl(tmp).save_state("prep", "seed")
             with open(os.path.join(tmp, "docs", "manager.md"), "w", encoding="utf-8") as file:
                 file.write("Create only a numbered checklist.")
 
-            result = adapter.CompletionReviewAdapter(config(tmp)).run(backend)
-
-            assert result["verdict"] == "COMPLETE"
+            adapter_inst = adapter.ManagerReconcileAdapter(
+                config(tmp), "# Task\n\nDo the thing.\n",
+                todo_item(1, "Review the candidate"), "(evidence)",
+            )
+            decision, _ = adapter_inst.run_once(backend)
+            assert decision is None
+            decision, error = adapter_inst.run_once(backend, correction="fix")
+            assert decision == {"done": [1], "rework": None, "add": [], "replace": None, "project": "COMPLETE"}
+            assert error is None
             assert "numbered checklist" not in backend.call_history[0]["messages"][0]["content"]
-            assert backend.call_history[1]["messages"][-1]["content"] == correction
+            assert "fix" in backend.call_history[1]["messages"][-1]["content"]
 
 
 class TestWorkerSession:
@@ -699,8 +725,8 @@ class TestWorkerSession:
                 if prompt.startswith("# Review Assignment"):
                     return text_response("ACCEPT\nReason: Fine.")
 
-                if prompt.startswith("# Completion Review"):
-                    return text_response("COMPLETE\nReason: Done.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
 
                 raise AssertionError(f"unexpected prompt: {prompt[:80]}")
 
@@ -735,7 +761,7 @@ class TestRunProject:
             text_response("ACCEPT\nReason: First task complete."),
             text_response("Done"),
             text_response("ACCEPT\nReason: Second task complete."),
-            text_response("COMPLETE\nReason: All tasks complete."),
+            manager_response(done=[1, 2]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             cfg = config(tmp)
@@ -759,7 +785,7 @@ class TestRunProject:
             completion_prompts = [
                 request["messages"][1]["content"]
                 for request in backend.call_history
-                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Completion Review")
+                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Manager Reconciliation")
             ]
             assert len(completion_prompts) == 1
             with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
@@ -774,7 +800,7 @@ class TestRunProject:
             text_response("REWORK\nReason: Draft too weak."),
             text_response("WRITE notes.txt\nfinal\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ]
         backend = model.MockBackend(responses)
         with tempfile.TemporaryDirectory() as tmp:
@@ -808,7 +834,7 @@ class TestResumeBehavior:
         resume_backend = model.MockBackend([
             text_response("WRITE notes.txt\nfinal\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -856,8 +882,8 @@ class TestResumeBehavior:
                 prompt = messages[1]["content"] if len(messages) > 1 else ""
                 if prompt.startswith("# Review Assignment"):
                     return text_response("ACCEPT\nReason: Fixed.")
-                if prompt.startswith("# Completion Review"):
-                    return text_response("COMPLETE\nReason: Done.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
 
                 if self.prev_len is None:
                     self.session = 1
@@ -921,13 +947,13 @@ class TestResumeBehavior:
             completion_prompts = [
                 request["messages"][1]["content"]
                 for request in backend.call_history
-                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Completion Review")
+                if len(request["messages"]) > 1 and request["messages"][1]["content"].startswith("# Manager Reconciliation")
             ]
             assert len(completion_prompts) == 1
             assert vc.VersionControl(tmp).get_current() == "s3"
 
     def test_resume_all_checked_runs_final_review(self):
-        backend = model.MockBackend([text_response("COMPLETE\nReason: Done.")])
+        backend = model.MockBackend([manager_response(project="COMPLETE")])
 
         with tempfile.TemporaryDirectory() as tmp:
             prepare_workspace(tmp, todo_item(1, "First", checked=True) + todo_item(2, "Second", checked=True))
@@ -935,7 +961,7 @@ class TestResumeBehavior:
 
             result = harness.run_project(config(tmp), backend=backend)
             assert result["status"] == "done"
-            assert backend.call_history[0]["messages"][1]["content"].startswith("# Completion Review")
+            assert backend.call_history[0]["messages"][1]["content"].startswith("# Manager Reconciliation")
 
     def test_completion_review_appends_plain_tasks(self):
         class CrashAfterResponses(model.MockBackend):
@@ -960,19 +986,19 @@ class TestResumeBehavior:
         first_backend = CrashAfterResponses([
             text_response("WRITE docs/work/T1.md\none\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fine."),
-            text_response("MISSING\n- Follow-up deliverable"),
+            manager_response(done=[1], add=["Follow-up deliverable"], project="CONTINUE"),
         ], crash_on=3)
         resume_backend = model.MockBackend([
             text_response("WRITE docs/work/T2.md\ntwo\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fine."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[2]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             cfg = config(tmp)
             assert harness.init_project("Build one file", cfg, backend=model.MockBackend([text_response(todo_item(1, "First"))]))["status"] == "success"
             first = harness.run_project(cfg, backend=first_backend)
             assert first["status"] == "error"
-            assert vc.VersionControl(tmp).get_current() == "s2"
+            assert vc.VersionControl(tmp).get_current() == "s3"
             with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
                 todo_text = file.read()
             assert "[x] T1" in todo_text
@@ -990,7 +1016,7 @@ class TestResumeBehavior:
                 todo_text = file.read()
             assert "[x] T1" in todo_text
             assert "[x] T2" in todo_text
-            assert vc.VersionControl(tmp).get_current() == "s3"
+            assert vc.VersionControl(tmp).get_current() == "s4"
 
     def test_worker_write_run_and_submit_candidate(self):
         backend = model.MockBackend([
@@ -998,7 +1024,7 @@ class TestResumeBehavior:
             text_response("RUN python -B -m pytest -q"),
             text_response("Done"),
             text_response("ACCEPT\nReason: File and test match."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1058,7 +1084,7 @@ class TestResumeBehavior:
             text_response("RUN python -B -m pytest -q"),
             text_response("WRITE test.txt\nverified\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1104,8 +1130,8 @@ class TestResumeBehavior:
                     assert "(no file changes)" in prompt
                     assert "RUN evidence:" not in prompt
                     return text_response("REWORK\nReason: No code changes were made.")
-                if prompt.startswith("# Completion Review"):
-                    return text_response("COMPLETE\nReason: Done.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
                 raise AssertionError(f"unexpected prompt: {prompt[:80]}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1145,8 +1171,8 @@ class TestResumeBehavior:
                 if prompt.startswith("# Review Assignment"):
                     assert "RUN evidence:" not in prompt
                     return text_response("REWORK\nReason: Need evidence.")
-                if prompt.startswith("# Completion Review"):
-                    return text_response("COMPLETE\nReason: Done.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
                 raise AssertionError(f"unexpected prompt: {prompt[:80]}")
 
         class SecondBackend(model.MockBackend):
@@ -1164,8 +1190,8 @@ class TestResumeBehavior:
                     return text_response("Done")
                 if prompt.startswith("# Review Assignment"):
                     return text_response("ACCEPT\nReason: Fixed.")
-                if prompt.startswith("# Completion Review"):
-                    return text_response("COMPLETE\nReason: Done.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
                 raise AssertionError(f"unexpected prompt: {prompt[:80]}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1209,7 +1235,7 @@ class TestResumeBehavior:
             text_response("WRITE README.md << 'EOF'\nboom\nEND WRITE"),
             text_response("WRITE notes.txt\nok\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fine."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1235,7 +1261,7 @@ class TestResumeBehavior:
             text_response("RUN rm -f docs/todo.md\nDone"),
             text_response("WRITE notes.txt\nok\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -1271,7 +1297,7 @@ class TestResumeBehavior:
             text_response("RUN explode"),
             text_response("WRITE notes.txt\nok\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
 
         original_run = adapter.WorkerAdapter._run_command
@@ -1308,7 +1334,7 @@ class TestReworkFixedBase:
             text_response("REWORK\nReason: Wrong content."),
             text_response("WRITE notes.txt\nsecond attempt\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
@@ -1335,7 +1361,7 @@ class TestReworkFixedBase:
             text_response("REWORK\nReason: Shadow file detected."),
             text_response("WRITE notes.txt\nclean\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
@@ -1364,7 +1390,7 @@ class TestReworkFixedBase:
             text_response("REWORK\nReason: Wrong content."),
             text_response("WRITE notes.txt\ngood\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
@@ -1407,8 +1433,8 @@ class TestReworkFixedBase:
                     if self.review_count == 1:
                         return text_response("REWORK\nReason: Wrong content.")
                     return text_response("ACCEPT\nReason: Fixed.")
-                if prompt.startswith("# Completion Review"):
-                    return text_response("COMPLETE\nReason: Done.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
                 raise AssertionError(f"unexpected: {prompt[:80]}")
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
@@ -1434,7 +1460,7 @@ class TestReworkFixedBase:
             text_response("REWORK\nReason: v2 bad."),
             text_response("WRITE notes.txt\nv3\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: v3 good."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
@@ -1461,7 +1487,7 @@ class TestReworkFixedBase:
             text_response("ACCEPT\nReason: Good."),
             text_response("WRITE b.txt\nB-content\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Good."),
-            text_response("COMPLETE\nReason: All done."),
+            manager_response(done=[1, 2]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
@@ -1489,7 +1515,7 @@ class TestReworkFixedBase:
             text_response("REWORK\nReason: Low quality."),
             text_response("WRITE notes.txt\naccepted draft\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Good."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
@@ -1527,7 +1553,7 @@ class TestReworkFixedBase:
             text_response("REWORK\nReason: v2 bad."),
             text_response("WRITE notes.txt\nv3\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: v3 good."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
@@ -1676,8 +1702,8 @@ class TestContextBoundary:
                         if self.worker_call == 1:
                             return text_response("REWORK\nReason: Bad result.")
                         return text_response("ACCEPT\nReason: Fixed.")
-                    if prompt.startswith("# Completion Review"):
-                        return text_response("COMPLETE\nReason: Done.")
+                    if prompt.startswith("# Manager Reconciliation"):
+                        return manager_response(done=[1])
                     raise AssertionError(f"unexpected: {prompt[:80]}")
 
             result = harness.run_project(config(tmp), backend=FeedbackCheckBackend())
@@ -1743,12 +1769,10 @@ class TestContextBoundary:
                         if self.worker_call == 1:
                             return text_response("REWORK\nReason: Wrong content.")
                         return text_response("ACCEPT\nReason: Fixed.")
-                    if prompt.startswith("# Completion Review"):
-                        assert "RUN evidence:" not in prompt
-                        assert "REWORK" not in prompt
+                    if prompt.startswith("# Manager Reconciliation"):
                         assert "REJECTED_HISTORY" not in prompt
-                        assert "[x] T1" in prompt
-                        return text_response("COMPLETE\nReason: All done.")
+                        assert "[-] T1" in prompt
+                        return manager_response(done=[1])
                     raise AssertionError(f"unexpected: {prompt[:80]}")
 
             result = harness.run_project(config(tmp), backend=CompletionOnlyBackend())
@@ -1762,7 +1786,7 @@ class TestContextBoundary:
             text_response("REWORK\nReason: Tests needed."),
             text_response("WRITE test.txt\npass\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
@@ -2034,7 +2058,7 @@ class TestRespawnRollback:
             text_response("REWORK\nReason: Draft too weak."),
             text_response("WRITE notes.txt\nfinal\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             cfg = config(tmp)
@@ -2315,7 +2339,7 @@ class TestTimingObservability:
             text_response("REWORK\nReason: Draft too weak."),
             text_response("WRITE notes.txt\nfinal\nEND WRITE\nDone"),
             text_response("ACCEPT\nReason: Fixed."),
-            text_response("COMPLETE\nReason: Done."),
+            manager_response(done=[1]),
         ])
         with tempfile.TemporaryDirectory() as tmp:
             cfg = config(tmp)
@@ -2367,8 +2391,8 @@ class TestFenceProtocol:
                 if prompt.startswith("# Review Assignment"):
                     assert "(no file changes)" in prompt, "fence violation + Done must produce empty diff"
                     return text_response("REWORK\nReason: No changes.")
-                if prompt.startswith("# Completion Review"):
-                    return text_response("COMPLETE\nReason: Done.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
                 raise AssertionError(f"unexpected: {prompt[:80]}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2493,8 +2517,8 @@ class TestReplaceProtocol:
                 if prompt.startswith("# Review Assignment"):
                     assert "(no file changes)" in prompt, "failed REPLACE + Done must produce empty diff"
                     return text_response("REWORK\nReason: No changes.")
-                if prompt.startswith("# Completion Review"):
-                    return text_response("COMPLETE\nReason: Done.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
                 raise AssertionError(f"unexpected: {prompt[:80]}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2621,8 +2645,8 @@ class TestReplaceProtocol:
                 if prompt.startswith("# Review Assignment"):
                     assert "CHGD" in prompt, "diff should show replacement"
                     return text_response("ACCEPT\nReason: Good.")
-                if prompt.startswith("# Completion Review"):
-                    return text_response("COMPLETE\nReason: Done.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(done=[1])
                 raise AssertionError(f"unexpected: {prompt[:80]}")
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2760,3 +2784,346 @@ class TestReviewDiffCoverage:
                 assert f"### modified {rel}" in prompt
             assert "return None" in prompt
             assert "test_fail_closed" in prompt
+
+
+class TestProvisionalReconciliation:
+    """Manager-owned reconciliation: ACCEPT creates [-], only Manager makes [x]."""
+
+    def test_reviewer_accept_produces_provisional_never_done(self):
+        backend = model.MockBackend([
+            text_response("Done"),
+            text_response("ACCEPT\nReason: Fine."),
+            manager_response(done=[1]),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "First"))
+            result = harness.run_project(config(tmp), backend=backend)
+            assert result["status"] == "done"
+            with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
+                todo_text = file.read()
+            assert "[-] T1" not in todo_text
+            assert "[x] T1" in todo_text
+            assert "provisional: task=T1" in open(os.path.join(tmp, ".bid", "log.md")).read()
+
+    def test_restart_reconstructs_provisional_identity_from_log(self):
+        init_backend = model.MockBackend([text_response(todo_item(1, "First"))])
+        first_backend = model.MockBackend([
+            text_response("Done"),
+            text_response("ACCEPT\nReason: Fine."),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            assert harness.init_project("T", cfg, backend=init_backend)["status"] == "success"
+            result = harness.run_project(cfg, backend=first_backend)
+            assert result["status"] == "error"  # crash before reconcile
+            with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
+                assert "[-] T1" in file.read()
+            active = harness._provisional_records(vc.VersionControl(tmp))
+            assert 1 in active
+            assert active[1]["base"] == "s1"
+            assert active[1]["candidate"] == "s2"
+
+    def test_interrupted_record_first_admission_repairs_marker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "First"))
+            vc_system = vc.VersionControl(tmp)
+            with open(os.path.join(tmp, "notes.txt"), "w", encoding="utf-8") as file:
+                file.write("candidate")
+            candidate = vc_system.save_state("Worker 1", "T1 candidate base=s0")
+            vc_system.append_log(f"provisional: task=T1 base=s0 candidate={candidate} review=ACCEPT")
+            active, todo_text, err = harness._resolve_provisional_state(vc_system, todo_item(1, "First"))
+            assert err is None
+            assert "[-] T1" in todo_text
+            assert 1 in active
+            assert active[1]["candidate"] == candidate
+
+    def test_provisional_marker_without_record_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, "- [-] T1 — First\n")
+            active, _, err = harness._resolve_provisional_state(vc.VersionControl(tmp), "- [-] T1 — First\n")
+            assert active is None
+            assert "without a valid provisional record" in err
+
+    def test_provisional_record_with_missing_snapshot_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "First"))
+            vc_system = vc.VersionControl(tmp)
+            vc_system.append_log("provisional: task=T1 base=s9 candidate=s8 review=ACCEPT")
+            active, _, err = harness._resolve_provisional_state(vc_system, "- [-] T1 — First\n")
+            assert active is None
+            assert "missing" in err
+
+    def test_manager_done_checks_item(self):
+        backend = model.MockBackend([
+            text_response("Done"),
+            text_response("ACCEPT\nReason: Fine."),
+            manager_response(done=[1]),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "First"))
+            result = harness.run_project(config(tmp), backend=backend)
+            assert result["status"] == "done"
+            with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
+                assert "[x] T1" in file.read()
+
+    def test_manager_must_resolve_complete_batch(self):
+        """Manager omitting a provisional task from # Done is rejected."""
+        class PartialBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T"):
+                    self.step += 1
+                    return text_response("Done")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fine.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    if self.step == 2:  # first reconcile: omit T2
+                        return manager_response(done=[1])
+                    return manager_response(done=[1, 2])
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "First") + todo_item(2, "Second"))
+            result = harness.run_project(config(tmp), backend=PartialBackend())
+            assert result["status"] == "error"
+            assert "every active provisional task must appear in # Done" in result["reason"]
+
+    def test_done_prefix_plus_rework_invalidates_suffix(self):
+        """DONE T1 + REWORK T2 with T3 provisional → T1 [x], T2/T3 [ ]."""
+        class ReworkBatchBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T"):
+                    self.step += 1
+                    return text_response("WRITE f.txt\nx\nEND WRITE\nDone")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fine.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    if self.step == 3:
+                        return manager_response(done=[1], rework=(2, "Bad T2."), project="CONTINUE")
+                    return manager_response(done=[2, 3])
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "A") + todo_item(2, "B") + todo_item(3, "C"))
+            result = harness.run_project(config(tmp), backend=ReworkBatchBackend())
+            assert result["status"] == "done"
+            with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
+                todo_text = file.read()
+            assert "[x] T1" in todo_text
+            assert "[x] T2" in todo_text
+            assert "[x] T3" in todo_text
+            log_text = open(os.path.join(tmp, ".bid", "log.md")).read()
+            assert "invalidate: task=T2" in log_text
+            assert "invalidate: task=T3" in log_text
+            assert "ratified: task=T1" in log_text
+
+    def test_restored_workspace_preserves_ratified_prefix(self):
+        class PrefixBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T"):
+                    self.step += 1
+                    if self.step == 1:
+                        return text_response("WRITE a.txt\nKEEP_ME\nEND WRITE\nDone")
+                    return text_response("WRITE b.txt\ndiscard\nEND WRITE\nDone")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fine.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    if self.step == 2:
+                        return manager_response(done=[1], rework=(2, "Bad."), project="CONTINUE")
+                    return manager_response(done=[2])
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "A") + todo_item(2, "B"))
+            result = harness.run_project(config(tmp), backend=PrefixBackend())
+            assert result["status"] == "done"
+            with open(os.path.join(tmp, "a.txt"), encoding="utf-8") as file:
+                assert file.read() == "KEEP_ME"
+            # T2 re-ran after rollback and re-wrote b.txt on the preserved base
+            assert open(os.path.join(tmp, "b.txt")).read() == "discard"
+
+    def test_done_inside_invalidated_suffix_rejected_without_mutation(self):
+        class SuffixBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T"):
+                    self.step += 1
+                    return text_response("Done")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fine.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    if self.step == 2:
+                        return manager_response(done=[1, 2], rework=(2, "Bad."), project="CONTINUE")
+                    return manager_response(done=[1, 2])
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "A") + todo_item(2, "B"))
+            result = harness.run_project(config(tmp), backend=SuffixBackend())
+            assert result["status"] == "error"
+            todo_text = open(os.path.join(tmp, "docs", "todo.md")).read()
+            assert "[-] T1" in todo_text  # no ratification happened
+            assert "[x]" not in todo_text
+
+    def test_done_rework_add_continue_in_one_response(self):
+        class CompositeBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T"):
+                    self.step += 1
+                    return text_response("WRITE out.txt\nx\nEND WRITE\nDone")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fine.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    if self.step == 3:
+                        return manager_response(done=[1], rework=(2, "Redo."),
+                                                add=["Extra"], project="CONTINUE")
+                    return manager_response(done=[2, 3, 4])
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "A") + todo_item(2, "B") + todo_item(3, "C"))
+            result = harness.run_project(config(tmp), backend=CompositeBackend())
+            assert result["status"] == "done"
+            todo_text = open(os.path.join(tmp, "docs", "todo.md")).read()
+            assert "[x] T1" in todo_text
+            assert "[x] T4" in todo_text
+            assert "Extra" in todo_text
+
+    def test_replace_remaining_plan_touches_only_unchecked(self):
+        class ReplaceBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T"):
+                    self.step += 1
+                    return text_response("Done")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fine.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    if self.step == 4:
+                        return manager_response(done=[1, 2, 3, 4],
+                                                replace=["New B", "New C"], project="CONTINUE")
+                    return manager_response(done=[5, 6])
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "A") + todo_item(2, "B") + todo_item(3, "C")
+                              + todo_item(4, "D") + todo_item(5, "E"))
+            result = harness.run_project(config(tmp), backend=ReplaceBackend())
+            assert result["status"] == "done"
+            todo_text = open(os.path.join(tmp, "docs", "todo.md")).read()
+            assert "New B" in todo_text
+            assert "New C" in todo_text
+            assert "— E" not in todo_text
+            assert "[x] T1" in todo_text
+            assert "[x] T5" in todo_text
+            assert "[x] T6" in todo_text
+
+    def test_empty_continue_rejected(self):
+        class EmptyContinueBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T"):
+                    self.step += 1
+                    return text_response("Done")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fine.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return manager_response(project="CONTINUE")
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "A"))
+            result = harness.run_project(config(tmp), backend=EmptyContinueBackend())
+            assert result["status"] == "error"
+            todo_text = open(os.path.join(tmp, "docs", "todo.md")).read()
+            assert "[-] T1" in todo_text  # provisional preserved, no Manager mutation
+            assert "[x]" not in todo_text
+
+    def test_complete_rejected_while_work_remains(self):
+        class CompleteEarlyBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T"):
+                    self.step += 1
+                    return text_response("Done")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fine.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    if self.step == 1:
+                        return manager_response(done=[1], add=["Extra"], project="COMPLETE")
+                    return manager_response(done=[1, 2])
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "A") + todo_item(2, "B"))
+            cfg = config(tmp, provisional_batch=1)
+            result = harness.run_project(cfg, backend=CompleteEarlyBackend())
+            assert result["status"] == "error"
+            assert "provisional or unchecked work remains" in result["reason"]
+
+    def test_malformed_manager_output_zero_mutation(self):
+        class MalformedBackend(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.step = 0
+            def run(self, messages, tools, max_tokens=None):
+                self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                prompt = messages[1]["content"] if len(messages) > 1 else ""
+                if prompt.lstrip().startswith("Task T"):
+                    self.step += 1
+                    return text_response("Done")
+                if prompt.startswith("# Review Assignment"):
+                    return text_response("ACCEPT\nReason: Fine.")
+                if prompt.startswith("# Manager Reconciliation"):
+                    return text_response("nonsense here\n# Project\nCOMPLETE")
+                raise AssertionError(f"unexpected: {prompt[:80]}")
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "A"))
+            result = harness.run_project(config(tmp), backend=MalformedBackend())
+            assert result["status"] == "error"
+            todo_text = open(os.path.join(tmp, "docs", "todo.md")).read()
+            assert "[-] T1" in todo_text
+            assert "[x]" not in todo_text
+
+    def test_full_loop_reaches_complete(self):
+        """Worker → ACCEPT(provisional) → Manager DONE → Manager COMPLETE."""
+        backend = model.MockBackend([
+            text_response("WRITE notes.txt\nfinal\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: Good."),
+            manager_response(done=[1]),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Write notes"))
+            result = harness.run_project(config(tmp), backend=backend)
+            assert result["status"] == "done"
+            todo_text = open(os.path.join(tmp, "docs", "todo.md")).read()
+            assert "[x] T1" in todo_text
+            assert "[-]" not in todo_text
+            assert open(os.path.join(tmp, "notes.txt")).read() == "final"
