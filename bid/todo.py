@@ -1,7 +1,9 @@
 import re
 
 
-_TASK_LINE_RE = re.compile(r'^(\s*[-*]\s+\[)([ x])(\]\s+(T\d+)\b\s*(.*))$')
+_TASK_LINE_RE = re.compile(r'^(\s*[-*]\s+\[)([ x-])(\]\s+(T\d+)\b\s*(.*))$')
+
+_MARKER_STATE = {" ": "unchecked", "-": "provisional", "x": "done"}
 
 
 def _norm(text):
@@ -17,10 +19,11 @@ def parse_todo(text):
         if match:
             if current_task:
                 tasks.append(current_task)
-            checked = match.group(2) == 'x'
+            marker = match.group(2)
             task_id = match.group(4)
             current_task = {
-                "checked": checked,
+                "checked": marker == "x",
+                "state": _MARKER_STATE[marker],
                 "id": task_id,
                 "number": int(task_id[1:]),
                 "description": match.group(5).strip().lstrip('—–-').strip(),
@@ -39,22 +42,33 @@ def get_task(tasks, number):
 
 def first_unchecked(tasks):
     for task in tasks:
-        if not task["checked"]:
+        if task["state"] == "unchecked":
             return task
     return None
 
 
 def all_checked(tasks):
-    return bool(tasks) and all(task["checked"] for task in tasks)
+    return bool(tasks) and all(task["state"] == "done" for task in tasks)
 
 
 def set_task_checked(text, task_number, checked=True):
     lines = text.split('\n')
     tag = f'T{task_number}' if task_number else 'TN'
     for index, line in enumerate(lines):
-        match = re.match(r'^(\s*[-*]\s+\[)([ x])(\]\s+' + re.escape(tag) + r'\b.*)$', line)
+        match = re.match(r'^(\s*[-*]\s+\[)([ x-])(\]\s+' + re.escape(tag) + r'\b.*)$', line)
         if match:
             marker = 'x' if checked else ' '
             lines[index] = match.group(1) + marker + match.group(3)
+            break
+    return '\n'.join(lines)
+
+
+def set_task_provisional(text, task_number):
+    lines = text.split('\n')
+    tag = f'T{task_number}' if task_number else 'TN'
+    for index, line in enumerate(lines):
+        match = re.match(r'^(\s*[-*]\s+\[)([ x-])(\]\s+' + re.escape(tag) + r'\b.*)$', line)
+        if match:
+            lines[index] = match.group(1) + '-' + match.group(3)
             break
     return '\n'.join(lines)
