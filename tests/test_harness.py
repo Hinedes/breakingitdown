@@ -1738,8 +1738,8 @@ class TestContextBoundary:
             prompt = seen.get("prompt", "")
             assert "Task:\nChange solver" in prompt, f"prompt should describe T1 task: {prompt[:200]}"
 
-    def test_completion_reviewer_no_attempt_history(self):
-        """Completion Reviewer does not receive Worker attempt transcripts."""
+    def test_manager_reconciliation_no_attempt_history(self):
+        """Manager reconciliation does not receive Worker attempt transcripts."""
         with tempfile.TemporaryDirectory() as tmp:
             os.makedirs(os.path.join(tmp, "docs"))
             with open(os.path.join(tmp, "docs", "todo.md"), "w") as f:

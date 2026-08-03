@@ -3,7 +3,7 @@
 Records UTC timestamps and monotonic durations for model requests, parsed
 commands, RUN executions, Worker sessions, Reviewer verdicts and lifecycle
 transitions. Timing data is written to .bid/events.jsonl and is never
-exposed to Manager, Worker, Task Reviewer or Completion Reviewer prompts.
+exposed to Manager, Worker or Task Reviewer prompts.
 """
 
 import json

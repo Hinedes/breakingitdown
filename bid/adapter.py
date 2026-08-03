@@ -86,21 +86,6 @@ Reason: <reason>
 Return only the verdict and reason. Do not return a checklist, analysis,
 Markdown fences, or additional text."""
 
-COMPLETION_REVIEWER_SYSTEM = """You are BID Manager performing final completion review.
-Judge whether the final workspace satisfies the original request.
-
-Return exactly one of:
-
-COMPLETE
-Reason: <reason>
-
-MISSING
-- <missing deliverable>
-
-Return only the verdict. Do not return a checklist of numbered items, analysis,
-Markdown fences, or additional text."""
-
-
 def _bounded_text(text, limit=RUN_OUTPUT_LIMIT):
     if isinstance(text, bytes):
         text = text.decode("utf-8", "replace")
@@ -1247,9 +1232,6 @@ class TaskReviewAdapter:
         return {"verdict": first, "reason": reason}
 
 
-ArtifactReviewAdapter = TaskReviewAdapter
-
-
 RECONCILIATION_SYSTEM = """You are BID Manager performing project reconciliation.
 
 Provisional Worker submissions await your decision. Return ONE batch decision
@@ -1411,93 +1393,3 @@ class ManagerReconcileAdapter:
         if decision["project"] is None:
             return None, "missing # Project section"
         return decision, None
-
-
-class CompletionReviewAdapter:
-    RETRY_LIMIT = 3
-
-    def __init__(self, config):
-        self.config = config
-        self.workspace = config["workspace"]
-        self.obs = get_log(self.workspace)
-
-    def run(self, backend):
-        task_md = _read(self.workspace, "docs/task.md")
-        workspace_text = _workspace_listing(self.workspace)
-        todo_text = _read(self.workspace, "docs/todo.md")
-        tasks = todo_mod.parse_todo(todo_text)
-        checked = [t for t in tasks if t["checked"]]
-        unchecked = [t for t in tasks if not t["checked"]]
-        checklist_lines = []
-        for t in checked:
-            checklist_lines.append(f"[x] T{t['number']} — {t['description']}")
-        for t in unchecked:
-            checklist_lines.append(f"[ ] T{t['number']} — {t['description']}")
-        checklist = "\n".join(checklist_lines) if checklist_lines else "(empty)"
-
-        prompt = (
-            "# Completion Review\n\n"
-            f"Original request:\n{task_md}\n\n"
-            f"Completed checklist:\n{checklist}\n\n"
-            f"Final workspace:\n{workspace_text}\n\n"
-            "Return exactly one of:\n\n"
-            "COMPLETE\n"
-            "Reason: ...\n\n"
-            "MISSING\n"
-            "- missing deliverable\n"
-            "- missing deliverable"
-        )
-
-        messages = [
-            {"role": "system", "content": COMPLETION_REVIEWER_SYSTEM},
-            {"role": "user", "content": prompt},
-        ]
-
-        for attempt in range(self.RETRY_LIMIT):
-            req_tok = self.obs.start("model_request", role="completion_reviewer", retry=attempt)
-            try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
-            except Exception as exc:
-                self.obs.end(req_tok, error=str(exc))
-                return {"verdict": "ERROR", "reason": f"model request failed: {exc}"}
-            usage = response.get("usage") or {}
-            self.obs.end(
-                req_tok,
-                finish_reason=response.get("finish_reason"),
-                prompt_tokens=usage.get("prompt_tokens"),
-                completion_tokens=usage.get("completion_tokens"),
-                total_tokens=usage.get("total_tokens"),
-            )
-
-            content = (response.get("content") or "").strip()
-            raw = content
-            content = _clean_fences(content)
-
-            result = self._parse(content)
-            if result:
-                return result
-
-            messages.append({"role": "assistant", "content": raw or "[no output]"})
-            messages.append({"role": "user", "content": "No valid completion verdict was found. Return only COMPLETE with Reason:, or MISSING followed by one or more missing-deliverable bullets."})
-
-        return {"verdict": "ERROR", "reason": "failed to produce valid completion review"}
-
-    @staticmethod
-    def _parse(content):
-        first = content.strip().split("\n")[0].strip()
-        if first == "COMPLETE":
-            return {"verdict": "COMPLETE", "missing": []}
-        if first == "MISSING":
-            missing = []
-            seen = set()
-            for line in content.split("\n"):
-                m = re.match(r"^\s*[-*]\s+(.*)", line)
-                if m:
-                    item = m.group(1).strip()
-                    key = item.lower()
-                    if item and key not in seen:
-                        seen.add(key)
-                        missing.append(item)
-            if missing:
-                return {"verdict": "MISSING", "missing": missing}
-        return None
