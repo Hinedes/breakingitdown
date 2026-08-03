@@ -142,6 +142,43 @@ made on the basis of any entry in this file.
 
 ---
 
+### Eval 4 — Difficulty ladder (2026-08-02/03, v0.2.0-rc1, commit e1b8b58)
+
+Three tasks between stats_tools (Eval 3) and ARGUS (Evals 1-2), each with a
+frozen deterministic oracle. Identical Direct/BID conditions per task,
+alternating order. Model bid-qwen3.5:4b-ctx64k (c727d703...), payload
+identical for both conditions.
+
+| Level | Task | BID | Direct | Cell |
+|---|---|---|---|---|
+| L1 | text_stats.py (word_count/char_frequency/is_palindrome) | FAIL 6/8 (REWORK bound, 106 s) | PASS 8/8 (20 s) | Direct pass / BID fail -> regression on this task |
+| L2 | roman.py (to_roman/from_roman) | PASS 33/33 (REWORK bound, 148 s) | FAIL 0/0 (empty workspace, 11 s) | Direct fail / BID pass -> harness gain |
+| L3 | loan.py (monthly_payment/amortization) | FAIL 1/5 (REWORK bound, 123 s) | FAIL 6/7 (6 s) | Direct fail / BID fail -> no benefit |
+
+**L2 anomaly (semantic false negative):** BID's terminal workspace satisfied
+the evaluator 33/33 while BID itself reported failure (bid-exit-1): a later
+task hit the REWORK bound, so BID never reached COMPLETE even though the
+produced artifact was fully correct. The evaluator measures the artifact;
+BID's status measures the loop. They can disagree in both directions.
+
+**L1 observation:** BID failed because the model produced a genuinely
+defective char_frequency (uppercase letters and spaces counted, no
+lowercasing) and the Reviewer correctly rejected it 4x until the bound
+fired. Direct succeeded in one session on the same task. This is the first
+observed Direct pass / BID fail cell; BID's added retry overhead did not
+help here.
+
+**L3 observation:** the Reviewer's rejection reason was exactly right — the
+model divided annual_rate by an extra 100 despite the task defining it as a
+fraction. The oracle confirms (all non-zero-rate payments off by 100x).
+
+**Evidence:** `evidence/ladder/runs/` (all 6 conditions, per-condition
+oracle outputs + VC states + events), summary sha 6c0eec6b...
+
+**Net reading:** one harness gain (L2), one regression (L1), one no-benefit
+(L3). n=1 per cell. No capability claim; the gain is bounded failure and
+occasionally a correct artifact that the loop then failed to ratify.
+
 ## Demonstration (mechanism only, no capability claim)
 
 Any future "successful loop" run is labeled as a mechanism demonstration:

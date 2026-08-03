@@ -52,6 +52,18 @@ the exact paths, hashes, and verification commands are defined here.
 
 ---
 
+## Eval 4 — Difficulty ladder (v0.2.0-rc1)
+
+- Evidence: `evidence/ladder/runs/` (all 6 conditions: L1/L2/L3 x bid/direct)
+- Freeze: `evidence/ladder/FREEZE.md` (sha 1d082665...)
+- Tasks + oracles: `evidence/ladder/tasks/L{1,2,3}/{task,evaluator}.py`
+- Summary: `evidence/ladder/runs/summary.json` (sha 6c0eec6b...)
+- Result: L1 Direct PASS / BID FAIL (regression cell); L2 BID PASS / Direct
+  FAIL (harness gain); L3 both FAIL (no benefit). L2 anomaly: oracle PASS
+  33/33 while BID reported bid-exit-1 (semantic false negative).
+- Verify: `sha256sum -c` per condition dir; re-run oracle:
+  `LADDER_WS=<ws> /home/iclab/anaconda3/bin/python <ladder>/tasks/<L>/evaluator.py`
+
 ## Freeze / task assets (not run evidence, but frozen inputs)
 
 - Benchmark v2 task + oracle: `/home/iclab/bid-eval/benchmark-v2/`
