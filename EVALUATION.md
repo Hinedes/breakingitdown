@@ -179,6 +179,34 @@ oracle outputs + VC states + events), summary sha 6c0eec6b...
 (L3). n=1 per cell. No capability claim; the gain is bounded failure and
 occasionally a correct artifact that the loop then failed to ratify.
 
+### Eval 4b — Ladder reproducibility check (2026-08-03, v0.2.0-rc1)
+
+Re-ran L1 and L2 (both conditions) under the identical frozen assets to test
+whether the Eval 4 gain/regression cells reproduce.
+
+| Level | Condition | Eval 4 | Eval 4b | Reproduces? |
+|---|---|---|---|---|
+| L1 | BID | FAIL 6/8 (bound) | FAIL 7/8 (done) | outcome yes, path no |
+| L1 | Direct | PASS 8/8 | FAIL 7/8 | no |
+| L2 | Direct | FAIL 0/0 (empty ws) | PASS 33/33 | no |
+| L2 | BID | PASS 33/33 (bound) | PASS 33/33 (bound) | artifact yes, advantage no |
+
+Reading:
+- The L2 BID artifact gain reproduces (33/33 twice), but it is not a
+  BID-vs-Direct advantage: Direct also produced a perfect roman.py on rerun.
+  The original "Direct wrote nothing" was sampling noise (an empty-workspace
+  Done), not a harness limitation.
+- The L1 Direct-pass/BID-fail regression does not reproduce: both conditions
+  failed 7/8 on different single bugs (BID: char_frequency case handling;
+  Direct: is_palindrome non-letter stripping). At temperature 0.6 a 4B model
+  flips single-bug outcomes run to run.
+- The one effect that reproduces: BID's terminal artifact is correct even
+  when BID reports failure (REWORK bound on a later task) - the semantic
+  false-negative pattern, observed in both L2 runs.
+
+Evidence: `evidence/ladder/repro/runs/` (4 conditions), summary sha
+838f5bc0..., SHA256SUMS present. n=2 per cell now; still no capability claim.
+
 ## Demonstration (mechanism only, no capability claim)
 
 Any future "successful loop" run is labeled as a mechanism demonstration:

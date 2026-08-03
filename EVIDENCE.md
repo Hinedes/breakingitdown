@@ -64,6 +64,15 @@ the exact paths, hashes, and verification commands are defined here.
 - Verify: `sha256sum -c` per condition dir; re-run oracle:
   `LADDER_WS=<ws> /home/iclab/anaconda3/bin/python <ladder>/tasks/<L>/evaluator.py`
 
+## Eval 4b — Ladder reproducibility check
+
+- Evidence: `evidence/ladder/repro/runs/` (L1/L2 x bid/direct, fresh runs)
+- Summary: `evidence/ladder/repro/runs/summary.json` (sha 838f5bc0...)
+- Result: L2 BID artifact PASS reproduces (33/33 x2) but not as an advantage
+  (Direct PASS 33/33 on rerun); L1 regression does not reproduce (both fail
+  7/8, different bugs). Semantic false-negative (oracle PASS while bid-exit-1)
+  reproduced in both L2 BID runs.
+
 ## Freeze / task assets (not run evidence, but frozen inputs)
 
 - Benchmark v2 task + oracle: `/home/iclab/bid-eval/benchmark-v2/`
