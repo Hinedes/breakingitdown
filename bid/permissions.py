@@ -3,6 +3,22 @@ import os
 ROLE_MANAGER = "manager"
 ROLE_WORKER = "worker"
 
+# Protected BID state shared with the read-only repository context.  Keep the
+# existing permission predicates below unchanged; these constants only make
+# the exclusion boundary available to context indexing.
+CONTROL_ROOTS = frozenset({
+    ".bid",
+    "docs/reviews",
+    "docs/task.md",
+    "docs/todo.md",
+    "docs/worker.md",
+    "docs/manager.md",
+    "docs/project-status.md",
+    "docs/decisions.md",
+})
+CONTROL_FILES = frozenset(CONTROL_ROOTS - {".bid", "docs/reviews"})
+REPO_CONTEXT_CONTROL_ROOTS = frozenset(set(CONTROL_ROOTS) | {"docs/research"})
+
 MANAGER_WRITABLE = {
     "docs/task.md",
     "docs/todo.md",

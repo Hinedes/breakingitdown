@@ -10,6 +10,7 @@ import tempfile
 import time
 
 from . import permissions
+from . import repo_context as repo_context_mod
 from . import search as search_mod
 from . import todo as todo_mod
 from . import vc as vc_mod
@@ -60,16 +61,7 @@ def _hash_file(path):
 
 RUN_OUTPUT_LIMIT = 2000
 
-CONTROL_ROOTS = (
-    ".bid",
-    "docs/task.md",
-    "docs/todo.md",
-    "docs/worker.md",
-    "docs/manager.md",
-    "docs/project-status.md",
-    "docs/decisions.md",
-    "docs/reviews",
-)
+CONTROL_ROOTS = tuple(sorted(permissions.CONTROL_ROOTS))
 
 TASK_REVIEWER_SYSTEM = """You are BID Task Reviewer.
 Judge whether the candidate satisfies the assigned task using only the
@@ -123,6 +115,10 @@ def _command_label(cmd):
         return f"RUN {cmd['command']}"
     if cmd["type"] == "Done":
         return "Done"
+    if cmd["type"] == "MAP":
+        return f"MAP {cmd.get('path', '')}".rstrip()
+    if cmd["type"] == "FIND":
+        return f"FIND {cmd.get('query', '')}".rstrip()
     return cmd["type"]
 
 
@@ -238,9 +234,23 @@ def _validate_direct_deletion(argv, workspace):
 # ── Command parsing ──────────────────────────────────────────────────
 
 _KNOWN_CMDS = {"READ ", "WRITE ", "RUN ", "SEARCH ", "REPLACE "}
+_REPO_CONTEXT_NOTICE = (
+    "Repository tools are available: use MAP for a bounded filesystem view "
+    "and FIND <literal> for exhaustive fixed-literal search."
+)
+_REPO_CONTEXT_ORIENTATION_FOOTER = (
+    "Use MAP to inspect a narrower directory and FIND to locate a fixed literal.\n"
+    "Do not repeat the same MAP or FIND request without changing the query or scope."
+)
 
 
-def _parse_content_into_turns(content, finish_reason=None):
+def _parse_content_into_turns(content, finish_reason=None, repo_context_mode="off"):
+    # Keep the current finish_reason positional API while allowing compact
+    # direct tests/callers to pass the mode as the second positional argument.
+    if repo_context_mode == "off" and finish_reason in {"0", "1", "off", "tools", "inject"}:
+        repo_context_mode = finish_reason
+        finish_reason = None
+    repo_tools = repo_context_mod.repo_context_tools_enabled(repo_context_mode)
     lines = content.split("\n")
     commands = []
     i = 0
@@ -256,6 +266,26 @@ def _parse_content_into_turns(content, finish_reason=None):
         if stripped.startswith("SEARCH "):
             query = stripped[7:].strip()
             commands.append({"type": "SEARCH", "query": query})
+            i += 1
+            continue
+
+        if repo_tools and stripped == "MAP":
+            commands.append({"type": "MAP", "path": ""})
+            i += 1
+            continue
+
+        if repo_tools and stripped.startswith("MAP "):
+            commands.append({"type": "MAP", "path": stripped[4:].strip()})
+            i += 1
+            continue
+
+        if repo_tools and stripped == "FIND":
+            commands.append({"type": "FIND", "query": ""})
+            i += 1
+            continue
+
+        if repo_tools and stripped.startswith("FIND "):
+            commands.append({"type": "FIND", "query": stripped[5:]})
             i += 1
             continue
 
@@ -350,13 +380,16 @@ def _parse_content_into_turns(content, finish_reason=None):
     return commands
 
 
-def _find_unknown_commands(content, commands):
+def _find_unknown_commands(content, commands, repo_context_mode="off"):
+    repo_tools = repo_context_mod.repo_context_tools_enabled(repo_context_mode)
     lines = content.split("\n")
     consumed = set()
     li = 0
     while li < len(lines):
         s = lines[li].strip()
         if s == "Done" or s.startswith("SEARCH ") or s.startswith("READ ") or s.startswith("RUN "):
+            consumed.add(li); li += 1; continue
+        if repo_tools and (s == "MAP" or s.startswith("MAP ") or s == "FIND" or s.startswith("FIND ")):
             consumed.add(li); li += 1; continue
         if s.startswith("WRITE "):
             consumed.add(li); li += 1
@@ -516,6 +549,9 @@ class WorkerAdapter:
         self.workspace = config["workspace"]
         self.task_number = task_number
         self._vc = vc_mod.VersionControl(self.workspace)
+        self.repo_context_mode = repo_context_mod.normalize_mode(
+            config.get("repo_context_mode", "off")
+        )
         self._search_provider = search_provider or search_mod.create_provider(config)
         self._search_cache = search_mod.SearchCache(self.workspace)
         self._search_count = 0
@@ -525,13 +561,208 @@ class WorkerAdapter:
         self._run_evidence = []
         self._implicit_write_count = 0
         self.obs = get_log(self.workspace)
+        self._repo_context = None
+        if repo_context_mod.repo_context_tools_enabled(self.repo_context_mode):
+            self._repo_context = repo_context_mod.RepositoryContext(
+                self.workspace,
+                max_chars=config.get("repo_context_max_chars", 12000),
+                max_find_hits=config.get("repo_context_max_find_hits", 100),
+                max_file_bytes=config.get("repo_context_max_file_bytes", 1048576),
+            )
+        self._read_ledger = {}
+        self._fully_read_paths = set()
+        self._repo_event_entries = []
+
+    def _worker_result(self, status, **fields):
+        result = {"status": status}
+        result.update(fields)
+        if self._context_tools_enabled():
+            result["observability_events"] = list(self._repo_event_entries)
+        return result
+
+    def _context_tools_enabled(self):
+        return repo_context_mod.repo_context_tools_enabled(self.repo_context_mode)
+
+    def _context_injection_enabled(self):
+        return repo_context_mod.repo_context_injection_enabled(self.repo_context_mode)
+
+    def _record_context_event(self, name, duration=None, **metadata):
+        if not self._context_tools_enabled():
+            return
+        metadata["mode"] = self.repo_context_mode
+        if duration is not None:
+            metadata["duration_ms"] = round(max(0.0, duration) * 1000, 3)
+        for key, value in list(metadata.items()):
+            if isinstance(value, str):
+                metadata[key] = value[:160]
+        entry = self.obs.event(name, **metadata)
+        self._repo_event_entries = getattr(self, "_repo_event_entries", [])
+        self._repo_event_entries.append(entry)
+
+    def _refresh_repo_context(self):
+        started = time.monotonic()
+        try:
+            stats = self._repo_context.refresh()
+        except Exception:
+            self._record_context_event(
+                "repo_context_refresh",
+                time.monotonic() - started,
+                ok=False,
+                error="refresh failed",
+            )
+            return None
+        self._record_context_event(
+            "repo_context_refresh",
+            time.monotonic() - started,
+            ok=True,
+            **stats,
+        )
+        return stats
+
+    def _render_orientation(self):
+        started = time.monotonic()
+        stats = self._refresh_repo_context()
+        if stats is None:
+            self._record_context_event(
+                "repo_context_map",
+                time.monotonic() - started,
+                ok=False,
+                entry_count=0,
+                result_count=0,
+                truncated=False,
+                source="orientation",
+            )
+            return "Repository context warning: workspace index refresh failed."
+
+        map_result = self._repo_context.map_result(refresh=False)
+        prefix = "# Workspace orientation\n\n"
+        suffix = f"\n\n{_REPO_CONTEXT_ORIENTATION_FOOTER}\n\n{_REPO_CONTEXT_NOTICE}"
+        max_chars = max(0, int(self.config.get("repo_context_max_chars", 12000)))
+        map_budget = max_chars - len(prefix) - len(suffix)
+        if map_budget <= 0:
+            self._record_context_event(
+                "repo_context_map",
+                time.monotonic() - started,
+                ok=True,
+                scope=".",
+                entry_count=map_result["entry_count"],
+                result_count=map_result["entry_count"],
+                truncated=True,
+                source="orientation",
+            )
+            return (prefix + suffix)[:max_chars]
+        bounded_map = repo_context_mod.render_workspace_map(
+            self._repo_context.index,
+            max_chars=map_budget,
+        )
+        self._record_context_event(
+            "repo_context_map",
+            time.monotonic() - started,
+            ok=True,
+            scope=".",
+            entry_count=map_result["entry_count"],
+            result_count=map_result["entry_count"],
+            truncated=repo_context_mod._is_truncated(bounded_map),
+            source="orientation",
+        )
+        return (prefix + bounded_map + suffix)[:max_chars]
+
+    def _startup_context_text(self):
+        if not self._context_tools_enabled():
+            return ""
+        if self._context_injection_enabled():
+            return self._render_orientation()
+        if self._refresh_repo_context() is None:
+            return _REPO_CONTEXT_NOTICE + "\nRepository context warning: workspace index refresh failed."
+        return _REPO_CONTEXT_NOTICE
+
+    def _reset_context_text(self):
+        if not self._context_tools_enabled():
+            return ""
+        if self._context_injection_enabled():
+            return self._render_orientation()
+        return _REPO_CONTEXT_NOTICE
+
+    def _map_command(self, requested_path):
+        started = time.monotonic()
+        safe, err, rel = permissions.check_path_safety(requested_path or ".", self.workspace)
+        if not safe:
+            result = f"error: {err}"
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return result
+        if rel != "." and repo_context_mod.is_excluded_path(rel):
+            result = f"error: path is excluded from repository context: {requested_path}"
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return result
+        absolute = os.path.join(self.workspace, rel)
+        if not os.path.exists(absolute):
+            result = f"error: path not found: {requested_path or '.'}"
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return result
+        if not os.path.isdir(absolute):
+            result = f"error: not a directory: {requested_path or '.'}"
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return result
+        if self._refresh_repo_context() is None:
+            result = "error: repository context refresh failed"
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return result
+        scope = None if rel == "." else rel
+        map_result = self._repo_context.map_result(scope=scope, refresh=False)
+        self._record_context_event(
+            "repo_context_map", time.monotonic() - started, ok=True,
+            scope=scope or ".", entry_count=map_result["entry_count"],
+            result_count=map_result["entry_count"], truncated=map_result["truncated"],
+            source="command",
+        )
+        return map_result["output"]
+
+    def _find_command(self, query):
+        started = time.monotonic()
+        if self._refresh_repo_context() is None:
+            result = "error: repository context refresh failed"
+            self._record_context_event(
+                "repo_context_find", time.monotonic() - started, ok=False,
+                query_length=len(query), result_count=0, truncated=False, source="command",
+            )
+            return result
+        search_result = self._repo_context.find_result(query, refresh=False)
+        self._record_context_event(
+            "repo_context_find", time.monotonic() - started,
+            ok=search_result["ok"], query_length=len(query),
+            result_count=len(search_result["hits"]),
+            total_matches=search_result["total_matches"],
+            truncated=search_result["truncated"],
+            skipped_binary=search_result["skipped"].get("binary", 0),
+            skipped_oversized=search_result["skipped"].get("oversized", 0),
+            skipped_unreadable=search_result["skipped"].get("unreadable", 0),
+            source="command",
+        )
+        return search_result["output"]
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
         tasks = todo_mod.parse_todo(todo_text)
         task = todo_mod.get_task(tasks, self.task_number)
         if not task:
-            return {"status": "error", "reason": f"T{self.task_number} not found in TODO"}
+            return self._worker_result(
+                "error", reason=f"T{self.task_number} not found in TODO"
+            )
 
         worker_policy = _read(self.workspace, "docs/worker.md")
         task_prompt = (
@@ -539,6 +770,10 @@ class WorkerAdapter:
         )
         if self.feedback:
             task_prompt += f"\nPrevious reviewer feedback:\n{self.feedback}\n"
+        base_task_prompt = task_prompt
+        startup_context = self._startup_context_text()
+        if startup_context:
+            task_prompt += "\n\n" + startup_context
 
         messages = [
             {"role": "system", "content": worker_policy},
@@ -559,6 +794,8 @@ class WorkerAdapter:
         last_sig = None
         turn_repeat = 0
         _read_tracker = {}  # canonical_rel_path → (useful_count, last_hash)
+        self._read_ledger.clear()
+        self._fully_read_paths.clear()
 
         while time.monotonic() - session_start < hard_ceiling:
             req_tok = self.obs.start("model_request", role="worker", task=f"T{self.task_number}", attempt=1)
@@ -566,7 +803,9 @@ class WorkerAdapter:
                 response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
             except Exception as exc:
                 self.obs.end(req_tok, error=str(exc))
-                return {"status": "error", "reason": f"model request failed: {exc}"}
+                return self._worker_result(
+                    "error", reason=f"model request failed: {exc}"
+                )
             usage = response.get("usage") or {}
             self.obs.end(
                 req_tok,
@@ -593,7 +832,9 @@ class WorkerAdapter:
             policy_violation = False
 
             if content:
-                commands = _parse_content_into_turns(content, finish_reason)
+                commands = _parse_content_into_turns(
+                    content, finish_reason, self.repo_context_mode
+                )
             else:
                 commands = []
 
@@ -605,9 +846,16 @@ class WorkerAdapter:
                 else:
                     turn_repeat = 0
                 last_sig = sig
+                no_command_hint = (
+                    "No executable BID command was found. Respond only with actual READ, WRITE, RUN, or Done commands. Do not explain or describe the commands."
+                )
+                if self._context_tools_enabled():
+                    no_command_hint = (
+                        "No executable BID command was found. Respond only with actual READ, MAP, FIND, WRITE, RUN, or Done commands. Do not explain or describe the commands."
+                    )
                 messages.append({
                     "role": "user",
-                    "content": "No executable BID command was found. Respond only with actual READ, WRITE, RUN, or Done commands. Do not explain or describe the commands."
+                    "content": no_command_hint
                 })
             else:
                 for cmd in commands:
@@ -639,13 +887,70 @@ class WorkerAdapter:
                                     else:
                                         result = _read(self.workspace, rel)
                                         fhash = _hash_file(abs_path)
-                                        prev = _read_tracker.get(rel)
-                                        if not prev or prev[1] != fhash:
-                                            useful = True
-                                        _read_tracker[rel] = (1 if not prev else prev[0] + 1, fhash)
+                                        if self._context_tools_enabled():
+                                            ledger_key = (rel, fhash)
+                                            if fhash != "?" and ledger_key in self._read_ledger:
+                                                result = (
+                                                    f"unchanged: {rel} was already supplied earlier in this Worker context\n"
+                                                    f"sha256: {fhash[:12]}"
+                                                )
+                                                self._record_context_event(
+                                                    "repo_context_read_deduplicated",
+                                                    path=rel, sha256=fhash[:12], count=1,
+                                                )
+                                            else:
+                                                if fhash != "?":
+                                                    for key in list(self._read_ledger):
+                                                        if key[0] == rel:
+                                                            del self._read_ledger[key]
+                                                    self._read_ledger[ledger_key] = True
+                                                useful = True
+                                                first_path_read = rel not in self._fully_read_paths
+                                                self._fully_read_paths.add(rel)
+                                                self._record_context_event(
+                                                    "repo_context_read",
+                                                    path=rel, read_count=1,
+                                                    full_read=True,
+                                                    unique_file=first_path_read,
+                                                )
+                                        else:
+                                            prev = _read_tracker.get(rel)
+                                            if not prev or prev[1] != fhash:
+                                                useful = True
+                                            _read_tracker[rel] = (1 if not prev else prev[0] + 1, fhash)
                         except ValueError as e:
                             result = str(e)
                         sig = f"READ {rel}|{result[:50]}"
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
+                        messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
+                        continue
+
+                    if cmd["type"] == "MAP":
+                        result = self._map_command(cmd.get("path", ""))
+                        if not result.startswith("error:"):
+                            useful = True
+                        sig = f"MAP {cmd.get('path', '')}|{result[:50]}"
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
+                        messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
+                        continue
+
+                    if cmd["type"] == "FIND":
+                        result = self._find_command(cmd.get("query", ""))
+                        if not result.startswith("error:"):
+                            useful = True
+                        sig = f"FIND {cmd.get('query', '')}|{result[:50]}"
                         if sig == last_sig:
                             turn_repeat += 1
                         else:
@@ -833,10 +1138,15 @@ class WorkerAdapter:
                     self.obs.end(cmd_tok)
 
             # Unknown-command feedback
-            unknown_cmds = _find_unknown_commands(raw_content, commands)
+            unknown_cmds = _find_unknown_commands(
+                raw_content, commands, self.repo_context_mode
+            )
             if unknown_cmds:
+                allowed = "READ, WRITE, RUN, Done"
+                if self._context_tools_enabled():
+                    allowed = "READ, MAP, FIND, WRITE, RUN, Done"
                 err_msg = ("error: unknown command(s): " + ", ".join(unknown_cmds[:3])
-                           + "\nAllowed commands are READ, WRITE, RUN, Done."
+                           + f"\nAllowed commands are {allowed}."
                            + "\nTo inspect directories, use RUN ls.")
                 messages.append({"role": "user", "content": err_msg})
                 _log_worker_event(self._vc, "worker result", err_msg)
@@ -847,20 +1157,30 @@ class WorkerAdapter:
                 saw_done = False
 
             if saw_done:
-                return {"status": "done", "checked": False, "run_evidence": list(self._run_evidence)}
+                return self._worker_result(
+                    "done", checked=False, run_evidence=list(self._run_evidence)
+                )
 
             # Soft reset on repeat stall
             if turn_repeat >= repeat_limit and not changed and not useful:
                 soft_resets += 1
                 if soft_resets > self.MAX_SOFT_RESETS:
-                    return {"status": "stalled", "reason": f"repeated action without progress"}
+                    return self._worker_result(
+                        "stalled", reason="repeated action without progress"
+                    )
                 system = messages[0]
+                self._read_ledger.clear()
+                self._fully_read_paths.clear()
+                reset_context = self._reset_context_text()
+                reset_prompt = base_task_prompt
+                if reset_context:
+                    reset_prompt += "\n\n" + reset_context
                 messages = [
                     system,
                     {
                         "role": "user",
                         "content": (
-                            f"{task_prompt}\n\n"
+                            f"{reset_prompt}\n\n"
                             f"[ERROR: did not make progress. "
                             f"Last command: {last_sig.split('|')[0] if '|' in last_sig else last_sig}. "
                             f"Try a different approach.]"
@@ -877,9 +1197,11 @@ class WorkerAdapter:
                 observer.mark_activity()
 
             if observer.inactive_for() > inactivity_timeout:
-                return {"status": "timeout", "reason": f"inactive {observer.inactive_for():.0f}s"}
+                return self._worker_result(
+                    "timeout", reason=f"inactive {observer.inactive_for():.0f}s"
+                )
 
-        return {"status": "timeout", "reason": f"hard ceiling {hard_ceiling}s"}
+        return self._worker_result("timeout", reason=f"hard ceiling {hard_ceiling}s")
 
     def _write_command(self, path, content):
         if re.search(r"[<>|;&`'\"]", path):

@@ -39,6 +39,10 @@ bid.py run
 | `BID_REPEAT_ACTION_LIMIT` | `5` | Repeat stall threshold |
 | `BID_PROVISIONAL_BATCH` | `4` | Provisional submissions before Manager reconciliation |
 | `BID_MAX_TASK_REWORKS` | `3` | Task Reviewer REWORKs per task before BID stops with a terminal error |
+| `BID_REPO_CONTEXT` | `0` | `off`, `tools`, or `inject`; `1` aliases `inject` |
+| `BID_REPO_CONTEXT_MAX_CHARS` | `12000` | Bound for maps and injected orientation |
+| `BID_REPO_CONTEXT_MAX_FIND_HITS` | `100` | Maximum emitted literal-search hits |
+| `BID_REPO_CONTEXT_MAX_FILE_BYTES` | `1048576` | Maximum UTF-8 file size indexed for search |
 
 ## Worker Protocol
 
@@ -61,6 +65,42 @@ Done                        — submit current candidate
 REPLACE requires exactly one match; zero or multiple matches fail without
 modifying the file. The old text must be copied verbatim from a recent
 READ, preserving indentation.
+
+When `BID_REPO_CONTEXT=tools` or `inject`, the text protocol additionally
+supports `MAP` or `MAP <relative-directory>` and `FIND <fixed literal>`. These
+commands are read-only. `FIND` is fixed-literal, not regex, and reports exact
+`path:line` coordinates over readable indexed UTF-8 text only.
+
+## Experimental Repository Context
+
+This is an explicitly ablatable process optimization, not a presumed
+correctness mechanism:
+
+- `off`, empty, and `0` preserve the current Worker command and READ behavior.
+- `tools` enables deterministic indexing, freshness, MAP, FIND, and duplicate
+  READ suppression, with only a short capability notice and no injected map.
+- `inject` enables `tools` plus a bounded factual map at startup and after a
+  Worker soft reset. `1` is an alias for `inject`.
+
+Unknown non-empty mode values are rejected. The index is local, versioned, and
+atomically stored under `.bid/repo_context/`. It includes file paths and
+classifications while searchable entries are regular UTF-8 text files within
+the configured byte limit. Binary, oversized, unreadable, symlink, BID
+control, and common metadata/cache paths are not searched. Multiple matches on
+one line count as non-overlapping literal occurrences. Output is bounded by
+the configured map, hit, and file-size limits.
+
+Repeated unchanged text-protocol READs in one Worker history epoch return a
+short SHA-256 notice; changed files and post-reset reads return full content.
+The in-memory ledger is not shared across Worker sessions.
+
+This is file-level Tier 1 orientation, not a symbol graph, call graph,
+embedding, semantic summary, or impact tracer. Expected direct effects are
+reduced repository rediscovery, repeated reads, tool calls, latency, or
+context consumption; correctness effects are unknown. Generic context
+injection has not been shown to reliably improve coding-agent pass rates.
+The three modes exist for controlled ablation against the current BID
+baseline; no performance or correctness improvement is claimed.
 
 ## Architecture
 
@@ -100,9 +140,8 @@ replay. An append-only JSONL event log captures timing, usage, and transitions.
 
 ## Known Limitations
 
-- **No automatic repository map or specialized code-search helper.** Workers
-  may discover files through RUN commands such as `ls`, `find`, and `grep`,
-  or receive paths in the task description.
+- **Repository context is optional and experimental.** `tools` and `inject`
+  provide bounded file-level MAP/FIND orientation; `off` remains the baseline.
 - **No fuzzy or line-based editing.** REPLACE requires exact text matching.
 - **No parallelism.** Only one Worker runs at a time.
 - **No candidate salvage.** Rejected work is preserved for analysis but not
@@ -134,4 +173,3 @@ replay. An append-only JSONL event log captures timing, usage, and transitions.
 
 - Worker parallelism and inter-Worker graphs
 - Candidate salvage and recombination
-

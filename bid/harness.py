@@ -4,6 +4,7 @@ import shutil
 
 from . import adapter as adapter_mod
 from . import model as model_mod
+from . import repo_context as repo_context_mod
 from . import todo as todo_mod
 from . import vc as vc_mod
 from .observability import get_log
@@ -27,6 +28,12 @@ def get_config():
         "search_endpoint": os.environ.get("BID_SEARCH_ENDPOINT", ""),
         "provisional_batch": int(os.environ.get("BID_PROVISIONAL_BATCH", "4")),
         "max_task_reworks": int(os.environ.get("BID_MAX_TASK_REWORKS", "3")),
+        "repo_context_mode": repo_context_mod.normalize_mode(os.environ.get("BID_REPO_CONTEXT", "0")),
+        "repo_context_max_chars": int(os.environ.get("BID_REPO_CONTEXT_MAX_CHARS", "12000")),
+        "repo_context_max_find_hits": int(os.environ.get("BID_REPO_CONTEXT_MAX_FIND_HITS", "100")),
+        "repo_context_max_file_bytes": int(
+            os.environ.get("BID_REPO_CONTEXT_MAX_FILE_BYTES", "1048576")
+        ),
     }
 
 
