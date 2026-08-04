@@ -127,6 +127,45 @@ def test_atomic_failure_keeps_previous_index():
         assert repo_context.load_index(workspace)["entries"]["file.txt"]["text"] == "old"
 
 
+@pytest.mark.parametrize("nested", [False, True])
+def test_index_never_follows_control_directory_symlinks(nested):
+    with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as outside:
+        write_file(workspace, "project.txt", "project")
+        if nested:
+            os.makedirs(os.path.join(workspace, ".bid"))
+            os.symlink(outside, os.path.join(workspace, ".bid", "repo_context"))
+        else:
+            os.symlink(outside, os.path.join(workspace, ".bid"))
+
+        with pytest.raises(repo_context.RepositoryContextError):
+            repo_context.refresh_index(workspace)
+        assert not os.path.exists(os.path.join(outside, "repo_context", "index.json"))
+
+
+def test_index_rejects_tampered_cached_text():
+    with tempfile.TemporaryDirectory() as workspace:
+        write_file(workspace, "file.txt", "actual")
+        repo_context.refresh_index(workspace)
+        index_path = os.path.join(workspace, ".bid", "repo_context", "index.json")
+        with open(index_path, encoding="utf-8") as file:
+            index = json.load(file)
+        index["entries"]["file.txt"]["text"] = "tampered"
+        with open(index_path, "w", encoding="utf-8") as file:
+            json.dump(index, file)
+
+        assert repo_context.load_index(workspace) is None
+        context = repo_context.RepositoryContext(workspace)
+        context.refresh()
+        assert context.index["entries"]["file.txt"]["text"] == "actual"
+
+        with open(index_path, encoding="utf-8") as file:
+            index = json.load(file)
+        index["entries"]["file.txt"]["text"] = "\ud800"
+        with open(index_path, "w", encoding="utf-8") as file:
+            json.dump(index, file)
+        assert repo_context.load_index(workspace) is None
+
+
 def test_classification_exclusions_and_symlink_safety():
     with tempfile.TemporaryDirectory() as workspace, tempfile.TemporaryDirectory() as outside:
         write_file(workspace, "text.txt", "text")
@@ -157,6 +196,26 @@ def test_classification_exclusions_and_symlink_safety():
         assert ".bid/private.txt" not in entries
         assert "outside.txt" not in entries
         assert "outside-link" in entries
+
+
+def test_unusual_filenames_remain_indexable_and_display_safe():
+    with tempfile.TemporaryDirectory() as workspace:
+        backslash_name = "slash\\name.txt"
+        control_name = "line\nname.txt"
+        write_file(workspace, backslash_name, "needle")
+        write_file(workspace, control_name, "needle")
+
+        context = repo_context.RepositoryContext(workspace)
+        context.refresh()
+
+        assert repo_context.load_index(workspace) is not None
+        assert context.find_result("needle", refresh=False)["total_matches"] == 2
+        map_output = context.map(refresh=False)
+        find_output = context.find("needle", refresh=False)
+        assert "slash\\\\name.txt" in map_output
+        assert "line\\nname.txt" in map_output
+        assert "line\nname.txt" not in map_output
+        assert "line\\nname.txt:1:" in find_output
 
 
 def test_map_is_bounded_scoped_and_deterministic():

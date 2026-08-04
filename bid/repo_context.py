@@ -78,7 +78,9 @@ def _relative_path(path):
     """Return a normalized repository-relative POSIX path or None."""
     if not isinstance(path, str) or not path or path.startswith("/"):
         return None
-    normalized = posixpath.normpath(path.replace("\\", "/"))
+    if os.sep == "\\":
+        path = path.replace("\\", "/")
+    normalized = posixpath.normpath(path)
     if normalized in ("", ".") or normalized == ".." or normalized.startswith("../"):
         return None
     return normalized
@@ -194,6 +196,25 @@ def _index_path(workspace):
     return os.path.join(_workspace_root(workspace), INDEX_REL_PATH)
 
 
+def _index_directory(workspace, create=False):
+    root = _workspace_root(workspace)
+    bid_directory = os.path.join(root, ".bid")
+    context_directory = os.path.join(bid_directory, "repo_context")
+    for directory in (bid_directory, context_directory):
+        if os.path.lexists(directory):
+            if os.path.islink(directory):
+                raise RepositoryContextError(
+                    "repository context control path must not be a symlink"
+                )
+            if not os.path.isdir(directory):
+                raise RepositoryContextError(
+                    "repository context control path must be a directory"
+                )
+        elif create:
+            os.makedirs(directory, exist_ok=True)
+    return context_directory
+
+
 def _valid_entry(path, entry):
     if not isinstance(entry, dict) or entry.get("path") != path:
         return False
@@ -221,15 +242,25 @@ def _valid_entry(path, entry):
     if entry.get("type") == "file" and entry.get("classification") == "text":
         if not isinstance(entry.get("sha256"), str) or not isinstance(entry.get("text"), str):
             return False
+        try:
+            text_hash = hashlib.sha256(entry["text"].encode("utf-8")).hexdigest()
+        except UnicodeEncodeError:
+            return False
+        if text_hash != entry["sha256"]:
+            return False
     return True
 
 
 def load_index(workspace):
     """Load a usable index, returning None for corrupt or unknown data."""
     try:
-        with open(_index_path(workspace), encoding="utf-8") as file:
+        directory = _index_directory(workspace)
+        path = os.path.join(directory, "index.json")
+        if os.path.islink(path):
+            return None
+        with open(path, encoding="utf-8") as file:
             data = json.load(file)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError, RepositoryContextError):
         return None
 
     if not isinstance(data, dict):
@@ -257,9 +288,8 @@ def load_index(workspace):
 
 
 def _write_index_atomic(workspace, index):
-    path = _index_path(workspace)
-    directory = os.path.dirname(path)
-    os.makedirs(directory, exist_ok=True)
+    directory = _index_directory(workspace, create=True)
+    path = os.path.join(directory, "index.json")
     temporary = None
     try:
         fd, temporary = tempfile.mkstemp(prefix="index.", suffix=".tmp", dir=directory)
@@ -424,7 +454,9 @@ def _is_truncated(output):
 def _display_entry(path, entry):
     entry_type = entry.get("type")
     classification = entry.get("classification")
-    display_path = path + "/" if entry_type == "directory" else path
+    display_path = json.dumps(path, ensure_ascii=True)[1:-1]
+    if entry_type == "directory":
+        display_path += "/"
     if classification in {"binary", "oversized", "unreadable", "symlink", "special"}:
         display_path += f" [{classification}]"
     return display_path
@@ -564,7 +596,8 @@ def search_index(index, query, max_hits=DEFAULT_MAX_FIND_HITS):
         f"shown: {len(hits)}",
     ]
     for hit in hits:
-        lines.append(f"{hit['path']}:{hit['line']}: {hit['excerpt']}")
+        display_path = json.dumps(hit["path"], ensure_ascii=True)[1:-1]
+        lines.append(f"{display_path}:{hit['line']}: {hit['excerpt']}")
     if truncated:
         lines.append(f"omitted matches: {total - len(hits)}")
     if total == 0:
