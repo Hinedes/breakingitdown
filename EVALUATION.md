@@ -207,6 +207,61 @@ Reading:
 Evidence: `evidence/ladder/repro/runs/` (4 conditions), summary sha
 838f5bc0..., SHA256SUMS present. n=2 per cell now; still no capability claim.
 
+### Methodology correction — short-task evals do not test BID's purpose (2026-08-03)
+
+The evaluation runs on stats_tools, the ladder L1-L3, and the mechanism
+demo were all SHORT tasks: single-file, 5-20 line functions that a 4B model
+completes in one Direct session (L2: Direct PASS 33/33 in 61 s). BID's
+mechanism — decomposition, externalized state, snapshots, rollback,
+provisional->Manager reconciliation — exists for ONE purpose: work whose
+horizon exceeds a single session's context and reliability. On short tasks
+BID is pure overhead by construction, so the "16.4x overhead / no benefit"
+reading of those runs was measuring the wrong axis and does not bear on
+BID's purpose. The difficulty ladder graded algorithmic complexity
+(roman > word_count), but the axis that matters is HORIZON: number of
+dependent steps, accumulated state, cross-file interface consistency, error
+compounding across stages.
+
+Corrective conclusion: the short-task results stand only as
+reliability/bounded-failure observations. The question "does BID enable work
+Direct cannot finish" is untested and requires a task that physically cannot
+fit one session: multi-file, multi-stage, state-dependent, where each step
+depends on the exact interface of the previous step. Eval 5 is that test.
+
+### Eval 5 — Long-horizon pipeline (2026-08-04, v0.2.0-rc1, commit e1fe1dd)
+
+First test of BID's actual purpose: a task that cannot fit in one 4B
+session. 5-module import chain (schema -> loader -> filters -> report ->
+pipeline) + sample_data.csv, end-to-end contract, deterministic oracle
+(16 checks). Each module is within the model's reach individually; the
+aggregate requires cross-file interface consistency across stages.
+
+| Condition | Termination | Oracle | Wall |
+|---|---|---|---|
+| BID | bid-exit-1 (REWORK bound on T5) | FAIL 5/16 | 576 s |
+| Direct | done (no files written) | FAIL 0/16 | 5.7 s |
+
+BID: T1-T4 ratified in dependency order (chained VC bases s1->s5->s7->s9->s11)
+with correct per-module interfaces; T5 (pipeline integration) drifted: the
+worker rewrote earlier modules with dict-based interfaces and wrong CSV
+columns, the Reviewer rejected with precise contract reasons across 4
+REWORKs until the bound fired. The pipeline broke at the integration stage
+- the expected long-horizon failure point.
+
+Direct: emitted Done in 5.7 s with 1,185 total tokens and zero files - the
+single session treated the multi-stage task as beyond its reach.
+
+Reading: both fail, so the decision cell is Direct fail / BID fail -> no
+demonstrated benefit. But the failure mode differs in the direction BID's
+design predicts: BID made real progress (4/5 modules ratified, correct
+interfaces) before the integration drift exceeded the REWORK bound, while
+Direct produced nothing. This is consistent with BID as a horizon extender
+whose remaining defect is the same-task REWORK bound firing on integration
+rewrites of already-ratified files. n=1; no capability claim.
+
+Evidence: evidence/longhorizon/runs/ (181 files hashed), summary sha
+138dda20...
+
 ## Demonstration (mechanism only, no capability claim)
 
 Any future "successful loop" run is labeled as a mechanism demonstration:

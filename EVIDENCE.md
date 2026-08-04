@@ -73,6 +73,17 @@ the exact paths, hashes, and verification commands are defined here.
   7/8, different bugs). Semantic false-negative (oracle PASS while bid-exit-1)
   reproduced in both L2 BID runs.
 
+## Eval 5 — Long-horizon pipeline
+
+- Evidence: `evidence/longhorizon/runs/` (bid + direct conditions)
+- Freeze: `evidence/longhorizon/FREEZE.md`, task/evaluator hashes in
+  `evidence/longhorizon/SHA256SUMS`
+- Summary: `evidence/longhorizon/runs/summary.json` (sha 138dda20...)
+- Result: BID FAIL 5/16 (4 modules ratified, integration drift hit REWORK
+  bound on T5); Direct FAIL 0/16 (Done with zero files, 1,185 tokens).
+  Both fail -> no demonstrated benefit; BID's failure mode matches its
+  design prediction (progress then integration drift).
+
 ## Freeze / task assets (not run evidence, but frozen inputs)
 
 - Benchmark v2 task + oracle: `/home/iclab/bid-eval/benchmark-v2/`
