@@ -255,6 +255,10 @@ _FIND_CLOSED_RESULT = (
     "FIND is closed for this Worker; use READ, WRITE, REPLACE, RUN, SEARCH, or Done."
 )
 _FIND_CLOSURE_TRUNCATION = "... [FIND evidence truncated]"
+_EXECUTION_PHASE_INSTRUCTION = (
+    "Repository retrieval is complete and FIND is unavailable.\n"
+    "Continue using READ, WRITE, REPLACE, RUN, SEARCH, or Done."
+)
 
 
 def _escape_find_closure_text(value):
@@ -598,6 +602,7 @@ class WorkerAdapter:
         self._find_evidence = []
         self._find_closed = False
         self._find_closure_packet = ""
+        self._execution_phase_handoff_done = False
         self._last_find_useful = False
         self._cache_hits = 0
         self.feedback = feedback or ""
@@ -1046,6 +1051,22 @@ class WorkerAdapter:
         )
         return self._finish_find_attempt(result, attempt)
 
+    def _execution_phase_messages(self, worker_policy, task_description, feedback):
+        messages = [
+            {"role": "system", "content": worker_policy},
+            {"role": "user", "content": task_description},
+        ]
+        if feedback:
+            messages.append({
+                "role": "user",
+                "content": f"Previous reviewer feedback:\n{feedback}",
+            })
+        messages.extend([
+            {"role": "user", "content": self._find_closure_packet},
+            {"role": "user", "content": _EXECUTION_PHASE_INSTRUCTION},
+        ])
+        return messages
+
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
         tasks = todo_mod.parse_todo(todo_text)
@@ -1056,11 +1077,12 @@ class WorkerAdapter:
             )
 
         worker_policy = _read(self.workspace, "docs/worker.md")
-        task_prompt = (
-            f"\nTask T{self.task_number}: {task['description']}\n\n"
-        )
+        task_description = f"Task T{self.task_number}: {task['description']}"
+        task_prompt = f"\n{task_description}\n\n"
+        feedback_prompt = ""
         if self.feedback:
-            task_prompt += f"\nPrevious reviewer feedback:\n{self.feedback}\n"
+            feedback_prompt = f"Previous reviewer feedback:\n{self.feedback}"
+            task_prompt += f"\n{feedback_prompt}\n"
         base_task_prompt = task_prompt
         startup_context = self._startup_context_text()
         if startup_context:
@@ -1089,6 +1111,19 @@ class WorkerAdapter:
         self._fully_read_paths.clear()
 
         while time.monotonic() - session_start < hard_ceiling:
+            if self._find_closed and not self._execution_phase_handoff_done:
+                messages = self._execution_phase_messages(
+                    worker_policy, task_description, self.feedback
+                )
+                self._execution_phase_handoff_done = True
+                self._record_context_event(
+                    "repo_context_execution_phase_handoff",
+                    find_attempts=self._find_attempts,
+                    packet_length=len(self._find_closure_packet),
+                    message_count=len(messages),
+                    feedback=bool(self.feedback),
+                )
+
             req_tok = self.obs.start("model_request", role="worker", task=f"T{self.task_number}", attempt=1)
             try:
                 response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
@@ -1130,15 +1165,17 @@ class WorkerAdapter:
                 commands = []
 
             response_has_non_find = any(cmd["type"] != "FIND" for cmd in commands)
-            closed_find_notice = False
             if self._find_closed and any(cmd["type"] == "FIND" for cmd in commands):
                 if not response_has_non_find:
+                    self._record_context_event(
+                        "repo_context_post_handoff_find_stall",
+                        find_attempts=self._find_attempts,
+                        packet_length=len(self._find_closure_packet),
+                    )
                     return self._worker_result(
                         "stalled",
                         reason="FIND issued after retrieval closure",
                     )
-                messages.append({"role": "user", "content": _FIND_CLOSED_RESULT})
-                closed_find_notice = True
                 commands = [cmd for cmd in commands if cmd["type"] != "FIND"]
 
             if not commands:
@@ -1253,16 +1290,15 @@ class WorkerAdapter:
                         if self._find_closed:
                             if not response_has_non_find:
                                 self.obs.end(cmd_tok)
+                                self._record_context_event(
+                                    "repo_context_post_handoff_find_stall",
+                                    find_attempts=self._find_attempts,
+                                    packet_length=len(self._find_closure_packet),
+                                )
                                 return self._worker_result(
                                     "stalled",
                                     reason="FIND issued after retrieval closure",
                                 )
-                            if not closed_find_notice:
-                                messages.append({
-                                    "role": "user",
-                                    "content": _FIND_CLOSED_RESULT,
-                                })
-                                closed_find_notice = True
                             self.obs.end(cmd_tok)
                             continue
                         result = self._find_command(cmd.get("query", ""))
@@ -1489,22 +1525,28 @@ class WorkerAdapter:
                 system = messages[0]
                 self._read_ledger.clear()
                 self._fully_read_paths.clear()
-                reset_context = self._reset_context_text()
-                reset_prompt = base_task_prompt
-                if reset_context:
-                    reset_prompt += "\n\n" + reset_context
-                messages = [
-                    system,
-                    {
-                        "role": "user",
-                        "content": (
-                            f"{reset_prompt}\n\n"
-                            f"[ERROR: did not make progress. "
-                            f"Last command: {last_sig.split('|')[0] if '|' in last_sig else last_sig}. "
-                            f"Try a different approach.]"
-                        ),
-                    },
-                ]
+                reset_error = (
+                    f"[ERROR: did not make progress. "
+                    f"Last command: {last_sig.split('|')[0] if '|' in last_sig else last_sig}. "
+                    f"Try a different approach.]"
+                )
+                if self._execution_phase_handoff_done:
+                    messages = self._execution_phase_messages(
+                        worker_policy, task_description, self.feedback
+                    )
+                    messages.append({"role": "user", "content": reset_error})
+                else:
+                    reset_context = self._reset_context_text()
+                    reset_prompt = base_task_prompt
+                    if reset_context:
+                        reset_prompt += "\n\n" + reset_context
+                    messages = [
+                        system,
+                        {
+                            "role": "user",
+                            "content": f"{reset_prompt}\n\n{reset_error}",
+                        },
+                    ]
                 observer = Observer(self.workspace, self.task_number)
                 last_sig = None
                 turn_repeat = 0

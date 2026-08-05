@@ -760,10 +760,68 @@ def test_find_only_output_after_closure_stalls_without_another_rejection():
         assert result["status"] == "stalled"
         assert result["reason"] == "FIND issued after retrieval closure"
         assert len(backend.call_history) == 2
+        handoff = backend.call_history[1]["messages"]
+        assert "Task T1: Inspect files" in handoff[1]["content"]
+        assert "# FIND evidence closure" in handoff[2]["content"]
+        assert adapter._EXECUTION_PHASE_INSTRUCTION == handoff[3]["content"]
+        assert not any(
+            message["content"] == adapter._FIND_CLOSED_RESULT
+            for message in handoff
+        )
         assert not any(
             event.get("outcome") == "budget_rejected"
             for event in result["observability_events"]
         )
+        names = [event["event"] for event in result["observability_events"]]
+        assert names.count("repo_context_find_closure") == 1
+        assert names.count("repo_context_execution_phase_handoff") == 1
+        assert names.count("repo_context_post_handoff_find_stall") == 1
+
+
+def test_execution_handoff_rebuilds_history_with_feedback_and_drops_find_dialogue():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "needle\n")
+        backend = model.MockBackend([
+            text_response("FIND needle"),
+            text_response("WRITE file.txt\nnew\nEND WRITE\nDone"),
+        ])
+        worker = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_finds=1),
+            1,
+            feedback="Reviewer requires the invalid path regression.",
+        )
+
+        result = worker.run(backend)
+
+        assert result["status"] == "done"
+        assert open(os.path.join(workspace, "file.txt"), encoding="utf-8").read() == "new"
+        assert len(backend.call_history) == 2
+        initial = backend.call_history[0]["messages"]
+        handoff = backend.call_history[1]["messages"]
+        assert handoff[0] == initial[0]
+        assert [message["role"] for message in handoff] == [
+            "system", "user", "user", "user", "user"
+        ]
+        assert handoff[1]["content"] == "Task T1: Inspect files"
+        assert handoff[2]["content"] == (
+            "Previous reviewer feedback:\n"
+            "Reviewer requires the invalid path regression."
+        )
+        assert "# FIND evidence closure" in handoff[3]["content"]
+        assert handoff[3]["content"] == worker._find_closure_packet
+        assert handoff[4]["content"] == adapter._EXECUTION_PHASE_INSTRUCTION
+        assert not any(message["role"] == "assistant" for message in handoff)
+        assert not any(message["content"] == "FIND needle" for message in handoff)
+        assert not any(
+            message["content"] == adapter._FIND_CLOSED_RESULT
+            for message in handoff
+        )
+
+        names = [event["event"] for event in result["observability_events"]]
+        assert names.count("repo_context_find_closure") == 1
+        assert names.count("repo_context_execution_phase_handoff") == 1
+        assert "repo_context_post_handoff_find_stall" not in names
 
 
 def test_find_closed_mixed_command_executes_write():
@@ -783,12 +841,59 @@ def test_find_closed_mixed_command_executes_write():
 
         assert result["status"] == "done"
         assert open(os.path.join(workspace, "file.txt"), encoding="utf-8").read() == "new"
-        second_messages = backend.call_history[2]["messages"]
-        assert sum(
+        handoff = backend.call_history[1]["messages"]
+        assert handoff[-1]["content"] == adapter._EXECUTION_PHASE_INSTRUCTION
+        assert not any(
             message["content"] == adapter._FIND_CLOSED_RESULT
-            for message in second_messages
-            if message["role"] == "user"
-        ) == 1
+            for call in backend.call_history
+            for message in call["messages"]
+        )
+
+
+def test_soft_reset_preserves_execution_phase_and_closed_find():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "content\n")
+        backend = model.MockBackend([
+            text_response("FIND needle"),
+            text_response("READ file.txt"),
+            text_response("READ file.txt"),
+            text_response("FIND reopened"),
+        ])
+        worker = adapter.WorkerAdapter(
+            worker_config(
+                workspace,
+                "tools",
+                repo_context_max_finds=1,
+                repeat_action_limit=1,
+            ),
+            1,
+        )
+
+        result = worker.run(backend)
+
+        assert result["status"] == "stalled"
+        assert result["reason"] == "FIND issued after retrieval closure"
+        assert len(backend.call_history) == 4
+        final_history = backend.call_history[-1]["messages"]
+        assert any(
+            message["content"] == adapter._EXECUTION_PHASE_INSTRUCTION
+            for message in final_history
+        )
+        assert any(
+            message["content"] == worker._find_closure_packet
+            for message in final_history
+        )
+        assert not any(
+            message["content"] == adapter._REPO_CONTEXT_NOTICE
+            for message in final_history
+        )
+        assert worker._find_closed is True
+        assert worker._find_attempts == 1
+        names = [event["event"] for event in result["observability_events"]]
+        assert names.count("repo_context_find_closure") == 1
+        assert names.count("repo_context_execution_phase_handoff") == 1
+        assert names.count("repo_context_post_handoff_find_stall") == 1
 
 
 def test_new_worker_gets_a_fresh_find_phase():
@@ -800,11 +905,13 @@ def test_new_worker_gets_a_fresh_find_phase():
         )
         assert "# FIND evidence closure" in first._find_command("needle")
         assert first._find_closed
+        assert first._execution_phase_handoff_done is False
 
         second = adapter.WorkerAdapter(
             worker_config(workspace, "tools", repo_context_max_finds=1), 1
         )
         assert second._find_closed is False
+        assert second._execution_phase_handoff_done is False
         assert "matches: 1" in second._find_command("needle")
         assert second._find_attempts == 1
 
@@ -996,10 +1103,15 @@ def test_duplicate_find_escapes_controls_and_hides_query_from_events():
 def test_off_mode_does_not_enable_find_ledger_or_budget():
     with tempfile.TemporaryDirectory() as workspace:
         prepare_worker(workspace)
-        result, _ = run_worker(
+        result, backend = run_worker(
             workspace,
             "off",
             ["FIND missing", check_task_command()],
             repo_context_max_finds=0,
         )
         assert result["status"] == "done"
+        assert not any(
+            message["content"] == adapter._EXECUTION_PHASE_INSTRUCTION
+            for call in backend.call_history
+            for message in call["messages"]
+        )
