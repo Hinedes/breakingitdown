@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import tempfile
@@ -29,6 +30,7 @@ def worker_config(workspace, mode="off", **overrides):
         "repo_context_max_chars": 12000,
         "repo_context_max_find_hits": 100,
         "repo_context_max_finds": 32,
+        "repo_context_find_closure_max_chars": 8000,
         "repo_context_max_file_bytes": 1048576,
     }
     config.update(overrides)
@@ -59,6 +61,12 @@ def run_worker(workspace, mode, responses, **config_overrides):
     backend = model.MockBackend([text_response(response) for response in responses])
     result = adapter.WorkerAdapter(config, 1).run(backend)
     return result, backend
+
+
+def closure_packet(text):
+    marker = "# FIND evidence closure"
+    assert marker in text
+    return text[text.index(marker):]
 
 
 def test_index_refresh_and_freshness():
@@ -370,6 +378,8 @@ def test_modes_and_compatibility_alias(monkeypatch):
     assert harness.get_config()["repo_context_mode"] == "inject"
     monkeypatch.setenv("BID_REPO_CONTEXT_MAX_FINDS", "7")
     assert harness.get_config()["repo_context_max_finds"] == 7
+    monkeypatch.setenv("BID_REPO_CONTEXT_FIND_CLOSURE_MAX_CHARS", "321")
+    assert harness.get_config()["repo_context_find_closure_max_chars"] == 321
     monkeypatch.setenv("BID_REPO_CONTEXT", "unexpected")
     with pytest.raises(ValueError, match="BID_REPO_CONTEXT"):
         harness.get_config()
@@ -649,41 +659,39 @@ def test_duplicate_find_participates_in_stall_detection():
         assert outcomes[:3] == ["executed", "deduplicated", "deduplicated"]
 
 
-def test_find_budget_counts_malformed_duplicate_and_rejected_attempts():
+def test_find_closure_occurs_on_final_permitted_attempt():
     with tempfile.TemporaryDirectory() as workspace:
         prepare_worker(workspace)
-        worker = adapter.WorkerAdapter(
-            worker_config(workspace, "tools", repo_context_max_finds=3), 1
-        )
+        write_file(workspace, "file.txt", "needle\n")
+        worker = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
 
-        assert "must not be empty" in worker._find_command("")
-        assert "matches: 0" in worker._find_command("missing")
-        assert worker._find_command("missing").startswith("unchanged:")
-        rejected = worker._find_command("another")
+        for index in range(31):
+            assert "matches: 0" in worker._find_command(f"missing-{index}")
+        final = worker._find_command("needle")
+        packet = closure_packet(final)
 
-        assert rejected == "error: FIND limit (3) reached"
-        assert worker._find_attempts == 4
-        assert worker._last_find_useful is False
+        assert "file.txt:1:" in final
+        assert "needle (matches=1)" in packet
+        assert worker._find_attempts == 32
+        assert worker._find_closed is True
+        assert worker._find_evidence[-1]["literal"] == "needle"
+        assert worker._find_evidence[-1]["execution_order"] == 32
+        assert worker._find_command("attempt-33") == adapter._FIND_CLOSED_RESULT
+        assert worker._find_attempts == 32
         events = [
             event
             for event in worker._repo_event_entries
-            if event["event"] == "repo_context_find"
+            if event["event"] in {"repo_context_find", "repo_context_find_closure"}
         ]
-        assert [event["attempt"] for event in events] == [1, 2, 3, 4]
-        assert [event["outcome"] for event in events] == [
-            "executed", "executed", "deduplicated", "budget_rejected"
-        ]
-        fresh = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
-        assert fresh._find_attempts == 0
-        assert "matches: 0" in fresh._find_command("fresh-query")
-        assert fresh._find_attempts == 1
+        assert sum(event["event"] == "repo_context_find_closure" for event in events) == 1
+        assert not any(event.get("outcome") == "budget_rejected" for event in events)
 
 
 def test_find_budget_survives_a_soft_reset():
     with tempfile.TemporaryDirectory() as workspace:
         prepare_worker(workspace)
         responses = ["FIND repeated"] * 3
-        responses.extend(f"FIND unique-{index}" for index in range(30))
+        responses.extend(f"FIND unique-{index}" for index in range(29))
         responses.append(check_task_command())
         result, backend = run_worker(
             workspace, "tools", responses, repeat_action_limit=1
@@ -695,9 +703,15 @@ def test_find_budget_survives_a_soft_reset():
             for event in result["observability_events"]
             if event["event"] == "repo_context_find"
         ]
-        assert len(events) == 33
-        assert events[-1]["attempt"] == 33
-        assert events[-1]["outcome"] == "budget_rejected"
+        assert len(events) == 32
+        assert events[-1]["attempt"] == 32
+        assert events[-1]["outcome"] == "executed"
+        closures = [
+            event
+            for event in result["observability_events"]
+            if event["event"] == "repo_context_find_closure"
+        ]
+        assert len(closures) == 1
         assert any(
             "did not make progress" in call["messages"][1]["content"]
             for call in backend.call_history
@@ -709,7 +723,7 @@ def test_alternating_duplicate_finds_are_bounded_by_budget():
         prepare_worker(workspace)
         responses = [
             f"FIND {'alpha' if index % 2 == 0 else 'beta'}"
-            for index in range(33)
+            for index in range(32)
         ]
         responses.append(check_task_command())
         result, backend = run_worker(
@@ -722,25 +736,213 @@ def test_alternating_duplicate_finds_are_bounded_by_budget():
             for event in result["observability_events"]
             if event["event"] == "repo_context_find"
         ]
-        assert len(events) == 33
-        assert events[-1]["outcome"] == "budget_rejected"
+        assert len(events) == 32
+        assert events[-1]["attempt"] == 32
+        assert events[-1]["outcome"] == "deduplicated"
+        assert sum(
+            event["event"] == "repo_context_find_closure"
+            for event in result["observability_events"]
+        ) == 1
         assert not any(
             "did not make progress" in call["messages"][1]["content"]
             for call in backend.call_history
         )
 
 
-def test_find_attempt_33_is_rejected_at_default_limit():
+def test_find_only_output_after_closure_stalls_without_another_rejection():
     with tempfile.TemporaryDirectory() as workspace:
         prepare_worker(workspace)
-        worker = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+        responses = ["FIND alpha", "FIND beta"]
+        result, backend = run_worker(
+            workspace, "tools", responses, repo_context_max_finds=1
+        )
 
-        for index in range(32):
-            assert "matches: 0" in worker._find_command(f"missing-{index}")
-        assert worker._find_command("attempt-33") == "error: FIND limit (32) reached"
-        assert worker._find_attempts == 33
-        assert worker._last_find_useful is False
-        assert worker._repo_event_entries[-1]["outcome"] == "budget_rejected"
+        assert result["status"] == "stalled"
+        assert result["reason"] == "FIND issued after retrieval closure"
+        assert len(backend.call_history) == 2
+        assert not any(
+            event.get("outcome") == "budget_rejected"
+            for event in result["observability_events"]
+        )
+
+
+def test_find_closed_mixed_command_executes_write():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "needle\n")
+        result, backend = run_worker(
+            workspace,
+            "tools",
+            [
+                "FIND needle",
+                "FIND after-closure\nWRITE file.txt\nnew\nEND WRITE",
+                "Done",
+            ],
+            repo_context_max_finds=1,
+        )
+
+        assert result["status"] == "done"
+        assert open(os.path.join(workspace, "file.txt"), encoding="utf-8").read() == "new"
+        second_messages = backend.call_history[2]["messages"]
+        assert sum(
+            message["content"] == adapter._FIND_CLOSED_RESULT
+            for message in second_messages
+            if message["role"] == "user"
+        ) == 1
+
+
+def test_new_worker_gets_a_fresh_find_phase():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "needle\n")
+        first = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_finds=1), 1
+        )
+        assert "# FIND evidence closure" in first._find_command("needle")
+        assert first._find_closed
+
+        second = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_finds=1), 1
+        )
+        assert second._find_closed is False
+        assert "matches: 1" in second._find_command("needle")
+        assert second._find_attempts == 1
+
+
+def test_find_closure_deduplicates_coordinates_and_zero_literals():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "needle here\n")
+        worker = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_finds=4), 1
+        )
+
+        worker._find_command("needle")
+        worker._find_command("nee")
+        worker._find_command("missing")
+        final = worker._find_command("missing")
+        packet = closure_packet(final)
+
+        assert packet.count("file.txt:1:") == 1
+        assert "needle (matches=1)" in packet
+        assert "nee (matches=1)" in packet
+        assert packet.count("literal=missing matches=0") == 1
+        assert final.count("# FIND evidence closure") == 1
+
+
+def test_find_closure_sorts_coordinates_and_excludes_stale_fingerprints():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "z.txt", "needle\n")
+        write_file(workspace, "a.txt", "needle\n")
+        worker = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_finds=3), 1
+        )
+
+        worker._find_command("needle")
+        worker._find_command("z")
+        ordered_packet = closure_packet(worker._find_command("a"))
+        coordinates = [
+            line
+            for line in ordered_packet.splitlines()
+            if line.startswith("- ") and ":1: literals=" in line
+        ]
+        assert coordinates[0].startswith("- a.txt:1:")
+        assert coordinates[1].startswith("- z.txt:1:")
+
+        write_file(workspace, "z.txt", "needle\n")
+        worker = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_finds=3), 1
+        )
+        worker._find_command("needle")
+        write_file(workspace, "z.txt", "prefix\nneedle\n")
+        worker._find_command("needle")
+        stale_packet = closure_packet(worker._find_command("missing"))
+        assert "stale evidence excluded=1" in stale_packet
+        assert "z.txt:1:" not in stale_packet
+        assert "z.txt:2:" in stale_packet
+
+
+def test_find_closure_bound_truncates_complete_escaped_coordinate_lines():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "00-control.txt", "needle\x07\n")
+        for index in range(1, 14):
+            write_file(workspace, f"{index:02d}.txt", "needle\n")
+        worker = adapter.WorkerAdapter(
+            worker_config(
+                workspace,
+                "tools",
+                repo_context_max_finds=3,
+                repo_context_find_closure_max_chars=500,
+            ),
+            1,
+        )
+
+        worker._find_command("needle")
+        worker._find_command("other")
+        packet = closure_packet(worker._find_command("missing"))
+        closure_event = next(
+            event
+            for event in worker._repo_event_entries
+            if event["event"] == "repo_context_find_closure"
+        )
+
+        assert len(packet) <= 500
+        assert packet.endswith(adapter._FIND_CLOSURE_TRUNCATION)
+        assert "00-control.txt:1:" in packet
+        assert "\\u0007" in packet
+        assert "\x07" not in packet
+        assert all(
+            "excerpt=" in line
+            for line in packet.splitlines()
+            if line.startswith("- ") and ":1: literals=" in line
+        )
+        assert closure_event["packet_length"] == len(packet)
+        assert closure_event["packet_sha256"] == hashlib.sha256(
+            packet.encode("utf-8")
+        ).hexdigest()
+        assert closure_event["truncated"] is True
+        assert "packet" not in closure_event
+
+
+def test_find_closure_refresh_failure_excludes_stale_evidence_and_continues():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "needle\n")
+        worker = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_finds=1), 1
+        )
+        original_refresh = worker._repo_context.refresh
+        calls = 0
+
+        def fail_closure_refresh():
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise OSError("closure refresh failed")
+            return original_refresh()
+
+        worker._repo_context.refresh = fail_closure_refresh
+        backend = model.MockBackend([
+            text_response("FIND needle"),
+            text_response("WRITE file.txt\nnew\nEND WRITE\nDone"),
+        ])
+        result = worker.run(backend)
+
+        assert result["status"] == "done"
+        assert open(os.path.join(workspace, "file.txt"), encoding="utf-8").read() == "new"
+        closure_messages = [
+            message["content"]
+            for call in backend.call_history
+            for message in call["messages"]
+            if message["role"] == "user" and "# FIND evidence closure" in message["content"]
+        ]
+        assert len(closure_messages) == 1
+        packet = closure_packet(closure_messages[0])
+        assert "final repository refresh failed; stale evidence omitted" in packet
+        assert "file.txt:1:" not in packet
+        assert worker._find_closed is True
 
 
 def test_find_zero_guidance_and_literal_regex_characters():

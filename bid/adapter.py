@@ -1,5 +1,6 @@
 import difflib
 import hashlib
+import json
 import os
 import shlex
 import re
@@ -246,6 +247,18 @@ _FIND_LITERAL_GUIDANCE = (
     "FIND is fixed-literal, not regex. Characters such as . * [ ] ^ $ and quotes "
     "are searched literally."
 )
+_FIND_CLOSURE_STATEMENT = (
+    "FIND is now closed for this Worker; remaining work must use READ, WRITE, "
+    "REPLACE, RUN, SEARCH, or Done."
+)
+_FIND_CLOSED_RESULT = (
+    "FIND is closed for this Worker; use READ, WRITE, REPLACE, RUN, SEARCH, or Done."
+)
+_FIND_CLOSURE_TRUNCATION = "... [FIND evidence truncated]"
+
+
+def _escape_find_closure_text(value):
+    return json.dumps(str(value), ensure_ascii=True)[1:-1]
 
 
 def _display_find_query(query, limit=160):
@@ -582,6 +595,9 @@ class WorkerAdapter:
         self._find_attempts = 0
         self._find_limit = config.get("repo_context_max_finds", 32)
         self._find_ledger = {}
+        self._find_evidence = []
+        self._find_closed = False
+        self._find_closure_packet = ""
         self._last_find_useful = False
         self._cache_hits = 0
         self.feedback = feedback or ""
@@ -759,7 +775,181 @@ class WorkerAdapter:
         )
         return map_result["output"]
 
+    def _finish_find_attempt(self, result, attempt):
+        if self._find_limit > 0 and attempt == self._find_limit:
+            return result + "\n\n" + self._close_find()
+        return result
+
+    def _build_find_closure_packet(self, fingerprint=None, warning=False):
+        max_chars = self.config.get(
+            "repo_context_find_closure_max_chars",
+            repo_context_mod.DEFAULT_FIND_CLOSURE_MAX_CHARS,
+        )
+        try:
+            max_chars = max(0, int(max_chars))
+        except (TypeError, ValueError):
+            max_chars = repo_context_mod.DEFAULT_FIND_CLOSURE_MAX_CHARS
+
+        if warning:
+            current_records = []
+            stale_count = len(self._find_evidence)
+        else:
+            current_records = [
+                record
+                for record in self._find_evidence
+                if record["fingerprint"] == fingerprint
+            ]
+            stale_count = len(self._find_evidence) - len(current_records)
+
+        positive_records = [
+            record for record in current_records if record["match_count"] > 0
+        ]
+        zero_literals = sorted({
+            record["literal"]
+            for record in current_records
+            if record["match_count"] == 0
+        })
+        coordinates = {}
+        positive_without_coordinates = set()
+        for record in current_records:
+            if record["match_count"] <= 0:
+                continue
+            valid_hits = 0
+            for hit in record["hits"]:
+                path = hit.get("path")
+                line = hit.get("line")
+                normalized = repo_context_mod._relative_path(path)
+                if (
+                    not isinstance(path, str)
+                    or normalized != path
+                    or os.path.isabs(path)
+                    or repo_context_mod.is_excluded_path(path)
+                    or not isinstance(line, int)
+                    or line < 1
+                ):
+                    continue
+                valid_hits += 1
+                key = (path, line)
+                coordinate = coordinates.setdefault(
+                    key,
+                    {"excerpt": "", "literals": {}},
+                )
+                literal_matches = coordinate["literals"].setdefault(
+                    record["literal"], set()
+                )
+                literal_matches.add(record["match_count"])
+                excerpt = _escape_find_closure_text(hit.get("excerpt", ""))
+                if not coordinate["excerpt"] or excerpt < coordinate["excerpt"]:
+                    coordinate["excerpt"] = excerpt
+            if not valid_hits:
+                positive_without_coordinates.add(
+                    (record["literal"], record["match_count"])
+                )
+
+        coordinate_lines = []
+        for (path, line), coordinate in sorted(coordinates.items()):
+            literal_parts = []
+            for literal in sorted(coordinate["literals"]):
+                matches = ",".join(
+                    str(count) for count in sorted(coordinate["literals"][literal])
+                )
+                literal_parts.append(
+                    f"{_escape_find_closure_text(literal)} (matches={matches})"
+                )
+            display_path = _escape_find_closure_text(path)
+            coordinate_lines.append(
+                f"- {display_path}:{line}: literals={'; '.join(literal_parts)} "
+                f"excerpt={coordinate['excerpt']}"
+            )
+
+        positive_lines = [
+            f"- literal={_escape_find_closure_text(literal)} matches={matches} "
+            "(no emitted coordinates)"
+            for literal, matches in sorted(positive_without_coordinates)
+        ]
+        zero_lines = [
+            f"- literal={_escape_find_closure_text(literal)} matches=0"
+            for literal in zero_literals
+        ]
+        lines = [
+            "# FIND evidence closure",
+            f"fingerprint={fingerprint or 'unavailable'}",
+            f"executed={len(current_records)}; positive={len(positive_records)}; "
+            f"zero-result-literals={len(zero_literals)}; "
+            f"coordinates={len(coordinates)}",
+        ]
+        if warning:
+            lines.append("warning=final repository refresh failed; stale evidence omitted")
+        elif stale_count:
+            lines.append(f"stale evidence excluded={stale_count}")
+        candidates = coordinate_lines + positive_lines + zero_lines
+
+        closure = _FIND_CLOSURE_STATEMENT
+
+        def render(body, truncated=False):
+            suffix = closure
+            if truncated:
+                suffix += " " + _FIND_CLOSURE_TRUNCATION
+            return "\n".join(body + [suffix])
+
+        body = list(lines)
+        truncated = False
+        for candidate in candidates:
+            if len(render(body + [candidate])) <= max_chars:
+                body.append(candidate)
+            else:
+                truncated = True
+                break
+        if truncated:
+            while len(body) > 1 and len(render(body, truncated=True)) > max_chars:
+                body.pop()
+        packet = render(body, truncated=truncated)
+        if len(packet) > max_chars:
+            compact_closure = (
+                "FIND closed for this Worker; use READ, WRITE, REPLACE, RUN, SEARCH, or Done."
+            )
+            packet = "\n".join([lines[0], compact_closure])
+            if truncated:
+                packet += " " + _FIND_CLOSURE_TRUNCATION
+            if len(packet) > max_chars:
+                packet = compact_closure
+                if truncated:
+                    packet += " " + _FIND_CLOSURE_TRUNCATION
+            if len(packet) > max_chars:
+                packet = packet[:max_chars]
+
+        return packet, {
+            "executed_query_count": len(current_records),
+            "positive_query_count": len(positive_records),
+            "distinct_coordinate_count": len(coordinates),
+            "zero_result_query_count": len(zero_literals),
+            "packet_length": len(packet),
+            "truncated": truncated,
+            "packet_sha256": hashlib.sha256(packet.encode("utf-8")).hexdigest(),
+        }
+
+    def _close_find(self):
+        if self._find_closed:
+            return self._find_closure_packet
+        self._find_closed = True
+        if self._refresh_repo_context() is None:
+            packet, metrics = self._build_find_closure_packet(warning=True)
+        else:
+            fingerprint = repo_context_mod.search_state_fingerprint(
+                self._repo_context.index
+            )
+            packet, metrics = self._build_find_closure_packet(fingerprint)
+        self._find_closure_packet = packet
+        self._record_context_event(
+            "repo_context_find_closure",
+            closed=True,
+            **metrics,
+        )
+        return packet
+
     def _find_command(self, query):
+        if self._find_closed:
+            return _FIND_CLOSED_RESULT
         self._find_attempts += 1
         self._last_find_useful = False
         attempt = self._find_attempts
@@ -791,7 +981,7 @@ class WorkerAdapter:
                 query_hash=query_hash,
                 query_length=len(query), result_count=0, truncated=False, source="command",
             )
-            return result
+            return self._finish_find_attempt(result, attempt)
 
         index_state = repo_context_mod.search_state_fingerprint(self._repo_context.index)
         previous = self._find_ledger.get(query)
@@ -815,7 +1005,7 @@ class WorkerAdapter:
                 truncated=False,
                 source="command",
             )
-            return result
+            return self._finish_find_attempt(result, attempt)
 
         search_result = self._repo_context.find_result(query, refresh=False)
         result = search_result["output"]
@@ -830,6 +1020,13 @@ class WorkerAdapter:
             "matches": search_result["total_matches"],
             "ok": search_result["ok"],
         }
+        self._find_evidence.append({
+            "literal": query,
+            "fingerprint": index_state,
+            "match_count": search_result["total_matches"],
+            "hits": [dict(hit) for hit in search_result["hits"]],
+            "execution_order": len(self._find_evidence) + 1,
+        })
         self._last_find_useful = search_result["ok"]
         self._record_context_event(
             "repo_context_find", time.monotonic() - started,
@@ -847,7 +1044,7 @@ class WorkerAdapter:
             skipped_unreadable=search_result["skipped"].get("unreadable", 0),
             source="command",
         )
-        return result
+        return self._finish_find_attempt(result, attempt)
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -931,6 +1128,18 @@ class WorkerAdapter:
                 )
             else:
                 commands = []
+
+            response_has_non_find = any(cmd["type"] != "FIND" for cmd in commands)
+            closed_find_notice = False
+            if self._find_closed and any(cmd["type"] == "FIND" for cmd in commands):
+                if not response_has_non_find:
+                    return self._worker_result(
+                        "stalled",
+                        reason="FIND issued after retrieval closure",
+                    )
+                messages.append({"role": "user", "content": _FIND_CLOSED_RESULT})
+                closed_find_notice = True
+                commands = [cmd for cmd in commands if cmd["type"] != "FIND"]
 
             if not commands:
                 _log_worker_event(self._vc, "worker parsed command", "(none)")
@@ -1041,6 +1250,21 @@ class WorkerAdapter:
                         continue
 
                     if cmd["type"] == "FIND":
+                        if self._find_closed:
+                            if not response_has_non_find:
+                                self.obs.end(cmd_tok)
+                                return self._worker_result(
+                                    "stalled",
+                                    reason="FIND issued after retrieval closure",
+                                )
+                            if not closed_find_notice:
+                                messages.append({
+                                    "role": "user",
+                                    "content": _FIND_CLOSED_RESULT,
+                                })
+                                closed_find_notice = True
+                            self.obs.end(cmd_tok)
+                            continue
                         result = self._find_command(cmd.get("query", ""))
                         if self._last_find_useful:
                             useful = True

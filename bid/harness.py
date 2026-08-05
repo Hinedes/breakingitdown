@@ -32,6 +32,9 @@ def get_config():
         "repo_context_max_chars": int(os.environ.get("BID_REPO_CONTEXT_MAX_CHARS", "12000")),
         "repo_context_max_find_hits": int(os.environ.get("BID_REPO_CONTEXT_MAX_FIND_HITS", "100")),
         "repo_context_max_finds": int(os.environ.get("BID_REPO_CONTEXT_MAX_FINDS", "32")),
+        "repo_context_find_closure_max_chars": int(
+            os.environ.get("BID_REPO_CONTEXT_FIND_CLOSURE_MAX_CHARS", "8000")
+        ),
         "repo_context_max_file_bytes": int(
             os.environ.get("BID_REPO_CONTEXT_MAX_FILE_BYTES", "1048576")
         ),
