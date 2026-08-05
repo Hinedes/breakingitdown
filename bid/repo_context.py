@@ -437,6 +437,17 @@ def _entries_for(index):
     return index if isinstance(index, dict) else {}
 
 
+def search_state_fingerprint(index):
+    """Hash only the deterministic state used by literal search."""
+    searchable_state = [
+        (path, entry.get("classification"), entry.get("sha256"))
+        for path, entry in sorted(_entries_for(index).items())
+        if entry.get("type") == "file"
+    ]
+    payload = json.dumps(searchable_state, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _display_scope(scope):
     if scope in (None, "", "."):
         return None

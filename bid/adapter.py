@@ -242,6 +242,29 @@ _REPO_CONTEXT_ORIENTATION_FOOTER = (
     "Use MAP to inspect a narrower directory and FIND to locate a fixed literal.\n"
     "Do not repeat the same MAP or FIND request without changing the query or scope."
 )
+_FIND_LITERAL_GUIDANCE = (
+    "FIND is fixed-literal, not regex. Characters such as . * [ ] ^ $ and quotes "
+    "are searched literally."
+)
+
+
+def _display_find_query(query, limit=160):
+    displayed = []
+    used = 0
+    for index, char in enumerate(query):
+        if char.isprintable():
+            escaped = char
+        elif ord(char) <= 0xFF:
+            escaped = f"\\x{ord(char):02x}"
+        else:
+            escaped = f"\\u{ord(char):04x}"
+        if used + len(escaped) > limit:
+            return "".join(displayed) + "..."
+        displayed.append(escaped)
+        used += len(escaped)
+        if index + 1 >= len(query):
+            break
+    return "".join(displayed)
 
 
 def _parse_content_into_turns(content, finish_reason=None, repo_context_mode="off"):
@@ -556,6 +579,10 @@ class WorkerAdapter:
         self._search_cache = search_mod.SearchCache(self.workspace)
         self._search_count = 0
         self._search_limit = config.get("max_searches_per_worker", 10)
+        self._find_attempts = 0
+        self._find_limit = config.get("repo_context_max_finds", 32)
+        self._find_ledger = {}
+        self._last_find_useful = False
         self._cache_hits = 0
         self.feedback = feedback or ""
         self._run_evidence = []
@@ -733,18 +760,85 @@ class WorkerAdapter:
         return map_result["output"]
 
     def _find_command(self, query):
+        self._find_attempts += 1
+        self._last_find_useful = False
+        attempt = self._find_attempts
+        query_hash = hashlib.sha256(query.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+        if attempt > self._find_limit:
+            result = f"error: FIND limit ({self._find_limit}) reached"
+            self._record_context_event(
+                "repo_context_find",
+                ok=False,
+                outcome="budget_rejected",
+                attempt=attempt,
+                limit=self._find_limit,
+                query_hash=query_hash,
+                query_length=len(query),
+                result_count=0,
+                total_matches=0,
+                truncated=False,
+                source="command",
+            )
+            return result
+
         started = time.monotonic()
         if self._refresh_repo_context() is None:
             result = "error: repository context refresh failed"
             self._record_context_event(
                 "repo_context_find", time.monotonic() - started, ok=False,
+                outcome="error",
+                attempt=attempt,
+                query_hash=query_hash,
                 query_length=len(query), result_count=0, truncated=False, source="command",
             )
             return result
+
+        index_state = repo_context_mod.search_state_fingerprint(self._repo_context.index)
+        previous = self._find_ledger.get(query)
+        if previous and previous["index_state"] == index_state:
+            result = (
+                "unchanged: identical FIND query was already answered for the current repository state\n"
+                f"query: {_display_find_query(query)}\n"
+                f"previous matches: {previous['matches']}"
+            )
+            self._record_context_event(
+                "repo_context_find",
+                time.monotonic() - started,
+                outcome="deduplicated",
+                attempt=attempt,
+                query_hash=query_hash,
+                query_length=len(query),
+                index_state=index_state,
+                ok=previous.get("ok", True),
+                result_count=previous["matches"],
+                total_matches=previous["matches"],
+                truncated=False,
+                source="command",
+            )
+            return result
+
         search_result = self._repo_context.find_result(query, refresh=False)
+        result = search_result["output"]
+        if (
+            search_result["ok"]
+            and search_result["total_matches"] == 0
+            and any(char in query for char in ".*[]^$'\"|?+()\\")
+        ):
+            result += "\n" + _FIND_LITERAL_GUIDANCE
+        self._find_ledger[query] = {
+            "index_state": index_state,
+            "matches": search_result["total_matches"],
+            "ok": search_result["ok"],
+        }
+        self._last_find_useful = search_result["ok"]
         self._record_context_event(
             "repo_context_find", time.monotonic() - started,
-            ok=search_result["ok"], query_length=len(query),
+            ok=search_result["ok"],
+            outcome="executed",
+            attempt=attempt,
+            query_hash=query_hash,
+            index_state=index_state,
+            query_length=len(query),
             result_count=len(search_result["hits"]),
             total_matches=search_result["total_matches"],
             truncated=search_result["truncated"],
@@ -753,7 +847,7 @@ class WorkerAdapter:
             skipped_unreadable=search_result["skipped"].get("unreadable", 0),
             source="command",
         )
-        return search_result["output"]
+        return result
 
     def run(self, backend):
         todo_text = _read(self.workspace, "docs/todo.md")
@@ -948,7 +1042,7 @@ class WorkerAdapter:
 
                     if cmd["type"] == "FIND":
                         result = self._find_command(cmd.get("query", ""))
-                        if not result.startswith("error:"):
+                        if self._last_find_useful:
                             useful = True
                         sig = f"FIND {cmd.get('query', '')}|{result[:50]}"
                         if sig == last_sig:

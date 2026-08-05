@@ -28,6 +28,7 @@ def worker_config(workspace, mode="off", **overrides):
         "repo_context_mode": mode,
         "repo_context_max_chars": 12000,
         "repo_context_max_find_hits": 100,
+        "repo_context_max_finds": 32,
         "repo_context_max_file_bytes": 1048576,
     }
     config.update(overrides)
@@ -367,6 +368,8 @@ def test_modes_and_compatibility_alias(monkeypatch):
     assert harness.get_config()["repo_context_mode"] == "tools"
     monkeypatch.setenv("BID_REPO_CONTEXT", "1")
     assert harness.get_config()["repo_context_mode"] == "inject"
+    monkeypatch.setenv("BID_REPO_CONTEXT_MAX_FINDS", "7")
+    assert harness.get_config()["repo_context_max_finds"] == 7
     monkeypatch.setenv("BID_REPO_CONTEXT", "unexpected")
     with pytest.raises(ValueError, match="BID_REPO_CONTEXT"):
         harness.get_config()
@@ -484,3 +487,317 @@ def test_context_events_are_bounded_and_include_mode():
         assert "repo_context_read_deduplicated" in names
         assert all(event["mode"] == "tools" for event in result["observability_events"])
         assert all(len(str(event)) < 600 for event in result["observability_events"])
+
+
+def test_find_novelty_handles_zero_positive_and_changed_results():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", ("needle\n" * 120).encode())
+        worker = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+
+        first_zero = worker._find_command("missing")
+        assert "matches: 0" in first_zero
+        assert worker._last_find_useful is True
+
+        duplicate_zero = worker._find_command("missing")
+        assert duplicate_zero.startswith("unchanged:")
+        assert "previous matches: 0" in duplicate_zero
+        assert worker._last_find_useful is False
+
+        write_file(workspace, "file.txt", ("needle\nmissing\n" * 120).encode())
+        changed_result = worker._find_command("missing")
+        assert "matches: 120" in changed_result
+        assert worker._last_find_useful is True
+
+        first_positive = worker._find_command("needle")
+        duplicate_positive = worker._find_command("needle")
+        assert "file.txt:1:" in first_positive
+        assert duplicate_positive.startswith("unchanged:")
+        assert len(duplicate_positive) < len(first_positive)
+        assert worker._last_find_useful is False
+
+        outcomes = [
+            event["outcome"]
+            for event in worker._repo_event_entries
+            if event["event"] == "repo_context_find"
+        ]
+        assert outcomes == ["executed", "deduplicated", "executed", "executed", "deduplicated"]
+
+
+def test_search_fingerprint_is_stable_and_ignores_index_files():
+    with tempfile.TemporaryDirectory() as workspace:
+        write_file(workspace, "file.txt", "needle")
+        context = repo_context.RepositoryContext(workspace)
+        fingerprints = []
+        for _ in range(4):
+            context.refresh()
+            fingerprints.append(repo_context.search_state_fingerprint(context.index))
+        now = time.time_ns() + 2_000_000_000
+        os.utime(os.path.join(workspace, "file.txt"), ns=(now, now))
+        context.refresh()
+        fingerprints.append(repo_context.search_state_fingerprint(context.index))
+        write_file(workspace, ".bid/repo_context/index.tmp", "temporary")
+        context.refresh()
+        fingerprints.append(repo_context.search_state_fingerprint(context.index))
+
+        assert len(set(fingerprints)) == 1
+
+
+def test_failed_find_refresh_never_authorizes_a_stale_query():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "needle")
+        worker = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+        assert "matches: 1" in worker._find_command("needle")
+
+        original_refresh = worker._repo_context.refresh
+
+        def fail_refresh():
+            raise OSError("refresh failed")
+
+        worker._repo_context.refresh = fail_refresh
+        assert worker._find_command("needle").startswith("error:")
+        assert worker._last_find_useful is False
+        assert worker._repo_event_entries[-1]["outcome"] == "error"
+
+        worker._repo_context.refresh = original_refresh
+        assert worker._find_command("needle").startswith("unchanged:")
+        assert worker._repo_event_entries[-1]["outcome"] == "deduplicated"
+
+
+def test_find_ledger_preserves_exact_literal_semantics():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", 'Exception\n"Exception"\n exception \nclass.*Exception\n')
+        worker = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+        queries = ("Exception", '"Exception"', " exception ", "class.*Exception")
+
+        for query in queries:
+            assert "matches:" in worker._find_command(query)
+        assert [
+            event["outcome"]
+            for event in worker._repo_event_entries
+            if event["event"] == "repo_context_find"
+        ] == ["executed"] * 4
+        assert worker._find_command("Exception").startswith("unchanged:")
+        assert worker._find_command('"Exception"').startswith("unchanged:")
+
+
+def test_find_invalidates_across_searchable_file_state_changes():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "match.txt", "needle")
+        write_file(workspace, "unrelated.txt", "other")
+        worker = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_file_bytes=8), 1
+        )
+
+        queries = ["initial", "matching text", "unrelated text", "added", "deleted", "binary", "oversized", "shrunk"]
+        outcomes = []
+        worker._find_command("needle")
+        outcomes.append(worker._repo_event_entries[-1]["outcome"])
+        write_file(workspace, "match.txt", "needle!")
+        worker._find_command("needle")
+        outcomes.append(worker._repo_event_entries[-1]["outcome"])
+        write_file(workspace, "unrelated.txt", "changed")
+        worker._find_command("needle")
+        outcomes.append(worker._repo_event_entries[-1]["outcome"])
+        write_file(workspace, "added.txt", "added")
+        worker._find_command("needle")
+        outcomes.append(worker._repo_event_entries[-1]["outcome"])
+        os.remove(os.path.join(workspace, "added.txt"))
+        worker._find_command("needle")
+        outcomes.append(worker._repo_event_entries[-1]["outcome"])
+        write_file(workspace, "match.txt", b"\x00abc")
+        worker._find_command("needle")
+        outcomes.append(worker._repo_event_entries[-1]["outcome"])
+        write_file(workspace, "match.txt", b"123456789")
+        worker._find_command("needle")
+        outcomes.append(worker._repo_event_entries[-1]["outcome"])
+        write_file(workspace, "match.txt", "needle")
+        worker._find_command("needle")
+        outcomes.append(worker._repo_event_entries[-1]["outcome"])
+
+        assert len(outcomes) == len(queries)
+        assert outcomes == ["executed"] * len(queries)
+
+
+def test_duplicate_find_participates_in_stall_detection():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        result, backend = run_worker(
+            workspace,
+            "tools",
+            [
+                'FIND "class.*Exception"',
+                'FIND "class.*Exception"',
+                'FIND "class.*Exception"',
+                check_task_command(),
+            ],
+            repeat_action_limit=1,
+        )
+        assert result["status"] == "done"
+        assert any(
+            "did not make progress" in call["messages"][1]["content"]
+            for call in backend.call_history
+        )
+        outcomes = [
+            event["outcome"]
+            for event in result["observability_events"]
+            if event["event"] == "repo_context_find"
+        ]
+        assert outcomes[:3] == ["executed", "deduplicated", "deduplicated"]
+
+
+def test_find_budget_counts_malformed_duplicate_and_rejected_attempts():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        worker = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_finds=3), 1
+        )
+
+        assert "must not be empty" in worker._find_command("")
+        assert "matches: 0" in worker._find_command("missing")
+        assert worker._find_command("missing").startswith("unchanged:")
+        rejected = worker._find_command("another")
+
+        assert rejected == "error: FIND limit (3) reached"
+        assert worker._find_attempts == 4
+        assert worker._last_find_useful is False
+        events = [
+            event
+            for event in worker._repo_event_entries
+            if event["event"] == "repo_context_find"
+        ]
+        assert [event["attempt"] for event in events] == [1, 2, 3, 4]
+        assert [event["outcome"] for event in events] == [
+            "executed", "executed", "deduplicated", "budget_rejected"
+        ]
+        fresh = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+        assert fresh._find_attempts == 0
+        assert "matches: 0" in fresh._find_command("fresh-query")
+        assert fresh._find_attempts == 1
+
+
+def test_find_budget_survives_a_soft_reset():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        responses = ["FIND repeated"] * 3
+        responses.extend(f"FIND unique-{index}" for index in range(30))
+        responses.append(check_task_command())
+        result, backend = run_worker(
+            workspace, "tools", responses, repeat_action_limit=1
+        )
+
+        assert result["status"] == "done"
+        events = [
+            event
+            for event in result["observability_events"]
+            if event["event"] == "repo_context_find"
+        ]
+        assert len(events) == 33
+        assert events[-1]["attempt"] == 33
+        assert events[-1]["outcome"] == "budget_rejected"
+        assert any(
+            "did not make progress" in call["messages"][1]["content"]
+            for call in backend.call_history
+        )
+
+
+def test_alternating_duplicate_finds_are_bounded_by_budget():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        responses = [
+            f"FIND {'alpha' if index % 2 == 0 else 'beta'}"
+            for index in range(33)
+        ]
+        responses.append(check_task_command())
+        result, backend = run_worker(
+            workspace, "tools", responses, repeat_action_limit=1
+        )
+
+        assert result["status"] == "done"
+        events = [
+            event
+            for event in result["observability_events"]
+            if event["event"] == "repo_context_find"
+        ]
+        assert len(events) == 33
+        assert events[-1]["outcome"] == "budget_rejected"
+        assert not any(
+            "did not make progress" in call["messages"][1]["content"]
+            for call in backend.call_history
+        )
+
+
+def test_find_attempt_33_is_rejected_at_default_limit():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        worker = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+
+        for index in range(32):
+            assert "matches: 0" in worker._find_command(f"missing-{index}")
+        assert worker._find_command("attempt-33") == "error: FIND limit (32) reached"
+        assert worker._find_attempts == 33
+        assert worker._last_find_useful is False
+        assert worker._repo_event_entries[-1]["outcome"] == "budget_rejected"
+
+
+def test_find_zero_guidance_and_literal_regex_characters():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "class.*Exception\n")
+        worker = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+
+        literal = worker._find_command("class.*Exception")
+        assert "file.txt:1:" in literal
+        assert "matches: 1" in literal
+
+        zero = worker._find_command('"class.*Missing"')
+        assert "matches: 0" in zero
+        assert "FIND is fixed-literal, not regex." in zero
+        assert "Characters such as . * [ ] ^ $ and quotes are searched literally." in zero
+        assert worker._last_find_useful is True
+
+        duplicate_zero = worker._find_command('"class.*Missing"')
+        assert "unchanged:" in duplicate_zero
+        assert "FIND is fixed-literal, not regex." not in duplicate_zero
+
+        quoted = worker._find_command('"class.*Exception"')
+        assert "matches: 0" in quoted
+        assert worker._repo_event_entries[-1]["outcome"] == "executed"
+
+
+def test_duplicate_find_escapes_controls_and_hides_query_from_events():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        worker = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+        query = "/tmp/host\x00\r\n" + ("query" * 80)
+        worker._find_command(query)
+        duplicate = worker._find_command(query)
+        query_line = next(line for line in duplicate.splitlines() if line.startswith("query:"))
+        event = worker._repo_event_entries[-1]
+
+        assert "\\x00" in query_line
+        assert "\\x0d" in query_line
+        assert "\\x0a" in query_line
+        assert len(duplicate) <= 300
+        assert "\x00" not in query_line
+        assert "\r" not in query_line
+        assert "\n" not in query_line
+        assert "query" not in event
+        assert "query_hash" in event
+        assert "/tmp/host" not in str(event)
+        assert "FIND is exhaustive" not in str(event)
+
+
+def test_off_mode_does_not_enable_find_ledger_or_budget():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        result, _ = run_worker(
+            workspace,
+            "off",
+            ["FIND missing", check_task_command()],
+            repo_context_max_finds=0,
+        )
+        assert result["status"] == "done"
