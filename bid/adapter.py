@@ -60,6 +60,10 @@ def _hash_file(path):
         return "?"
 
 
+def _read_signature(rel, fhash):
+    return f"READ | {rel} | {fhash}"
+
+
 RUN_OUTPUT_LIMIT = 2000
 
 CONTROL_ROOTS = tuple(sorted(permissions.CONTROL_ROOTS))
@@ -617,8 +621,8 @@ class WorkerAdapter:
                 max_find_hits=config.get("repo_context_max_find_hits", 100),
                 max_file_bytes=config.get("repo_context_max_file_bytes", 1048576),
             )
-        self._read_ledger = {}
-        self._fully_read_paths = set()
+        self._read_knowledge_ledger = {}
+        self._read_delivery_ledger = set()
         self._repo_event_entries = []
 
     def _worker_result(self, status, **fields):
@@ -1106,12 +1110,12 @@ class WorkerAdapter:
         soft_resets = 0
         last_sig = None
         turn_repeat = 0
-        _read_tracker = {}  # canonical_rel_path → (useful_count, last_hash)
-        self._read_ledger.clear()
-        self._fully_read_paths.clear()
+        off_read_state = {}  # preserve off-mode full-read behavior
+        self._read_delivery_ledger.clear()
 
         while time.monotonic() - session_start < hard_ceiling:
             if self._find_closed and not self._execution_phase_handoff_done:
+                self._read_delivery_ledger.clear()
                 messages = self._execution_phase_messages(
                     worker_policy, task_description, self.feedback
                 )
@@ -1208,6 +1212,8 @@ class WorkerAdapter:
                         continue
 
                     if cmd["type"] == "READ":
+                        rel = cmd.get("path", "")
+                        read_sig = None
                         try:
                             safe, err, rel = permissions.check_path_safety(cmd["path"], self.workspace)
                             if not safe:
@@ -1228,39 +1234,76 @@ class WorkerAdapter:
                                         result = _read(self.workspace, rel)
                                         fhash = _hash_file(abs_path)
                                         if self._context_tools_enabled():
-                                            ledger_key = (rel, fhash)
-                                            if fhash != "?" and ledger_key in self._read_ledger:
-                                                result = (
-                                                    f"unchanged: {rel} was already supplied earlier in this Worker context\n"
-                                                    f"sha256: {fhash[:12]}"
-                                                )
-                                                self._record_context_event(
-                                                    "repo_context_read_deduplicated",
-                                                    path=rel, sha256=fhash[:12], count=1,
-                                                )
+                                            if fhash == "?":
+                                                outcome = None
                                             else:
-                                                if fhash != "?":
-                                                    for key in list(self._read_ledger):
-                                                        if key[0] == rel:
-                                                            del self._read_ledger[key]
-                                                    self._read_ledger[ledger_key] = True
-                                                useful = True
-                                                first_path_read = rel not in self._fully_read_paths
-                                                self._fully_read_paths.add(rel)
-                                                self._record_context_event(
-                                                    "repo_context_read",
-                                                    path=rel, read_count=1,
-                                                    full_read=True,
-                                                    unique_file=first_path_read,
+                                                known_hash = self._read_knowledge_ledger.get(rel)
+                                                delivery_key = (rel, fhash)
+                                                if known_hash is None or known_hash != fhash:
+                                                    self._read_delivery_ledger.difference_update({
+                                                        key
+                                                        for key in self._read_delivery_ledger
+                                                        if key[0] == rel
+                                                    })
+                                                    self._read_knowledge_ledger[rel] = fhash
+                                                    self._read_delivery_ledger.add(delivery_key)
+                                                    useful = True
+                                                    outcome = "new_or_changed"
+                                                    full_read = True
+                                                    unique_path = known_hash is None
+                                                elif delivery_key not in self._read_delivery_ledger:
+                                                    self._read_delivery_ledger.add(delivery_key)
+                                                    outcome = "rehydrated"
+                                                    full_read = True
+                                                    unique_path = False
+                                                else:
+                                                    result = (
+                                                        f"unchanged: {rel} was already supplied earlier in this Worker context\n"
+                                                        f"sha256: {fhash[:12]}"
+                                                    )
+                                                    outcome = "deduplicated"
+                                                    full_read = False
+                                                    unique_path = False
+
+                                                event_name = (
+                                                    "repo_context_read_deduplicated"
+                                                    if outcome == "deduplicated"
+                                                    else "repo_context_read"
                                                 )
+                                                self._record_context_event(
+                                                    event_name,
+                                                    path=rel,
+                                                    sha256=fhash[:12],
+                                                    outcome=outcome,
+                                                    full_read=full_read,
+                                                    unique_path=unique_path,
+                                                    read_count=1,
+                                                    count=1,
+                                                )
+                                            read_sig = (
+                                                _read_signature(rel, fhash)
+                                                if fhash != "?"
+                                                else None
+                                            )
                                         else:
-                                            prev = _read_tracker.get(rel)
+                                            prev = off_read_state.get(rel)
                                             if not prev or prev[1] != fhash:
                                                 useful = True
-                                            _read_tracker[rel] = (1 if not prev else prev[0] + 1, fhash)
+                                            off_read_state[rel] = (
+                                                1 if not prev else prev[0] + 1,
+                                                fhash,
+                                            )
+                                            read_sig = (
+                                                _read_signature(rel, fhash)
+                                                if fhash != "?"
+                                                else None
+                                            )
                         except ValueError as e:
                             result = str(e)
-                        sig = f"READ {rel}|{result[:50]}"
+                        if read_sig is None:
+                            sig = f"READ {rel}|{result[:50]}"
+                        else:
+                            sig = read_sig
                         if sig == last_sig:
                             turn_repeat += 1
                         else:
@@ -1349,6 +1392,7 @@ class WorkerAdapter:
                             result = self._write_command(cmd["path"], cmd["content"])
                             if not result.startswith("error"):
                                 useful = True
+                                self._purge_read_delivery(cmd["path"])
                                 if cmd.get("implicit"):
                                     self._implicit_write_count += 1
                             if observer.poll_changes():
@@ -1446,6 +1490,7 @@ class WorkerAdapter:
                             replace_failed = True
                         if not result.startswith("error"):
                             useful = True
+                            self._purge_read_delivery(cmd["path"])
                             if observer.poll_changes():
                                 changed = True
                         sig = f"REPLACE {cmd['path']}|{result[:50]}"
@@ -1523,8 +1568,7 @@ class WorkerAdapter:
                         "stalled", reason="repeated action without progress"
                     )
                 system = messages[0]
-                self._read_ledger.clear()
-                self._fully_read_paths.clear()
+                self._read_delivery_ledger.clear()
                 reset_error = (
                     f"[ERROR: did not make progress. "
                     f"Last command: {last_sig.split('|')[0] if '|' in last_sig else last_sig}. "
@@ -1579,6 +1623,16 @@ class WorkerAdapter:
 
         _write(self.workspace, rel, content)
         return f"wrote {len(content)} bytes to {rel}"
+
+    def _purge_read_delivery(self, path):
+        if not self._context_tools_enabled():
+            return
+        safe, _, rel = permissions.check_path_safety(path, self.workspace)
+        if not safe:
+            return
+        self._read_delivery_ledger.difference_update({
+            key for key in self._read_delivery_ledger if key[0] == rel
+        })
 
     def _replace_text(self, path, old_text, new_text):
         if not old_text:

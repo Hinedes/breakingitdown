@@ -63,6 +63,14 @@ def run_worker(workspace, mode, responses, **config_overrides):
     return result, backend
 
 
+def read_events(result):
+    return [
+        event
+        for event in result["observability_events"]
+        if event["event"] in {"repo_context_read", "repo_context_read_deduplicated"}
+    ]
+
+
 def closure_packet(text):
     marker = "# FIND evidence closure"
     assert marker in text
@@ -432,6 +440,46 @@ def test_off_repeated_read_is_baseline_and_tools_deduplicate():
                 assert len(read_results) >= 2
 
 
+@pytest.mark.parametrize("mode", ["tools", "inject"])
+def test_read_ledgers_classify_delivery_and_observability(mode, monkeypatch):
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "content")
+        signatures = []
+        original_signature = adapter._read_signature
+
+        def capture_signature(path, fhash):
+            signature = original_signature(path, fhash)
+            signatures.append(signature)
+            return signature
+
+        monkeypatch.setattr(adapter, "_read_signature", capture_signature)
+        worker = adapter.WorkerAdapter(worker_config(workspace, mode), 1)
+        backend = model.MockBackend([
+            text_response("READ file.txt"),
+            text_response("READ file.txt"),
+            text_response("Done"),
+        ])
+
+        result = worker.run(backend)
+
+        assert result["status"] == "done"
+        events = read_events(result)
+        assert [event["outcome"] for event in events] == [
+            "new_or_changed", "deduplicated"
+        ]
+        assert events[0]["full_read"] is True
+        assert events[0]["unique_path"] is True
+        assert events[1]["full_read"] is False
+        assert events[1]["unique_path"] is False
+        assert all(event["path"] == "file.txt" for event in events)
+        assert all(event["sha256"] == hashlib.sha256(b"content").hexdigest()[:12] for event in events)
+        assert len(set(signatures)) == 1
+        file_hash = hashlib.sha256(b"content").hexdigest()
+        assert worker._read_knowledge_ledger == {"file.txt": file_hash}
+        assert worker._read_delivery_ledger == {("file.txt", file_hash)}
+
+
 def test_tools_and_inject_soft_reset_context():
     for mode, wants_orientation in (("tools", False), ("inject", True)):
         with tempfile.TemporaryDirectory() as workspace:
@@ -452,7 +500,57 @@ def test_tools_and_inject_soft_reset_context():
             assert "Repository tools are available" in reset_prompts[0]
 
 
-def test_read_ledger_invalidates_on_write_and_is_per_adapter():
+def test_soft_reset_rehydrates_without_useful_activity(monkeypatch):
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "content")
+        write_file(workspace, "other.txt", "other")
+
+        class TrackingObserver(adapter.Observer):
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.activity_calls = 0
+                self.instances.append(self)
+
+            def mark_activity(self):
+                self.activity_calls += 1
+                super().mark_activity()
+
+        monkeypatch.setattr(adapter, "Observer", TrackingObserver)
+        result, backend = run_worker(
+            workspace,
+            "tools",
+            ["READ file.txt"] * 5 + ["READ other.txt", "Done"],
+            repeat_action_limit=1,
+        )
+
+        assert result["status"] == "done"
+        events = read_events(result)
+        assert [event["outcome"] for event in events] == [
+            "new_or_changed",
+            "deduplicated",
+            "rehydrated",
+            "deduplicated",
+            "rehydrated",
+            "new_or_changed",
+        ]
+        assert len(TrackingObserver.instances) == 3
+        assert TrackingObserver.instances[0].activity_calls == 1
+        assert TrackingObserver.instances[1].activity_calls == 0
+        assert TrackingObserver.instances[2].activity_calls == 1
+        reset_prompts = [
+            call["messages"][-1]["content"]
+            for call in backend.call_history
+            if call["messages"][-1]["role"] == "user"
+            and "did not make progress" in call["messages"][-1]["content"]
+        ]
+        assert len(reset_prompts) == 2
+        assert sum(event["full_read"] for event in events) == 4
+
+
+def test_read_knowledge_and_delivery_invalidate_on_write_and_are_per_adapter():
     with tempfile.TemporaryDirectory() as workspace:
         prepare_worker(workspace)
         write_file(workspace, "file.txt", "old")
@@ -464,6 +562,9 @@ def test_read_ledger_invalidates_on_write_and_is_per_adapter():
         ]
         result, backend = run_worker(workspace, "tools", responses)
         assert result["status"] == "done"
+        assert [event["outcome"] for event in read_events(result)] == [
+            "new_or_changed", "new_or_changed"
+        ]
         assert any(
             message["content"] == "new"
             for call in backend.call_history
@@ -482,6 +583,107 @@ def test_read_ledger_invalidates_on_write_and_is_per_adapter():
         )
 
 
+def test_read_delivery_invalidates_on_replace():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "old")
+        result, backend = run_worker(
+            workspace,
+            "tools",
+            [
+                "READ file.txt",
+                "REPLACE file.txt\nold\n---REPLACE_WITH---\nnew\nEND REPLACE",
+                "READ file.txt",
+                "Done",
+            ],
+        )
+
+        assert result["status"] == "done"
+        assert [event["outcome"] for event in read_events(result)] == [
+            "new_or_changed", "new_or_changed"
+        ]
+        assert open(os.path.join(workspace, "file.txt"), encoding="utf-8").read() == "new"
+        assert any(
+            message["content"] == "new"
+            for call in backend.call_history
+            for message in call["messages"]
+            if message["role"] == "user"
+        )
+
+
+def test_worker_respawn_gets_fresh_read_ledgers():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "content")
+        first = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+        first_backend = model.MockBackend([
+            text_response("READ file.txt"),
+            text_response("Done"),
+        ])
+        first_result = first.run(first_backend)
+
+        second = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+        second_backend = model.MockBackend([
+            text_response("READ file.txt"),
+            text_response("Done"),
+        ])
+        second_result = second.run(second_backend)
+
+        assert first_result["status"] == second_result["status"] == "done"
+        assert read_events(first_result)[0]["outcome"] == "new_or_changed"
+        assert read_events(second_result)[0]["outcome"] == "new_or_changed"
+        assert second._read_knowledge_ledger == first._read_knowledge_ledger
+        assert second._read_delivery_ledger == first._read_delivery_ledger
+
+
+def test_failed_reads_update_neither_context_ledger():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "invalid.bin", b"\xff\xfe")
+        os.makedirs(os.path.join(workspace, "directory"))
+        worker = adapter.WorkerAdapter(worker_config(workspace, "tools"), 1)
+        backend = model.MockBackend([
+            text_response("READ missing.txt"),
+            text_response("READ directory"),
+            text_response("READ invalid.bin"),
+            text_response("READ docs/todo.md"),
+            text_response("READ ../outside.txt"),
+            text_response("Done"),
+        ])
+
+        result = worker.run(backend)
+
+        assert result["status"] == "done"
+        assert read_events(result) == []
+        assert worker._read_knowledge_ledger == {}
+        assert worker._read_delivery_ledger == set()
+
+
+def test_off_mode_keeps_full_reads_without_context_classification():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "content")
+        worker = adapter.WorkerAdapter(worker_config(workspace, "off"), 1)
+        backend = model.MockBackend([
+            text_response("READ file.txt"),
+            text_response("READ file.txt"),
+            text_response("Done"),
+        ])
+
+        result = worker.run(backend)
+
+        assert result["status"] == "done"
+        assert "observability_events" not in result
+        assert not worker._read_knowledge_ledger
+        assert not worker._read_delivery_ledger
+        assert sum(
+            message["content"] == "content"
+            for call in backend.call_history
+            for message in call["messages"]
+            if message["role"] == "user"
+        ) >= 2
+
+
 def test_context_events_are_bounded_and_include_mode():
     with tempfile.TemporaryDirectory() as workspace:
         prepare_worker(workspace)
@@ -496,6 +698,11 @@ def test_context_events_are_bounded_and_include_mode():
         assert "repo_context_find" in names
         assert "repo_context_read_deduplicated" in names
         assert all(event["mode"] == "tools" for event in result["observability_events"])
+        assert all(
+            {"path", "sha256", "outcome", "full_read", "unique_path"}.issubset(event)
+            for event in read_events(result)
+        )
+        assert all(not os.path.isabs(event["path"]) for event in read_events(result))
         assert all(len(str(event)) < 600 for event in result["observability_events"])
 
 
@@ -776,6 +983,129 @@ def test_find_only_output_after_closure_stalls_without_another_rejection():
         assert names.count("repo_context_find_closure") == 1
         assert names.count("repo_context_execution_phase_handoff") == 1
         assert names.count("repo_context_post_handoff_find_stall") == 1
+
+
+def test_execution_handoff_rehydrates_read_and_preserves_knowledge(monkeypatch):
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "needle\n")
+        write_file(workspace, "other.txt", "other\n")
+        signatures = []
+        original_signature = adapter._read_signature
+
+        def capture_signature(path, fhash):
+            signature = original_signature(path, fhash)
+            signatures.append(signature)
+            return signature
+
+        monkeypatch.setattr(adapter, "_read_signature", capture_signature)
+        worker = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_finds=1), 1
+        )
+        backend = model.MockBackend([
+            text_response("READ file.txt"),
+            text_response("FIND needle"),
+            text_response("READ file.txt"),
+            text_response("READ file.txt"),
+            text_response("READ other.txt"),
+            text_response("Done"),
+        ])
+
+        result = worker.run(backend)
+
+        assert result["status"] == "done"
+        events = read_events(result)
+        assert [event["outcome"] for event in events] == [
+            "new_or_changed", "rehydrated", "deduplicated", "new_or_changed"
+        ]
+        assert signatures[:3] == [signatures[0]] * 3
+        file_hash = hashlib.sha256(b"needle\n").hexdigest()
+        other_hash = hashlib.sha256(b"other\n").hexdigest()
+        assert worker._read_knowledge_ledger == {
+            "file.txt": file_hash,
+            "other.txt": other_hash,
+        }
+        assert worker._read_delivery_ledger == {
+            ("file.txt", file_hash),
+            ("other.txt", other_hash),
+        }
+        handoff = backend.call_history[2]["messages"]
+        assert not any(message["content"] == "needle\n" for message in handoff)
+        after_read = backend.call_history[3]["messages"]
+        assert any(message["content"] == "needle\n" for message in after_read)
+        assert not any(
+            message["content"].startswith("unchanged:") for message in after_read
+        )
+
+
+def test_changed_read_after_execution_handoff_is_new_and_useful():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "old\n")
+
+        class MutatingBackend(model.MockBackend):
+            def run(self, messages, tools, max_tokens=None):
+                if self.call_index == 2:
+                    write_file(workspace, "file.txt", "new\n")
+                return super().run(messages, tools, max_tokens)
+
+        worker = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repo_context_max_finds=1), 1
+        )
+        backend = MutatingBackend([
+            text_response("READ file.txt"),
+            text_response("FIND old"),
+            text_response("READ file.txt"),
+            text_response("Done"),
+        ])
+
+        result = worker.run(backend)
+
+        assert result["status"] == "done"
+        assert [event["outcome"] for event in read_events(result)] == [
+            "new_or_changed", "new_or_changed"
+        ]
+        assert any(
+            message["content"] == "new\n"
+            for call in backend.call_history
+            for message in call["messages"]
+            if message["role"] == "user"
+        )
+
+
+def test_changed_read_after_soft_reset_is_new_and_useful():
+    with tempfile.TemporaryDirectory() as workspace:
+        prepare_worker(workspace)
+        write_file(workspace, "file.txt", "old\n")
+
+        class MutatingBackend(model.MockBackend):
+            def run(self, messages, tools, max_tokens=None):
+                if self.call_index == 2:
+                    write_file(workspace, "file.txt", "new\n")
+                return super().run(messages, tools, max_tokens)
+
+        worker = adapter.WorkerAdapter(
+            worker_config(workspace, "tools", repeat_action_limit=1), 1
+        )
+        backend = MutatingBackend([
+            text_response("READ file.txt"),
+            text_response("READ file.txt"),
+            text_response("READ file.txt"),
+            text_response("Done"),
+        ])
+
+        result = worker.run(backend)
+
+        assert result["status"] == "done"
+        assert [event["outcome"] for event in read_events(result)] == [
+            "new_or_changed", "deduplicated", "new_or_changed"
+        ]
+        assert any(
+            message["content"] == "new\n"
+            for call in backend.call_history
+            for message in call["messages"]
+            if message["role"] == "user"
+        )
 
 
 def test_execution_handoff_rebuilds_history_with_feedback_and_drops_find_dialogue():
