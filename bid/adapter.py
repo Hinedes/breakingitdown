@@ -590,7 +590,7 @@ class ManagerInitAdapter:
 class WorkerAdapter:
     MAX_SOFT_RESETS = 3
 
-    def __init__(self, config, task_number, search_provider=None, feedback=None):
+    def __init__(self, config, task_number, search_provider=None, feedback=None, prior_messages=None):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
@@ -598,6 +598,12 @@ class WorkerAdapter:
         self.repo_context_mode = repo_context_mod.normalize_mode(
             config.get("repo_context_mode", "off")
         )
+        # Experiment-only: carry conversation messages across tasks (no Python state)
+        if config.get("worker_continuity") == "continuous" and prior_messages:
+            self._prior_messages = [dict(m) for m in prior_messages]
+        else:
+            self._prior_messages = None
+        self._history_messages = None
         self._search_provider = search_provider or search_mod.create_provider(config)
         self._search_cache = search_mod.SearchCache(self.workspace)
         self._search_count = 0
@@ -1103,6 +1109,9 @@ class WorkerAdapter:
                 ),
             },
         ]
+        if self._prior_messages is not None:
+            messages = [dict(m) for m in self._prior_messages] + messages
+        self._history_messages = messages
 
         observer = Observer(self.workspace, self.task_number)
         hard_ceiling = self.config.get("worker_timeout", 3600)
@@ -1558,6 +1567,7 @@ class WorkerAdapter:
                 saw_done = False
 
             if saw_done:
+                self._history_messages = [dict(m) for m in messages]
                 return self._worker_result(
                     "done", checked=False, run_evidence=list(self._run_evidence)
                 )
