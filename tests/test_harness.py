@@ -1649,6 +1649,9 @@ class TestContextBoundary:
                 f.write("s1\n")
             with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
                 f.write("")
+            os.makedirs(os.path.join(tmp, ".bid", "states", "s2"), exist_ok=True)
+            with open(os.path.join(tmp, ".bid", "states", "s2", "solution.py"), "w") as f:
+                f.write("ready\n")
 
             review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1", candidate_state="s2")
             captured = {}
@@ -1665,7 +1668,32 @@ class TestContextBoundary:
             assert "satisfies the stated current task" in prompt
             assert "Unfinished later checklist tasks are not grounds for REWORK" in prompt
             assert "not require production-source modifications" in prompt
+            assert "Candidate final state (bounded snapshot view):" in prompt
+            assert "### solution.py" in prompt
             assert "RUN evidence:" not in prompt
+
+    def test_reviewer_uses_inherited_candidate_state_when_diff_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Verify the ready solution"))
+            with open(os.path.join(tmp, "solution.py"), "w", encoding="utf-8") as file:
+                file.write("ready\n")
+
+            vc_system = vc.VersionControl(tmp)
+            base_state = vc_system.save_state("seed", "ready solution")
+            candidate_state = vc_system.save_state("worker", "no changes needed")
+            with open(os.path.join(tmp, "solution.py"), "w", encoding="utf-8") as file:
+                file.write("live workspace must not be reviewed\n")
+
+            backend = model.MockBackend([text_response("ACCEPT\nReason: The inherited solution satisfies the task.")])
+            result = adapter.TaskReviewAdapter(
+                config(tmp), 1, base_state=base_state, candidate_state=candidate_state
+            ).run(backend)
+
+            assert result["verdict"] == "ACCEPT"
+            prompt = backend.call_history[0]["messages"][1]["content"]
+            assert "(no file changes)" in prompt
+            assert "ready" in prompt
+            assert "live workspace must not be reviewed" not in prompt
 
     def test_worker_receives_only_normalized_feedback(self):
         """REWORK Worker sees only the reviewer reason, not provenance."""

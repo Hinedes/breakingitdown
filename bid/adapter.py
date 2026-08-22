@@ -70,7 +70,9 @@ CONTROL_ROOTS = tuple(sorted(permissions.CONTROL_ROOTS))
 
 TASK_REVIEWER_SYSTEM = """You are BID Task Reviewer.
 Judge whether the candidate satisfies the assigned task using only the
-provided original request, task, and fixed-base-to-candidate diff.
+provided original request, task, fixed-base-to-candidate diff, and bounded
+candidate final-state view. An empty diff does not by itself mean the task is
+unfinished: the candidate may inherit a correct implementation from its base.
 
 Return exactly one of:
 
@@ -1888,7 +1890,16 @@ class TaskReviewAdapter:
         if not os.path.isdir(base_root):
             return {"verdict": "ERROR", "reason": f"base state {self.base_state} not found", "task_number": self.task_number}
 
-        diff_text = _workspace_diff(base_root, self.workspace)
+        candidate_root = self.workspace
+        if self.candidate_state:
+            if not re.fullmatch(r"s\d+", self.candidate_state):
+                return {"verdict": "ERROR", "reason": f"invalid candidate state {self.candidate_state}", "task_number": self.task_number}
+            candidate_root = os.path.join(self.workspace, ".bid", "states", self.candidate_state)
+            if not os.path.isdir(candidate_root):
+                return {"verdict": "ERROR", "reason": f"candidate state {self.candidate_state} not found", "task_number": self.task_number}
+
+        diff_text = _workspace_diff(base_root, candidate_root)
+        candidate_listing = _workspace_listing(candidate_root)
         candidate_id = self.candidate_state or "(unknown)"
 
         prompt = (
@@ -1898,6 +1909,7 @@ class TaskReviewAdapter:
             f"Fixed base: {self.base_state}\n"
             f"Submitted candidate: {candidate_id}\n\n"
             f"Base -> candidate diff:\n{diff_text}\n\n"
+            f"Candidate final state (bounded snapshot view):\n{candidate_listing}\n\n"
             "No harness-owned verification was executed against this submitted candidate.\n\n"
              "Judge only whether the submitted candidate satisfies the stated current task. "
              "Use the original request only as background constraints. "
