@@ -1764,7 +1764,7 @@ class TestContextBoundary:
                     return {"role": "assistant", "content": "ACCEPT\nReason: Solver changed.", "finish_reason": "stop"}
             review.run(CheckBackend())
             prompt = seen.get("prompt", "")
-            assert "Task:\nChange solver" in prompt, f"prompt should describe T1 task: {prompt[:200]}"
+            assert "Change solver" in prompt and "CURRENT TASK" in prompt, f"prompt should describe T1 as current task: {prompt[:400]}"
 
     def test_manager_reconciliation_no_attempt_history(self):
         """Manager reconciliation does not receive Worker attempt transcripts."""

@@ -1912,15 +1912,31 @@ class TaskReviewAdapter:
         candidate_listing = _workspace_listing(candidate_root)
         candidate_id = self.candidate_state or "(unknown)"
 
+        # HARD SCOPE: Original is background, Current Task is acceptance boundary; later tasks out of scope
+        later_tasks = [t for t in tasks if t["number"] > self.task_number and t["state"] != "done"]
+        out_of_scope_block = ""
+        if later_tasks:
+            out_of_scope_block = (
+                "The following later checklist tasks are explicitly OUT OF SCOPE for this review and MUST NOT cause REWORK:\n"
+                + "\n".join(f"- {t['id']} {t['description']}" for t in later_tasks)
+                + "\n\n"
+            )
         prompt = (
             "# Review Assignment\n\n"
-            f"Original request:\n{task_md}\n\n"
-            f"Task:\n{task['description']}\n\n"
+            "## BACKGROUND ONLY — Original request (context for global constraints, not acceptance):\n"
+            f"{task_md}\n\n"
+            "## CURRENT TASK — Acceptance boundary (sole requirement for ACCEPT/REWORK):\n"
+            f"{task['description']}\n\n"
             f"Fixed base: {self.base_state}\n"
             f"Submitted candidate: {candidate_id}\n\n"
             f"Base -> candidate diff:\n{diff_text}\n\n"
             f"Candidate final state (bounded snapshot view):\n{candidate_listing}\n\n"
             "No harness-owned verification was executed against this submitted candidate.\n\n"
+            "CRITICAL SCOPE RULE: ACCEPT or REWORK must be based SOLELY on whether the candidate satisfies the CURRENT TASK above.\n"
+            "Requirements delegated to later checklist tasks are out of scope for this review.\n"
+            "Missing work for later tasks MUST NOT cause REWORK.\n"
+            + out_of_scope_block +
+            "Global constraints that remain binding for current task (from Original request): no unrelated refactors, preserve named invariants (PhysicallyInvalidError in argus.solve, beam cone), safety.\n\n"
              "Judge only whether the submitted candidate satisfies the stated current task. "
              "Use the original request only as background constraints. "
              "Unfinished later checklist tasks are not grounds for REWORK.\n\n"
