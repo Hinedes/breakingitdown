@@ -340,8 +340,8 @@ def test_map_and_find_path_safety_in_worker():
 
 
 def test_parser_only_exposes_context_commands_in_tools_modes():
-    off = adapter._parse_content_into_turns("MAP\nFIND .*", "off")
-    tools = adapter._parse_content_into_turns("MAP service\nFIND .*", "tools")
+    off = adapter._parse_content_into_turns("MAP\nFIND .*", repo_context_mode="off")
+    tools = adapter._parse_content_into_turns("MAP service\nFIND .*", repo_context_mode="tools")
     assert adapter._find_unknown_commands("MAP\nFIND .*", off, "off") == ["MAP", "FIND .*"]
     assert tools == [
         {"type": "MAP", "path": "service"},

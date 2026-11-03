@@ -280,17 +280,17 @@ _FIND_LITERAL_GUIDANCE = (
     "FIND is fixed-literal, not regex. Characters such as . * [ ] ^ $ and quotes "
     "are searched literally."
 )
+# RUN and SEARCH can be disabled, so these texts point at the instructions instead of listing commands.
 _FIND_CLOSURE_STATEMENT = (
-    "FIND is now closed for this Worker; remaining work must use READ, WRITE, "
-    "REPLACE, RUN, SEARCH, or Done."
+    "FIND is now closed for this Worker; continue with the other commands in your instructions."
 )
 _FIND_CLOSED_RESULT = (
-    "FIND is closed for this Worker; use READ, WRITE, REPLACE, RUN, SEARCH, or Done."
+    "FIND is closed for this Worker; use the other commands in your instructions."
 )
 _FIND_CLOSURE_TRUNCATION = "... [FIND evidence truncated]"
 _EXECUTION_PHASE_INSTRUCTION = (
     "Repository retrieval is complete and FIND is unavailable.\n"
-    "Continue using READ, WRITE, REPLACE, RUN, SEARCH, or Done."
+    "Continue with the other commands in your instructions."
 )
 
 
@@ -361,11 +361,6 @@ def _display_find_query(query, limit=160):
 
 
 def _parse_content_into_turns(content, finish_reason=None, repo_context_mode="off"):
-    # Keep the current finish_reason positional API while allowing compact
-    # direct tests/callers to pass the mode as the second positional argument.
-    if repo_context_mode == "off" and finish_reason in {"0", "1", "off", "tools", "inject"}:
-        repo_context_mode = finish_reason
-        finish_reason = None
     repo_tools = repo_context_mod.repo_context_tools_enabled(repo_context_mode)
     lines = content.split("\n")
     commands = []
@@ -828,43 +823,27 @@ class WorkerAdapter:
 
     def _map_command(self, requested_path):
         started = time.monotonic()
-        safe, err, rel = permissions.check_path_safety(requested_path or ".", self.workspace)
+
+        def fail(message):
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return message
+
+        shown = requested_path or "."
+        safe, err, rel = permissions.check_path_safety(shown, self.workspace)
         if not safe:
-            result = f"error: {err}"
-            self._record_context_event(
-                "repo_context_map", time.monotonic() - started, ok=False,
-                entry_count=0, result_count=0, truncated=False, source="command",
-            )
-            return result
+            return fail(f"error: {err}")
         if rel != "." and repo_context_mod.is_excluded_path(rel):
-            result = f"error: path is excluded from repository context: {requested_path}"
-            self._record_context_event(
-                "repo_context_map", time.monotonic() - started, ok=False,
-                entry_count=0, result_count=0, truncated=False, source="command",
-            )
-            return result
+            return fail(f"error: path is excluded from repository context: {requested_path}")
         absolute = os.path.join(self.workspace, rel)
         if not os.path.exists(absolute):
-            result = f"error: path not found: {requested_path or '.'}"
-            self._record_context_event(
-                "repo_context_map", time.monotonic() - started, ok=False,
-                entry_count=0, result_count=0, truncated=False, source="command",
-            )
-            return result
+            return fail(f"error: path not found: {shown}")
         if not os.path.isdir(absolute):
-            result = f"error: not a directory: {requested_path or '.'}"
-            self._record_context_event(
-                "repo_context_map", time.monotonic() - started, ok=False,
-                entry_count=0, result_count=0, truncated=False, source="command",
-            )
-            return result
+            return fail(f"error: not a directory: {shown}")
         if self._refresh_repo_context() is None:
-            result = "error: repository context refresh failed"
-            self._record_context_event(
-                "repo_context_map", time.monotonic() - started, ok=False,
-                entry_count=0, result_count=0, truncated=False, source="command",
-            )
-            return result
+            return fail("error: repository context refresh failed")
         scope = None if rel == "." else rel
         map_result = self._repo_context.map_result(scope=scope, refresh=False)
         self._record_context_event(
@@ -1005,9 +984,7 @@ class WorkerAdapter:
                 body.pop()
         packet = render(body, truncated=truncated)
         if len(packet) > max_chars:
-            compact_closure = (
-                "FIND closed for this Worker; use READ, WRITE, REPLACE, RUN, SEARCH, or Done."
-            )
+            compact_closure = _FIND_CLOSED_RESULT
             packet = "\n".join([lines[0], compact_closure])
             if truncated:
                 packet += " " + _FIND_CLOSURE_TRUNCATION
@@ -1201,7 +1178,6 @@ class WorkerAdapter:
         ]
         if self._prior_messages is not None:
             messages = [dict(m) for m in self._prior_messages] + messages
-        self._history_messages = messages
 
         observer = Observer(self.workspace, self.task_number)
         worker_timeout = self.config.get("worker_timeout", 3600)
@@ -1698,7 +1674,8 @@ class WorkerAdapter:
             if time.monotonic() - session_start >= worker_timeout:
                 return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
             if saw_done:
-                self._history_messages = [dict(m) for m in messages]
+                if self.config.get("worker_continuity") == "continuous":
+                    self._history_messages = [dict(m) for m in messages]
                 return self._worker_result(
                     "done", checked=False, run_evidence=list(self._run_evidence)
                 )
@@ -2136,7 +2113,7 @@ class TaskReviewAdapter:
             "Requirements delegated to later checklist tasks are out of scope for this review.\n"
             "Missing work for later tasks MUST NOT cause REWORK.\n"
             + out_of_scope_block +
-            "Global constraints that remain binding for current task (from Original request): no unrelated refactors, preserve named invariants (PhysicallyInvalidError in argus.solve, beam cone), safety.\n\n"
+            "Global constraints that remain binding for the current task (from the original request): no unrelated refactors, and any invariants or limits the original request states.\n\n"
              "Judge only whether the submitted candidate satisfies the stated current task. "
              "Use the original request only as background constraints. "
              "Unfinished later checklist tasks are not grounds for REWORK.\n\n"

@@ -326,8 +326,8 @@ def run_worker_session(number, config, backend=None, feedback=None, task_base_st
         worker_adapter = adapter_mod.WorkerAdapter(config, number, feedback=feedback, prior_messages=prior_messages)
         b = backend or create_backend(config)
         result = worker_adapter.run(b)
-        if result.get("status") == "done" and getattr(worker_adapter, "_history_messages", None) is not None:
-            result["_history_messages"] = [dict(m) for m in worker_adapter._history_messages]
+        if result.get("status") == "done" and worker_adapter._history_messages:
+            result["_history_messages"] = worker_adapter._history_messages
     except Exception as exc:
         result = {"status": "error", "reason": str(exc)}
 
@@ -871,6 +871,9 @@ def _run_project_inner(config, backend=None):
                 return result
             current_task_number = None
             current_task_base_state = None
+            # A reconciliation may roll the workspace back; carried history would describe rolled-back work.
+            prior_worker_messages = None
+            prior_task_number = None
             continue
 
         number = unchecked["number"]
