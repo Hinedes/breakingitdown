@@ -3827,7 +3827,7 @@ class TestReworkLimit:
             assert "persisted Task Reviewer REWORK limit record" in result["reason"]
 
     def test_rework_limit_terminates_after_nth_rework(self):
-        """After max_task_reworks REWORKs on the same task, BID stops with error."""
+        """With no Manager escalations allowed, max_task_reworks REWORKs on one task stop BID with an error."""
         class ReworkLoopBackend(model.MockBackend):
             def __init__(self):
                 super().__init__([])
@@ -3847,7 +3847,7 @@ class TestReworkLimit:
         with tempfile.TemporaryDirectory() as tmp:
             prepare_workspace(tmp, todo_item(1, "Attempt"))
             backend = ReworkLoopBackend()
-            cfg = config(tmp, max_task_reworks=3)
+            cfg = config(tmp, max_task_reworks=3, max_manager_reworks=0)
             result = harness.run_project(cfg, backend=backend)
             assert result["status"] == "error"
             assert "exceeded Task Reviewer REWORK limit" in result["reason"]

@@ -167,6 +167,13 @@ Reason: ...
 
 A rejected candidate is rolled back to its fixed base. An accepted candidate becomes provisional rather than immediately DONE.
 
+Two harness checks sit around the Reviewer's judgement:
+
+- If the last test command the Worker ran executed zero tests (for example `collected 0 items`), an ACCEPT is turned into a REWORK, because that run verified nothing.
+- When a candidate has no diff (a verification-only task), the Reviewer is also shown the recorded `RUN` commands and output, and when a candidate changes files that already-ratified tasks wrote, the Reviewer is told which ones.
+
+When a task uses up `BID_MAX_TASK_REWORKS`, BID does not stop. It restores the fixed base and asks the Manager to re-plan: the Manager sees the task, the Reviewer's last reason and the rejected diff, and must change the plan (`# Replace Remaining Plan` or `# Add`). Each task gets at most `BID_MAX_MANAGER_REWORKS` such escalations; after that BID stops with an error.
+
 ### 5. Manager reconciliation
 
 When the provisional batch reaches `BID_PROVISIONAL_BATCH`, or no unchecked task remains, the Manager returns to reconcile the current provisional work.
@@ -285,8 +292,8 @@ These values are configurable through environment variables.
 | `BID_MAX_SEARCHES` | `10` | Search attempts per Worker |
 | `BID_SEARCH_ENDPOINT` | empty | Optional search provider endpoint |
 | `BID_PROVISIONAL_BATCH` | `4` | Provisional tasks before Manager reconciliation |
-| `BID_MAX_TASK_REWORKS` | `3` | Task Reviewer reworks allowed per task |
-| `BID_MAX_MANAGER_REWORKS` | `3` | Manager-directed reworks allowed per task |
+| `BID_MAX_TASK_REWORKS` | `3` | Task Reviewer reworks allowed per task before it is escalated to the Manager |
+| `BID_MAX_MANAGER_REWORKS` | `3` | Manager-directed reworks, and escalations of a task to the Manager, allowed per task |
 | `BID_WORKER_CONTINUITY` | `reset` | `reset` gives every task a fresh Worker conversation; `continuous` carries prior successful-task conversation (experimental ablation) |
 | `BID_REPO_CONTEXT` | `0` | `off`, `tools`, or `inject`; `1` aliases `inject` (experimental) |
 | `BID_REPO_CONTEXT_MAX_CHARS` | `12000` | Bound for maps and injected orientation |

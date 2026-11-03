@@ -1967,6 +1967,12 @@ def _text_file_metadata(text):
     return f"bytes={len(text.encode('utf-8'))};end={ending};trailing={count}"
 
 
+def _workspace_changed_paths(base_root, candidate_root):
+    base = _workspace_tree(base_root)
+    cand = _workspace_tree(candidate_root)
+    return [rel for rel in sorted(set(base) | set(cand)) if base.get(rel) != cand.get(rel)]
+
+
 def _workspace_diff(base_root, candidate_root, limit=12000):
     base = _workspace_tree(base_root)
     cand = _workspace_tree(candidate_root)
@@ -2055,12 +2061,15 @@ def _workspace_listing(root, limit=12000):
 class TaskReviewAdapter:
     RETRY_LIMIT = 3
 
-    def __init__(self, config, task_number, base_state=None, candidate_state=None):
+    def __init__(self, config, task_number, base_state=None, candidate_state=None,
+                 run_evidence=None, ratified_files=""):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
         self.base_state = base_state
         self.candidate_state = candidate_state
+        self.run_evidence = run_evidence
+        self.ratified_files = ratified_files
         self.obs = get_log(self.workspace)
 
     def run(self, backend):
@@ -2089,6 +2098,20 @@ class TaskReviewAdapter:
         candidate_listing = _workspace_listing(candidate_root)
         candidate_id = self.candidate_state
 
+        # A task with no diff (verification only) can only be judged from what the Worker ran.
+        evidence_block = ""
+        if self.run_evidence and diff_text == "(no file changes)":
+            evidence_block = (
+                "Worker RUN evidence (commands the Worker chose; the harness recorded their output "
+                "but ran no check of its own):\n" + format_run_evidence(self.run_evidence) + "\n\n"
+            )
+        ratified_block = ""
+        if self.ratified_files:
+            ratified_block = (
+                "This candidate changes files that already-ratified tasks wrote: " + self.ratified_files
+                + ". Changing them is acceptable only if the CURRENT TASK requires it; otherwise REWORK.\n\n"
+            )
+
         # HARD SCOPE: Original is background, Current Task is acceptance boundary; later tasks out of scope
         later_tasks = [t for t in tasks if t["number"] > self.task_number and t["state"] != "done"]
         out_of_scope_block = ""
@@ -2109,6 +2132,7 @@ class TaskReviewAdapter:
             f"Base -> candidate diff:\n{diff_text}\n\n"
             f"Candidate final state (bounded snapshot view):\n{candidate_listing}\n\n"
             "No harness-owned verification was executed against this submitted candidate.\n\n"
+            + evidence_block + ratified_block +
             "CRITICAL SCOPE RULE: ACCEPT or REWORK must be based SOLELY on whether the candidate satisfies the CURRENT TASK above.\n"
             "Requirements delegated to later checklist tasks are out of scope for this review.\n"
             "Missing work for later tasks MUST NOT cause REWORK.\n"
@@ -2228,6 +2252,10 @@ Rules:
   is satisfied and no unchecked or provisional tasks remain.
 - If no unchecked checklist tasks remain and all provisional tasks are accepted,
   choose COMPLETE.
+- A task marked ESCALATED was rejected by the Task Reviewer until its retry limit ran
+  out. It is unchecked and must not simply be retried: use # Replace Remaining Plan to
+  split or rewrite it, or # Add a missing prerequisite. Provisional tasks listed beside
+  it are handled with the usual rules.
 
 Return only the sections. No commentary, analysis, or code fences."""
 

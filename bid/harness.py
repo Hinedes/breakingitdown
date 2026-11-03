@@ -113,6 +113,9 @@ def _latest_event_count(log, kind, task_number):
         prefixes.append(f"rework_limit: task=T{task_number} count=")
     counts = []
     for line in log.splitlines():
+        if kind == "task_rework" and line.startswith(f"task_escalation: task=T{task_number} "):
+            counts.clear()  # the Manager has stepped in; the task gets a fresh budget
+            continue
         for prefix in prefixes:
             if line.startswith(prefix):
                 try:
@@ -170,6 +173,9 @@ def _task_rework_reason(vc_system, task_number, base_state):
     reason = None
     for line in section.splitlines():
         stripped = line.strip()
+        if stripped.startswith(f"task_escalation: task=T{task_number} "):
+            reason = None  # the Manager re-planned; a task reusing this number must not inherit old feedback
+            continue
         match = re.search(
             rf"\brework_reason: task=T{task_number} base={re.escape(base_state)} "
             r"candidate=s\d+ reason=(.*)", stripped,
@@ -499,6 +505,56 @@ def _collect_reconcile_evidence(vc_system, workspace, tasks, active, todo_text):
     return "\n\n".join(parts)
 
 
+_TEST_SUMMARY_RE = re.compile(r"collected (\d+) items?|(no tests ran)|Ran (\d+) tests?", re.I)
+
+
+def _zero_test_command(run_evidence):
+    """Command of the last test run that executed no tests, or None (Eval 0: pytest collected 0 tests)."""
+    last = None
+    for entry in run_evidence or []:
+        match = _TEST_SUMMARY_RE.search(f"{entry.get('stdout') or ''}\n{entry.get('stderr') or ''}")
+        if match:
+            last = (entry["command"], match)
+    if last and (last[1].group(2) or "0" in (last[1].group(1), last[1].group(3))):
+        return last[0]
+    return None
+
+
+def _ratified_files_touched(vc_system, base_state, candidate_state):
+    """'path (T1, T2)' for files this candidate changes that ratified tasks already wrote."""
+    states = vc_system.states_dir
+    changed = set(adapter_mod._workspace_changed_paths(
+        os.path.join(states, base_state), os.path.join(states, candidate_state)))
+    owners = {}
+    for line in vc_system.get_log().splitlines():
+        match = _RATIFIED_RE.match(line.strip())
+        if match:
+            task, base, candidate = match.groups()
+            for path in adapter_mod._workspace_changed_paths(
+                    os.path.join(states, base), os.path.join(states, candidate)):
+                if path in changed:
+                    owners.setdefault(path, []).append(task)
+    return ", ".join(f"{path} ({', '.join(tasks)})" for path, tasks in sorted(owners.items()))
+
+
+def _escalation_evidence(vc_system, tasks, number, base_state, candidate_state, count, limit, reason):
+    """Manager evidence for a task whose Task Reviewer rework limit is used up."""
+    task = todo_mod.get_task(tasks, number)
+    states = vc_system.states_dir
+    diff = adapter_mod._workspace_diff(
+        os.path.join(states, base_state), os.path.join(states, candidate_state)
+    ) if base_state else "(base state unavailable)"
+    return (
+        f"### Task T{number} — ESCALATED\n"
+        f"Description: {task['description'] if task else '(unknown)'}\n"
+        f"The Task Reviewer rejected this task {count} times (limit {limit}). The workspace was "
+        f"restored to its fixed base {base_state}; the task is unchecked.\n"
+        f"Latest Reviewer reason: {reason}\n"
+        f"Last rejected candidate: {candidate_state}\n"
+        f"Base -> candidate diff:\n{diff}"
+    )
+
+
 def _simulate_decision(tasks, decision):
     """Hypothetical post-application state. Returns (unchecked, provisional)."""
     states = {task["number"]: task["state"] for task in tasks}
@@ -713,13 +769,15 @@ def _replace_unchecked_tasks(todo_text, descriptions, tasks):
     return "\n".join(kept) + "\n"
 
 
-def _reconcile_batch(vc_system, config, backend, active, todo_text, reviewer_feedback):
+def _reconcile_batch(vc_system, config, backend, active, todo_text, reviewer_feedback, escalation=None):
     """One Manager reconciliation of the current provisional batch."""
     workspace = config["workspace"]
     obs = get_log(workspace)
     tasks = todo_mod.parse_todo(todo_text)
     task_md = read_file_content(os.path.join(workspace, "docs/task.md"))
     evidence = _collect_reconcile_evidence(vc_system, workspace, tasks, active, todo_text)
+    if escalation:
+        evidence = f"{evidence}\n\n{escalation}" if evidence else escalation
 
     adapter = adapter_mod.ManagerReconcileAdapter(config, task_md, todo_text, evidence)
     decision = None
@@ -919,6 +977,10 @@ def _run_project_inner(config, backend=None):
                 number,
                 base_state=current_task_base_state,
                 candidate_state=result.get("state"),
+                run_evidence=result.get("run_evidence"),
+                ratified_files=_ratified_files_touched(
+                    vc_system, current_task_base_state, result["state"]
+                ) if current_task_base_state else "",
             ).run(backend)
         except Exception as exc:
             obs.event("review_exception", task=f"T{number}", error=str(exc))
@@ -928,6 +990,16 @@ def _run_project_inner(config, backend=None):
                   base_state=current_task_base_state, candidate_state=result.get("state"))
         if review.get("verdict") == "ERROR":
             return {"status": "error", "reason": review.get("reason", "review error"), "detail": review}
+
+        if review.get("verdict") == "ACCEPT":
+            ran_nothing = _zero_test_command(result.get("run_evidence"))
+            if ran_nothing:
+                obs.event("evidence_gate", task=f"T{number}", command=ran_nothing)
+                review = {
+                    "verdict": "REWORK",
+                    "reason": f"Harness check: the last test command ({ran_nothing}) ran zero tests, so it "
+                              "verifies nothing. Add tests that are collected, or run the right command.",
+                }
 
         if review.get("verdict") == "REWORK":
             rework_counts[number] = rework_counts.get(number, 0) + 1
@@ -943,32 +1015,60 @@ def _run_project_inner(config, backend=None):
                       candidate_state=result.get("state"), count=rework_counts[number])
 
             if rework_counts[number] > max_reworks:
-                # Harness-owned bound on Reviewer-triggered retries. The last
-                # rejected candidate remains preserved as a VC state; record
-                # the reason and counts, then stop.
+                # Harness-owned bound on Reviewer retries. First the Manager gets to re-plan the task
+                # (itself bounded); only when those escalations run out does the project stop.
+                escalations = _latest_event_count(vc_system.get_log(), "task_escalation", number) + 1
+                max_escalations = config.get("max_manager_reworks", 3)
+                if escalations > max_escalations:
+                    vc_system.append_log(
+                        f"rework_limit: task=T{number} count={rework_counts[number]} "
+                        f"limit={max_reworks} candidate={result['state']} "
+                        f"reason={reviewer_feedback[number]}"
+                    )
+                    obs.event("rework_limit", task=f"T{number}",
+                              count=rework_counts[number], limit=max_reworks,
+                              candidate_state=result.get("state"))
+                    return {
+                        "status": "error",
+                        "reason": (
+                            f"T{number} exceeded Task Reviewer REWORK limit "
+                            f"({rework_counts[number]} > {max_reworks}) after {escalations - 1} "
+                            f"Manager escalation(s); last reason: {reviewer_feedback[number]}"
+                        ),
+                        "detail": {
+                            "task": number,
+                            "rework_count": rework_counts[number],
+                            "rework_limit": max_reworks,
+                            "last_rejected_candidate": result.get("state"),
+                            "last_reason": reviewer_feedback[number],
+                        },
+                    }
                 vc_system.append_log(
-                    f"rework_limit: task=T{number} count={rework_counts[number]} "
-                    f"limit={max_reworks} candidate={result['state']} "
-                    f"reason={reviewer_feedback[number]}"
+                    f"task_escalation: task=T{number} count={escalations} limit={max_escalations} "
+                    f"candidate={result['state']} reason={reviewer_feedback[number]}"
                 )
-                obs.event("rework_limit", task=f"T{number}",
-                          count=rework_counts[number], limit=max_reworks,
+                obs.event("task_escalation", task=f"T{number}", count=escalations,
                           candidate_state=result.get("state"))
-                return {
-                    "status": "error",
-                    "reason": (
-                        f"T{number} exceeded Task Reviewer REWORK limit "
-                        f"({rework_counts[number]} > {max_reworks}); "
-                        f"last reason: {reviewer_feedback[number]}"
+                if current_task_base_state:
+                    vc_system.restore_workspace(current_task_base_state, preserve_todo=True)
+                    vc_system.set_current(current_task_base_state)
+                escalated = _reconcile_batch(
+                    vc_system, config, backend, active,
+                    read_file_content(os.path.join(workspace, "docs/todo.md")), reviewer_feedback,
+                    escalation=_escalation_evidence(
+                        vc_system, tasks, number, current_task_base_state, result["state"],
+                        rework_counts[number], max_reworks, reviewer_feedback[number],
                     ),
-                    "detail": {
-                        "task": number,
-                        "rework_count": rework_counts[number],
-                        "rework_limit": max_reworks,
-                        "last_rejected_candidate": result.get("state"),
-                        "last_reason": reviewer_feedback[number],
-                    },
-                }
+                )
+                if escalated["status"] in ("error", "done"):
+                    return escalated
+                rework_counts[number] = 0
+                reviewer_feedback.pop(number, None)
+                current_task_number = None
+                current_task_base_state = None
+                prior_worker_messages = None
+                prior_task_number = None
+                continue
 
             if current_task_base_state:
                 vc_system.restore_workspace(current_task_base_state, preserve_todo=True)
