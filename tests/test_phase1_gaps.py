@@ -111,3 +111,66 @@ def test_reviewer_is_told_when_a_candidate_rewrites_ratified_files():
         first, second = (c["messages"][1]["content"] for c in reviewer_calls(backend))
         assert "ratified" not in first.lower()
         assert "a.txt (T1)" in second and "ratified" in second.lower()
+
+
+def test_zero_test_check_sees_deselected_runs_and_later_real_runs():
+    zero = {"command": "pytest -k typo", "stdout": "collected 12 items / 12 deselected\n\nno tests ran in 0.01s", "stderr": ""}
+    real = {"command": "pytest", "stdout": "collected 12 items\n\n12 passed in 0.5s", "stderr": ""}
+    assert harness._zero_test_command([zero]) == "pytest -k typo"
+    assert harness._zero_test_command([real, zero]) == "pytest -k typo"
+    assert harness._zero_test_command([zero, real]) is None
+    assert harness._zero_test_command([{"command": "ls", "stdout": "a.txt", "stderr": ""}]) is None
+
+
+def test_ratified_files_notice_reads_only_the_changed_files(monkeypatch):
+    with tempfile.TemporaryDirectory() as tmp:
+        prepare_workspace(tmp, todo_item(1, "Write a.txt") + todo_item(2, "Edit a.txt"))
+        store = vc.VersionControl(tmp)
+        base = store.get_current()
+        with open(os.path.join(tmp, "a.txt"), "w", encoding="utf-8") as file:
+            file.write("first\n")
+        first = store.save_state("worker", "T1")
+        store.append_log(f"ratified: task=T1 base={base} candidate={first}")
+        with open(os.path.join(tmp, "a.txt"), "w", encoding="utf-8") as file:
+            file.write("second\n")
+        second = store.save_state("worker", "T2")
+
+        calls = []
+        real_tree = adapter._workspace_tree
+        monkeypatch.setattr(adapter, "_workspace_tree", lambda root: calls.append(root) or real_tree(root))
+        assert harness._ratified_files_touched(store, first, second) == "a.txt (T1)"
+        # One base/candidate comparison only; each ratified task costs single-file reads, not a repo walk.
+        assert len(calls) == 2
+
+
+def test_escalation_while_another_task_is_provisional():
+    backend = model.MockBackend([
+        text_response("WRITE a.txt\nA\nEND WRITE\nDone"), text_response(ACCEPT),            # T1 provisional
+        text_response("WRITE c.txt\nbad\nEND WRITE\nDone"), text_response(REWORK),
+        text_response("WRITE c.txt\nbad\nEND WRITE\nDone"), text_response(REWORK),          # T2 exhausted
+        manager_response(done=[1], replace=["Write b.txt"], project="CONTINUE"),
+        text_response("WRITE b.txt\nok\nEND WRITE\nDone"), text_response(ACCEPT),
+        manager_response(done=[2]),
+    ])
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = start(tmp, todo_item(1, "Write a.txt") + todo_item(2, "Write c.txt"), max_task_reworks=1)
+        assert harness.run_project(cfg, backend=backend)["status"] == "done"
+        with open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8") as file:
+            todo_text = file.read()
+        assert "[x] T1" in todo_text and "[x] T2 — Write b.txt" in todo_text
+
+
+def test_reviewer_reason_survives_an_escalation_that_keeps_the_task():
+    backend = model.MockBackend([
+        text_response(WRITE_BAD), text_response(REWORK),
+        text_response(WRITE_BAD), text_response(REWORK),                                    # exhausted
+        manager_response(add=["Write b.txt"], project="CONTINUE"),                          # T1 itself is unchanged
+        text_response("WRITE a.txt\nok\nEND WRITE\nDone"), text_response(ACCEPT),
+        text_response("WRITE b.txt\nb\nEND WRITE\nDone"), text_response(ACCEPT),
+        manager_response(done=[1, 2]),
+    ])
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = start(tmp, todo_item(1, "Write a.txt"), max_task_reworks=1, provisional_batch=2)
+        assert harness.run_project(cfg, backend=backend)["status"] == "done"
+        retry = backend.call_history[5]["messages"][-1]["content"]
+        assert "Previous reviewer feedback" in retry and "a.txt must say ok" in retry

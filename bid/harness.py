@@ -505,34 +505,43 @@ def _collect_reconcile_evidence(vc_system, workspace, tasks, active, todo_text):
     return "\n\n".join(parts)
 
 
-_TEST_SUMMARY_RE = re.compile(r"collected (\d+) items?|(no tests ran)|Ran (\d+) tests?", re.I)
+_ZERO_TESTS_RE = re.compile(r"collected 0 items?|no tests ran|Ran 0 tests?", re.I)
+_RAN_TESTS_RE = re.compile(r"collected [1-9]\d* items?|Ran [1-9]\d* tests?", re.I)
 
 
 def _zero_test_command(run_evidence):
-    """Command of the last test run that executed no tests, or None (Eval 0: pytest collected 0 tests)."""
+    """Command of the last test run that executed no tests, or None (Eval 0: pytest collected 0 tests).
+
+    A later run that really executed tests clears an earlier empty one. "no tests ran" also covers
+    runs where every test was deselected (collected 12 items / 12 deselected).
+    """
     last = None
     for entry in run_evidence or []:
-        match = _TEST_SUMMARY_RE.search(f"{entry.get('stdout') or ''}\n{entry.get('stderr') or ''}")
-        if match:
-            last = (entry["command"], match)
-    if last and (last[1].group(2) or "0" in (last[1].group(1), last[1].group(3))):
-        return last[0]
-    return None
+        text = f"{entry.get('stdout') or ''}\n{entry.get('stderr') or ''}"
+        if _ZERO_TESTS_RE.search(text):
+            last = entry["command"]
+        elif _RAN_TESTS_RE.search(text):
+            last = None
+    return last
 
 
 def _ratified_files_touched(vc_system, base_state, candidate_state):
-    """'path (T1, T2)' for files this candidate changes that ratified tasks already wrote."""
+    """'path (T1, T2)' for files this candidate changes that ratified tasks already wrote.
+
+    One base/candidate comparison; each ratified task then costs reads of the changed files only.
+    """
     states = vc_system.states_dir
-    changed = set(adapter_mod._workspace_changed_paths(
-        os.path.join(states, base_state), os.path.join(states, candidate_state)))
+    changed = adapter_mod._workspace_changed_paths(
+        os.path.join(states, base_state), os.path.join(states, candidate_state))
     owners = {}
-    for line in vc_system.get_log().splitlines():
+    for line in vc_system.get_log().splitlines() if changed else []:
         match = _RATIFIED_RE.match(line.strip())
         if match:
             task, base, candidate = match.groups()
-            for path in adapter_mod._workspace_changed_paths(
-                    os.path.join(states, base), os.path.join(states, candidate)):
-                if path in changed:
+            base_root, candidate_root = os.path.join(states, base), os.path.join(states, candidate)
+            for path in changed:
+                if adapter_mod._workspace_file(os.path.join(base_root, path)) != \
+                        adapter_mod._workspace_file(os.path.join(candidate_root, path)):
                     owners.setdefault(path, []).append(task)
     return ", ".join(f"{path} ({', '.join(tasks)})" for path, tasks in sorted(owners.items()))
 
@@ -1052,6 +1061,7 @@ def _run_project_inner(config, backend=None):
                 if current_task_base_state:
                     vc_system.restore_workspace(current_task_base_state, preserve_todo=True)
                     vc_system.set_current(current_task_base_state)
+                text_before = (todo_mod.get_task(tasks, number) or {}).get("description")
                 escalated = _reconcile_batch(
                     vc_system, config, backend, active,
                     read_file_content(os.path.join(workspace, "docs/todo.md")), reviewer_feedback,
@@ -1063,7 +1073,17 @@ def _run_project_inner(config, backend=None):
                 if escalated["status"] in ("error", "done"):
                     return escalated
                 rework_counts[number] = 0
-                reviewer_feedback.pop(number, None)
+                kept = todo_mod.get_task(
+                    todo_mod.parse_todo(read_file_content(os.path.join(workspace, "docs/todo.md"))), number)
+                if kept and kept["description"] == text_before and current_task_base_state:
+                    # Same task, so the Worker still needs the Reviewer's reason (re-logged for restarts).
+                    vc_system._append_log(
+                        current_task_base_state,
+                        f"rework_reason: task=T{number} base={current_task_base_state} "
+                        f"candidate={result['state']} reason={reviewer_feedback[number]}",
+                    )
+                else:
+                    reviewer_feedback.pop(number, None)
                 current_task_number = None
                 current_task_base_state = None
                 prior_worker_messages = None

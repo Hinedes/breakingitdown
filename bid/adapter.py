@@ -1928,6 +1928,19 @@ def _review_path_blocked(rel_path):
     )
 
 
+def _workspace_file(path):
+    """Text of one snapshot entry exactly as _workspace_tree records it; None if missing or unreadable."""
+    try:
+        if os.path.islink(path):
+            return "SYMLINK (target not read): " + os.readlink(path)
+        if stat.S_ISREG(os.lstat(path).st_mode):
+            with open(path, encoding="utf-8", newline="") as file:
+                return file.read()
+        return "SPECIAL FILE (contents not read)"
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _workspace_tree(root):
     tree = {}
     for dirpath, dirs, files in os.walk(root):
@@ -1943,16 +1956,9 @@ def _workspace_tree(root):
             rel = os.path.relpath(path, root).replace(os.sep, "/")
             if _review_path_blocked(rel):
                 continue
-            try:
-                if os.path.islink(path):
-                    tree[rel] = "SYMLINK (target not read): " + os.readlink(path)
-                elif stat.S_ISREG(os.lstat(path).st_mode):
-                    with open(path, encoding="utf-8", newline="") as file:
-                        tree[rel] = file.read()
-                else:
-                    tree[rel] = "SPECIAL FILE (contents not read)"
-            except (OSError, UnicodeDecodeError):
-                pass
+            text = _workspace_file(path)
+            if text is not None:
+                tree[rel] = text
     return tree
 
 
