@@ -1,15 +1,18 @@
 import difflib
 import hashlib
+import inspect
 import os
 import shlex
 import re
 import subprocess
 import sys
 import shutil
+import stat
 import tempfile
 import time
 
 from . import permissions
+from . import protocol
 from . import search as search_mod
 from . import todo as todo_mod
 from . import vc as vc_mod
@@ -58,6 +61,19 @@ def _hash_file(path):
         return "?"
 
 
+def _file_metadata(path):
+    with open(path, "rb") as file:
+        data = file.read()
+    trailing = data[len(data.rstrip(b"\r\n")):]
+    count = len(re.findall(rb"\r\n|\r|\n", trailing))
+    ending = (
+        "CRLF" if data.endswith(b"\r\n") else
+        "LF" if data.endswith(b"\n") else
+        "CR" if data.endswith(b"\r") else "none"
+    )
+    return f"bytes={len(data)};end={ending};trailing={count}"
+
+
 RUN_OUTPUT_LIMIT = 2000
 
 CONTROL_ROOTS = (
@@ -73,7 +89,16 @@ CONTROL_ROOTS = (
 
 TASK_REVIEWER_SYSTEM = """You are BID Task Reviewer.
 Judge whether the candidate satisfies the assigned task using only the
-provided original request, task, and fixed-base-to-candidate diff.
+provided original request, task, fixed-base-to-candidate diff, and candidate
+workspace snapshot. Check every concrete deliverable against that evidence.
+The snapshot marks each file's UTF-8 byte count and exact trailing newline count.
+Missing files, incorrect literal content, or an empty diff when the task requires
+a change are concrete unmet requirements. When the task specifies a trailing
+newline count, compare it exactly with the snapshot's `trailing=` value. A
+Worker `Done` command is not proof of completion. ACCEPT only when the evidence
+supports the current task; otherwise REWORK with the specific requirement.
+The verdict must agree with the reason: if the reason identifies a missing,
+incorrect, or unmet requirement, return REWORK, never ACCEPT.
 
 Return exactly one of:
 
@@ -130,18 +155,20 @@ def _snapshot_control_state(workspace):
     snapshot = tempfile.mkdtemp(prefix="bid-control-")
     for rel in CONTROL_ROOTS:
         source = os.path.join(workspace, rel)
-        if not os.path.exists(source):
+        if not os.path.lexists(source):
             continue
         target = os.path.join(snapshot, rel)
-        if os.path.isdir(source):
-            shutil.copytree(source, target)
+        if not os.path.islink(source) and os.path.isdir(source):
+            shutil.copytree(source, target, symlinks=True)
         else:
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copy2(source, target)
+            shutil.copy2(source, target, follow_symlinks=False)
     return snapshot
 
 
 def _entry_signature(path):
+    if os.path.islink(path):
+        return ("symlink", os.readlink(path))
     if not os.path.exists(path):
         return None
     if os.path.isfile(path):
@@ -172,20 +199,20 @@ def _restore_control_state(workspace, snapshot):
         target = os.path.join(workspace, rel)
         if os.path.isdir(target) and not os.path.islink(target):
             shutil.rmtree(target)
-        elif os.path.exists(target):
+        elif os.path.lexists(target):
             os.remove(target)
 
     for rel in CONTROL_ROOTS:
         source = os.path.join(snapshot, rel)
-        if not os.path.exists(source):
+        if not os.path.lexists(source):
             continue
         target = os.path.join(workspace, rel)
-        if os.path.isdir(source):
+        if not os.path.islink(source) and os.path.isdir(source):
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copytree(source, target)
+            shutil.copytree(source, target, symlinks=True)
         else:
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copy2(source, target)
+            shutil.copy2(source, target, follow_symlinks=False)
 
 
 def format_run_evidence(entries):
@@ -238,6 +265,41 @@ def _validate_direct_deletion(argv, workspace):
 # ── Command parsing ──────────────────────────────────────────────────
 
 _KNOWN_CMDS = {"READ ", "WRITE ", "RUN ", "SEARCH ", "REPLACE "}
+
+
+def available_command_names(config):
+    names = ["READ"]
+    if config.get("max_searches_per_worker", 10) > 0:
+        names.append("SEARCH")
+    names.extend(("WRITE", "REPLACE"))
+    if config.get("allow_host_run", False) or callable(config.get("run_executor")):
+        names.append("RUN")
+    names.append("Done")
+    return tuple(names)
+
+
+def render_worker_policy(policy, config):
+    optional = []
+    if config.get("max_searches_per_worker", 10) > 0:
+        optional.append("SEARCH <query>")
+    if config.get("allow_host_run", False) or callable(config.get("run_executor")):
+        optional.append("RUN <program> [arguments...]")
+    replacement = "\n".join(optional) if optional else "No optional commands are enabled for this session."
+    return policy.replace("{{OPTIONAL_COMMANDS}}", replacement)
+
+
+def _run_backend(backend, messages, tools, max_tokens, timeout=None, grammar=None):
+    parameters = inspect.signature(backend.run).parameters.values()
+    accepts_timeout = any(p.name == "timeout" or p.kind == p.VAR_KEYWORD for p in parameters)
+    accepts_grammar = any(p.name == "grammar" or p.kind == p.VAR_KEYWORD for p in parameters)
+    kwargs = {"max_tokens": max_tokens}
+    if timeout is not None and accepts_timeout:
+        kwargs["timeout"] = timeout
+    if grammar is not None:
+        if not accepts_grammar:
+            raise TypeError("protocol grammar requires a backend that accepts grammar")
+        kwargs["grammar"] = grammar
+    return backend.run(messages, tools, **kwargs)
 
 
 def _parse_content_into_turns(content, finish_reason=None):
@@ -416,6 +478,8 @@ def validate_todo_tasks(tasks):
             return False, f"{t['id']} must start unchecked"
         if not t["description"].strip():
             return False, f"{t['id']} has empty description"
+        if t["description"].strip().casefold() in {"description", "task", "todo item"}:
+            return False, f"{t['id']} has a placeholder description"
     return True, None
 
 
@@ -432,6 +496,8 @@ class ManagerInitAdapter:
         self.obs = get_log(self.workspace)
 
     def run(self, backend):
+        if hasattr(backend, "role"):
+            backend.role = "manager"
         manager_md = _read(self.workspace, "docs/manager.md")
         task_md = _read(self.workspace, "docs/task.md")
 
@@ -440,11 +506,17 @@ class ManagerInitAdapter:
             {
                 "role": "user",
                 "content": (
-                    f"# Task\n\n{task_md}\n\n"
-                    "Create a checklist for this task. Return only unchecked Markdown checklist lines:\n\n"
-                    "- [ ] Description\n"
-                    "- [ ] Description\n\n"
-                    "Keep the steps natural. If a step is a deliberate no-op, that is fine.\n\n"
+                    f"{task_md.rstrip()}\n\n"
+                    "Create a short, ordered checklist that preserves every deliverable and explicit constraint. "
+                    "Each distinct deliverable must appear exactly once. If all requirements concern one "
+                    "standalone file, use exactly one task for that file; do not split writing it into a "
+                    "second create, inspect, or verification task. Each item must name its target file or "
+                    "files and include the public interface and relevant "
+                    "input/output requirements the Worker needs. For literal content, copy all required text "
+                    "verbatim into the item; do not split content lines into tasks. Every item must change a file. Do not add "
+                    "no-op or verification-only items. Return only unchecked Markdown checklist lines:\n\n"
+                    "Use the exact prefix `- [ ] ` for each line, followed by a concrete file-producing action. "
+                    "Do not use placeholder descriptions.\n"
                 ),
             },
         ]
@@ -452,7 +524,10 @@ class ManagerInitAdapter:
         for attempt in range(self.RETRY_LIMIT):
             req_tok = self.obs.start("model_request", role="manager", retry=attempt)
             try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
+                response = _run_backend(
+                    backend, messages, [], self.config.get("max_tokens", 32768),
+                    grammar=protocol.grammar_for(self.config, "manager"),
+                )
             except Exception as exc:
                 self.obs.end(req_tok, error=str(exc))
                 return {"status": "error", "reason": f"model request failed: {exc}"}
@@ -478,9 +553,9 @@ class ManagerInitAdapter:
                     "role": "user",
                     "content": (
                         "Return only checklist lines in this exact format:\n"
-                        "- [ ] Description\n"
-                        "- [ ] Description\n\n"
-                        "No commentary. No code fences. Got:\n\n"
+                        "Use the exact prefix `- [ ] ` followed by a concrete file-producing action. "
+                        "Do not use placeholder descriptions.\n"
+                        "No commentary, headings, or code fences. Each item must change a file. Got:\n\n"
                         + content.strip()[:500]
                     ),
                 })
@@ -527,16 +602,23 @@ class WorkerAdapter:
         self.obs = get_log(self.workspace)
 
     def run(self, backend):
+        if hasattr(backend, "role"):
+            backend.role = "worker"
         todo_text = _read(self.workspace, "docs/todo.md")
         tasks = todo_mod.parse_todo(todo_text)
         task = todo_mod.get_task(tasks, self.task_number)
         if not task:
             return {"status": "error", "reason": f"T{self.task_number} not found in TODO"}
 
-        worker_policy = _read(self.workspace, "docs/worker.md")
+        worker_policy = render_worker_policy(
+            _read(self.workspace, "docs/worker.md"), self.config
+        )
         task_prompt = (
             f"\nTask T{self.task_number}: {task['description']}\n\n"
         )
+        task_statement = (self.config.get("task_statement") or "").strip()
+        if task_statement:
+            task_prompt += f"Full public issue statement:\n{task_statement}\n\n"
         if self.feedback:
             task_prompt += f"\nPrevious reviewer feedback:\n{self.feedback}\n"
 
@@ -551,19 +633,41 @@ class WorkerAdapter:
         ]
 
         observer = Observer(self.workspace, self.task_number)
-        hard_ceiling = self.config.get("worker_timeout", 3600)
+        worker_timeout = self.config.get("worker_timeout", 3600)
         inactivity_timeout = self.config.get("inactivity_timeout", 600)
         repeat_limit = self.config.get("repeat_action_limit", 5)
         session_start = time.monotonic()
         soft_resets = 0
         last_sig = None
         turn_repeat = 0
+        last_turn_signature = None
+        repeated_turns = 0
         _read_tracker = {}  # canonical_rel_path → (useful_count, last_hash)
 
-        while time.monotonic() - session_start < hard_ceiling:
+        def workspace_state_signature():
+            state = repr(sorted(
+                (path, digest)
+                for path, digest in observer._snapshot.items()
+                if not _review_path_blocked(path)
+                and not path.startswith((".pytest_cache/", "__pycache__/"))
+            ))
+            return hashlib.sha256(state.encode("utf-8")).digest()
+
+        previous_state = workspace_state_signature()
+        seen_states = {previous_state}
+        repeated_state_revisits = 0
+
+        while True:
+            remaining = worker_timeout - (time.monotonic() - session_start)
+            if remaining <= 0:
+                return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
             req_tok = self.obs.start("model_request", role="worker", task=f"T{self.task_number}", attempt=1)
             try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
+                response = _run_backend(
+                    backend, messages, [], self.config.get("max_tokens", 32768),
+                    min(remaining, self.config.get("request_timeout", remaining)),
+                    grammar=protocol.grammar_for(self.config, "worker"),
+                )
             except Exception as exc:
                 self.obs.end(req_tok, error=str(exc))
                 return {"status": "error", "reason": f"model request failed: {exc}"}
@@ -577,6 +681,8 @@ class WorkerAdapter:
             )
 
             raw_content = response.get("content") or ""
+            if time.monotonic() - session_start >= worker_timeout:
+                return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
             content = raw_content.strip()
             if os.environ.get("BID_IMPLICIT_WRITE") == "1":
                 finish_reason = response.get("finish_reason", "stop")
@@ -607,10 +713,13 @@ class WorkerAdapter:
                 last_sig = sig
                 messages.append({
                     "role": "user",
-                    "content": "No executable BID command was found. Respond only with actual READ, WRITE, RUN, or Done commands. Do not explain or describe the commands."
+                    "content": f"No executable BID command was found. Respond only with actual {', '.join(available_command_names(self.config))} commands. Do not explain or describe the commands."
                 })
             else:
                 for cmd in commands:
+                    remaining = worker_timeout - (time.monotonic() - session_start)
+                    if remaining <= 0:
+                        return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
                     _log_worker_event(self._vc, "worker parsed command", _command_label(cmd))
                     cmd_tok = self.obs.start("command", task=f"T{self.task_number}", type=cmd["type"])
                     if cmd["type"] == "Done":
@@ -637,7 +746,10 @@ class WorkerAdapter:
                                     elif not os.path.isfile(abs_path):
                                         result = f"not a file: {cmd['path']}"
                                     else:
-                                        result = _read(self.workspace, rel)
+                                        result = (
+                                            f"File metadata: {_file_metadata(abs_path)}\n"
+                                            f"File contents:\n{_read(self.workspace, rel)}"
+                                        )
                                         fhash = _hash_file(abs_path)
                                         prev = _read_tracker.get(rel)
                                         if not prev or prev[1] != fhash:
@@ -657,7 +769,9 @@ class WorkerAdapter:
                         continue
 
                     if cmd["type"] == "SEARCH":
-                        if self._search_count >= self._search_limit:
+                        if self._search_limit <= 0:
+                            result = "error: SEARCH disabled for this session"
+                        elif self._search_count >= self._search_limit:
                             result = f"error: search limit ({self._search_limit}) reached"
                         else:
                             self._search_count += 1  # all attempts count toward ceiling
@@ -674,6 +788,8 @@ class WorkerAdapter:
                                 else:
                                     result = f"Search completed. {n} source(s) saved to {path}."
                                     useful = True
+                                if observer.poll_changes():
+                                    changed = True
                         sig = f"SEARCH {search_mod._query_hash(cmd['query'])}|{result[:50]}"
                         if sig == last_sig:
                             turn_repeat += 1
@@ -689,11 +805,10 @@ class WorkerAdapter:
                         try:
                             result = self._write_command(cmd["path"], cmd["content"])
                             if not result.startswith("error"):
-                                useful = True
                                 if cmd.get("implicit"):
                                     self._implicit_write_count += 1
-                            if observer.poll_changes():
-                                changed = True
+                                if observer.poll_changes():
+                                    changed = True
                         except ValueError as e:
                             result = str(e)
                         sig = f"WRITE {cmd['path']}|{result[:50]}"
@@ -714,7 +829,11 @@ class WorkerAdapter:
                         evidence_count_before = len(self._run_evidence)
                         try:
                             try:
-                                result = self._run_command(cmd["command"])
+                                remaining = worker_timeout - (time.monotonic() - session_start)
+                                if remaining <= 0:
+                                    self.obs.end(cmd_tok, status="timeout")
+                                    return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
+                                result = self._run_command(cmd["command"], remaining=remaining)
                             except Exception as exc:
                                 result = f"error: execution failed: {exc}"
 
@@ -786,7 +905,6 @@ class WorkerAdapter:
                         if result.startswith("error"):
                             replace_failed = True
                         if not result.startswith("error"):
-                            useful = True
                             if observer.poll_changes():
                                 changed = True
                         sig = f"REPLACE {cmd['path']}|{result[:50]}"
@@ -832,12 +950,19 @@ class WorkerAdapter:
                     messages.append({"role": "user", "content": result})
                     self.obs.end(cmd_tok)
 
+            if commands:
+                turn_signature = tuple(tuple(sorted(cmd.items())) for cmd in commands)
+                if turn_signature == last_turn_signature and not changed and not useful:
+                    repeated_turns += 1
+                else:
+                    repeated_turns = 0
+                last_turn_signature = turn_signature
+
             # Unknown-command feedback
             unknown_cmds = _find_unknown_commands(raw_content, commands)
             if unknown_cmds:
                 err_msg = ("error: unknown command(s): " + ", ".join(unknown_cmds[:3])
-                           + "\nAllowed commands are READ, WRITE, RUN, Done."
-                           + "\nTo inspect directories, use RUN ls.")
+                           + f"\nAllowed commands are {', '.join(available_command_names(self.config))}.")
                 messages.append({"role": "user", "content": err_msg})
                 _log_worker_event(self._vc, "worker result", err_msg)
                 # NOT counted as useful or changed; does NOT reset repeat
@@ -846,11 +971,30 @@ class WorkerAdapter:
             if policy_violation or fence_violation or replace_failed:
                 saw_done = False
 
+            if time.monotonic() - session_start >= worker_timeout:
+                return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
             if saw_done:
                 return {"status": "done", "checked": False, "run_evidence": list(self._run_evidence)}
 
+            current_state = workspace_state_signature()
+            if useful:
+                seen_states = {current_state}
+                repeated_state_revisits = 0
+            elif current_state != previous_state:
+                if current_state in seen_states:
+                    repeated_state_revisits += 1
+                    if repeated_state_revisits >= repeat_limit:
+                        return {
+                            "status": "stalled",
+                            "reason": "workspace repeatedly returned to earlier states",
+                        }
+                else:
+                    seen_states.add(current_state)
+                    repeated_state_revisits = 0
+            previous_state = current_state
+
             # Soft reset on repeat stall
-            if turn_repeat >= repeat_limit and not changed and not useful:
+            if (turn_repeat >= repeat_limit or repeated_turns >= repeat_limit) and not changed and not useful:
                 soft_resets += 1
                 if soft_resets > self.MAX_SOFT_RESETS:
                     return {"status": "stalled", "reason": f"repeated action without progress"}
@@ -870,6 +1014,8 @@ class WorkerAdapter:
                 observer = Observer(self.workspace, self.task_number)
                 last_sig = None
                 turn_repeat = 0
+                last_turn_signature = None
+                repeated_turns = 0
                 continue
 
             # Activity marking
@@ -879,7 +1025,7 @@ class WorkerAdapter:
             if observer.inactive_for() > inactivity_timeout:
                 return {"status": "timeout", "reason": f"inactive {observer.inactive_for():.0f}s"}
 
-        return {"status": "timeout", "reason": f"hard ceiling {hard_ceiling}s"}
+        return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
 
     def _write_command(self, path, content):
         if re.search(r"[<>|;&`'\"]", path):
@@ -896,7 +1042,9 @@ class WorkerAdapter:
             raise ValueError(f"permission denied: {err_msg}")
 
         _write(self.workspace, rel, content)
-        return f"wrote {len(content)} bytes to {rel}"
+        abs_path = os.path.join(self.workspace, rel)
+        metadata = _file_metadata(abs_path)
+        return f"wrote {os.path.getsize(abs_path)} bytes to {rel}; {metadata.split(';', 1)[1]}"
 
     def _replace_text(self, path, old_text, new_text):
         if not old_text:
@@ -935,10 +1083,10 @@ class WorkerAdapter:
     def _obs_check_changes(self, path, before):
         pass  # hook for observer; real check via poll_changes in dispatch
 
-    def _run_command(self, command):
+    def _run_command(self, command, remaining=None):
         t0 = time.monotonic()
         try:
-            return self._run_command_inner(command)
+            return self._run_command_inner(command, remaining=remaining)
         finally:
             evidence = self._run_evidence[-1] if self._run_evidence else None
             if evidence is not None and evidence.get("command") == (command or "").strip():
@@ -951,7 +1099,13 @@ class WorkerAdapter:
                     result=evidence.get("result"),
                 )
 
-    def _run_command_inner(self, command):
+    def _run_command_inner(self, command, remaining=None):
+        executor = self.config.get("run_executor")
+        if not self.config.get("allow_host_run", False) and not callable(executor):
+            return self._record_run_evidence(
+                command, "error: RUN disabled; set BID_ALLOW_HOST_RUN=1 only for trusted work",
+                False, 126, "", "",
+            )
         command = (command or "").strip()
         if not command:
             return self._record_run_evidence(command, "error: command required", False, 127, "", "")
@@ -971,16 +1125,24 @@ class WorkerAdapter:
         if error:
             return self._record_run_evidence(command, error, False, 126, "", "", denied_deletion=True)
 
-        timeout = self.config.get("run_timeout", 60)
+        timeout = min(
+            self.config.get("run_timeout", 60),
+            remaining if remaining is not None else float("inf"),
+        )
+        if timeout <= 0:
+            return self._record_run_evidence(command, "error: Worker session deadline exceeded", True, -1, "", "")
         try:
-            completed = subprocess.run(
-                argv,
-                cwd=self.workspace,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
+            if callable(executor):
+                completed = executor(argv, cwd=self.workspace, timeout=timeout)
+            else:
+                completed = subprocess.run(
+                    argv,
+                    cwd=self.workspace,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
             result = "success" if completed.returncode == 0 else f"error: exit code {completed.returncode}"
             return self._record_run_evidence(command, result, False, completed.returncode, completed.stdout, completed.stderr)
         except FileNotFoundError as exc:
@@ -1045,17 +1207,35 @@ def _workspace_tree(root):
             for directory in dirs
             if directory not in {".bid", ".pytest_cache", "__pycache__"}
         ]
-        for filename in files:
+        links = [directory for directory in dirs if os.path.islink(os.path.join(dirpath, directory))]
+        dirs[:] = [directory for directory in dirs if directory not in links]
+        for filename in files + links:
             path = os.path.join(dirpath, filename)
             rel = os.path.relpath(path, root).replace(os.sep, "/")
             if _review_path_blocked(rel):
                 continue
             try:
-                with open(path, encoding="utf-8") as file:
-                    tree[rel] = file.read()
+                if os.path.islink(path):
+                    tree[rel] = "SYMLINK (target not read): " + os.readlink(path)
+                elif stat.S_ISREG(os.lstat(path).st_mode):
+                    with open(path, encoding="utf-8", newline="") as file:
+                        tree[rel] = file.read()
+                else:
+                    tree[rel] = "SPECIAL FILE (contents not read)"
             except (OSError, UnicodeDecodeError):
                 pass
     return tree
+
+
+def _text_file_metadata(text):
+    trailing = text[len(text.rstrip("\r\n")):]
+    count = len(re.findall(r"\r\n|\r|\n", trailing))
+    ending = (
+        "CRLF" if text.endswith("\r\n") else
+        "LF" if text.endswith("\n") else
+        "CR" if text.endswith("\r") else "none"
+    )
+    return f"bytes={len(text.encode('utf-8'))};end={ending};trailing={count}"
 
 
 def _workspace_diff(base_root, candidate_root, limit=12000):
@@ -1085,8 +1265,19 @@ def _workspace_diff(base_root, candidate_root, limit=12000):
     if not changes:
         return "(no file changes)"
 
+    def candidate_metadata(rel):
+        if rel not in cand:
+            return "candidate absent"
+        if os.path.islink(os.path.join(candidate_root, rel)):
+            return "symlink; target not read"
+        if not stat.S_ISREG(os.lstat(os.path.join(candidate_root, rel)).st_mode):
+            return "special file; contents not read"
+        text = cand[rel]
+        ending = "CRLF" if text.endswith("\r\n") else "LF" if text.endswith("\n") else "none"
+        return f"bytes={len(text.encode('utf-8'))};end={ending}"
+
     index = "## Changed files\n" + "\n".join(
-        f"- {status} {rel}" for status, rel, _ in changes
+        f"- {status} {rel} [{candidate_metadata(rel)}]" for status, rel, _ in changes
     )
     full = "\n\n".join(
         f"### {status} {rel}" + (f"\n{detail}" if detail else "")
@@ -1117,8 +1308,14 @@ def _workspace_listing(root, limit=12000):
     tree = _workspace_tree(root)
     lines = []
     for rel in sorted(tree):
-        lines.append(f"### {rel}")
-        body = tree[rel].strip()
+        body = tree[rel]
+        if body.startswith(("SYMLINK (", "SPECIAL FILE ")):
+            metadata = "contents unavailable"
+        else:
+            raw = body
+            metadata = _text_file_metadata(raw)
+            body = raw.rstrip("\r\n")
+        lines.append(f"### {rel} [{metadata}]")
         if body:
             lines.append(body[:500])
         lines.append("")
@@ -1138,6 +1335,8 @@ class TaskReviewAdapter:
         self.obs = get_log(self.workspace)
 
     def run(self, backend):
+        if hasattr(backend, "role"):
+            backend.role = "reviewer"
         todo_text = _read(self.workspace, "docs/todo.md")
         tasks = todo_mod.parse_todo(todo_text)
         task = todo_mod.get_task(tasks, self.task_number)
@@ -1145,24 +1344,30 @@ class TaskReviewAdapter:
             return {"verdict": "ERROR", "reason": "task not found", "task_number": self.task_number}
 
         task_md = _read(self.workspace, "docs/task.md")
-        if not self.base_state:
+        if not self.base_state or not re.fullmatch(r"s\d+", self.base_state):
             return {"verdict": "ERROR", "reason": "base state not found", "task_number": self.task_number}
 
         base_root = os.path.join(self.workspace, ".bid", "states", self.base_state)
         if not os.path.isdir(base_root):
             return {"verdict": "ERROR", "reason": f"base state {self.base_state} not found", "task_number": self.task_number}
 
-        diff_text = _workspace_diff(base_root, self.workspace)
-        candidate_id = self.candidate_state or "(unknown)"
+        if not self.candidate_state or not re.fullmatch(r"s\d+", self.candidate_state):
+            return {"verdict": "ERROR", "reason": "candidate state not found", "task_number": self.task_number}
+        candidate_root = os.path.join(self.workspace, ".bid", "states", self.candidate_state)
+        if not os.path.isdir(candidate_root):
+            return {"verdict": "ERROR", "reason": f"candidate state {self.candidate_state} not found", "task_number": self.task_number}
+        diff_text = _workspace_diff(base_root, candidate_root)
+        candidate_id = self.candidate_state
 
         prompt = (
             "# Review Assignment\n\n"
             f"Original request:\n{task_md}\n\n"
             f"Task:\n{task['description']}\n\n"
             f"Fixed base: {self.base_state}\n"
-            f"Submitted candidate: {candidate_id}\n\n"
-            f"Base -> candidate diff:\n{diff_text}\n\n"
-            "No harness-owned verification was executed against this submitted candidate.\n\n"
+             f"Submitted candidate: {candidate_id}\n\n"
+             f"Base -> candidate diff:\n{diff_text}\n\n"
+             f"Candidate workspace snapshot:\n{_workspace_listing(candidate_root)}\n\n"
+             "No harness-owned verification was executed against this submitted candidate.\n\n"
              "Judge only whether the submitted candidate satisfies the stated current task. "
              "Use the original request only as background constraints. "
              "Unfinished later checklist tasks are not grounds for REWORK.\n\n"
@@ -1191,7 +1396,10 @@ class TaskReviewAdapter:
                 retry=attempt,
             )
             try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
+                response = _run_backend(
+                    backend, messages, [], self.config.get("max_tokens", 32768),
+                    grammar=protocol.grammar_for(self.config, "reviewer"),
+                )
             except Exception as exc:
                 self.obs.end(req_tok, error=str(exc))
                 return {"verdict": "ERROR", "reason": f"model request failed: {exc}", "task_number": self.task_number}
@@ -1234,39 +1442,46 @@ class TaskReviewAdapter:
 
 RECONCILIATION_SYSTEM = """You are BID Manager performing project reconciliation.
 
-Provisional Worker submissions await your decision. Return ONE batch decision
-using only these sections, in any order, ending with the mandatory project section:
+Choose a decision from the original request, checklist, Reviewer verdict, and
+each candidate's workspace snapshot and diff. Return only the needed sections,
+in this order, ending with the mandatory project section:
 
+- `# Done` on its own line, then `- Tn` for each accepted provisional task.
+- `# Rework` on its own line, then `- Tn — reason` for one rejected task.
+- `# Add` on its own line, then `- distinct task` for an omitted deliverable.
+- `# Replace Remaining Plan` on its own line, then `- [ ] task` for each replacement unchecked task.
+- `# Project` on its own line, then exactly `CONTINUE` or `COMPLETE`.
+
+Example:
 # Done
 - T1
-- T2
-
-# Rework
-- T3 — reason for rework
-
-# Add
-- new task description
-
-# Replace Remaining Plan
-- [ ] T1 — new description
-- [ ] T2 — new description
-
 # Project
-CONTINUE
+COMPLETE
+
+Omit optional sections with no entries. Do not return empty headings.
 
 Rules:
-- Without # Rework, every active provisional task must appear in # Done.
-- With # Rework Tn, every earlier active provisional task must appear in
-  # Done; Tn and every later provisional task are automatically invalidated,
-  and no task at or after Tn may appear in # Done.
-- # Rework contains exactly one task with a non-empty reason.
-- # Done, # Rework and # Add may coexist.
-- # Replace Remaining Plan may coexist with # Done but not with # Rework or
-  # Add; it changes only currently unchecked future tasks, never provisional
-  or DONE tasks.
-- # Project must be exactly CONTINUE or COMPLETE.
-- CONTINUE is valid only when unchecked work remains after application.
-- COMPLETE is valid only when every task is DONE after application.
+- Use only task IDs listed under Provisional submissions; checked [x] checklist
+  tasks are already ratified and must not appear in # Done or # Rework.
+- Put each provisional task in exactly one of # Done or # Rework. Never list a
+  task in both. Without # Rework, every active provisional task must be in
+  # Done. With # Rework Tn, earlier active provisional tasks go in # Done; Tn
+  and later provisional tasks are invalidated and must not be in # Done.
+- If the same task appears in both sections, remove it from one section. Choose
+  which section to keep by comparing the candidate evidence with the request.
+- # Rework contains exactly one task with a concrete unmet requirement.
+- # Add only a distinct deliverable required by the original request but absent
+  from the checklist. Never repeat the request or an existing task in # Add.
+- Use # Replace Remaining Plan only when unchecked future tasks already exist;
+  never use it to restate provisional or DONE tasks. It cannot coexist with
+  # Rework or # Add.
+- A Reviewer verdict is evidence, not an instruction to ignore the candidate
+  snapshot or diff. Resolve any conflict from the artifact evidence.
+- Choose #Project after applying your own sections. Use CONTINUE only if
+  executable unchecked work remains. Use COMPLETE only when every deliverable
+  is satisfied and no unchecked or provisional tasks remain.
+- If no unchecked checklist tasks remain and all provisional tasks are accepted,
+  choose COMPLETE.
 
 Return only the sections. No commentary, analysis, or code fences."""
 
@@ -1287,6 +1502,8 @@ class ManagerReconcileAdapter:
 
     def run_once(self, backend, correction=None):
         """One model call + structural parse. Returns (decision, error)."""
+        if hasattr(backend, "role"):
+            backend.role = "manager_reconcile"
         messages = [
             {"role": "system", "content": RECONCILIATION_SYSTEM},
             {"role": "user", "content": self._build_prompt()},
@@ -1297,7 +1514,10 @@ class ManagerReconcileAdapter:
 
         req_tok = self.obs.start("model_request", role="manager_reconcile", retry=0)
         try:
-            response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
+            response = _run_backend(
+                backend, messages, [], self.config.get("max_tokens", 32768),
+                grammar=protocol.grammar_for(self.config, "manager_reconcile"),
+            )
         except Exception as exc:
             self.obs.end(req_tok, error=str(exc))
             return None, f"model request failed: {exc}"

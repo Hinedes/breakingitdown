@@ -1,15 +1,16 @@
+import json
 import re
 import os
 import shutil
+import tempfile
+import uuid
+from importlib.resources import files
 
 from . import adapter as adapter_mod
 from . import model as model_mod
 from . import todo as todo_mod
 from . import vc as vc_mod
 from .observability import get_log
-
-
-PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
 
 
 def get_config():
@@ -27,6 +28,9 @@ def get_config():
         "search_endpoint": os.environ.get("BID_SEARCH_ENDPOINT", ""),
         "provisional_batch": int(os.environ.get("BID_PROVISIONAL_BATCH", "4")),
         "max_task_reworks": int(os.environ.get("BID_MAX_TASK_REWORKS", "3")),
+        "max_manager_reworks": int(os.environ.get("BID_MAX_MANAGER_REWORKS", "3")),
+        "allow_host_run": os.environ.get("BID_ALLOW_HOST_RUN") == "1",
+        "protocol_grammar": os.environ.get("BID_PROTOCOL_GRAMMAR") == "1",
     }
 
 
@@ -37,17 +41,16 @@ def create_backend(config):
         endpoint=config["endpoint"],
         model=config["model_name"],
         timeout=config["request_timeout"],
-        text_tools=os.environ.get("BID_TEXT_TOOLS", "1") == "1",
         max_tokens=config["max_tokens"],
+        seed=config.get("seed"),
     )
 
 
 def load_prompt(name):
-    path = os.path.join(PROMPTS_DIR, f"{name}.md")
-    if not os.path.exists(path):
+    prompt = files("prompts").joinpath(f"{name}.md")
+    if not prompt.is_file():
         return ""
-    with open(path, "r", encoding="utf-8") as file:
-        return file.read().strip()
+    return prompt.read_text(encoding="utf-8").strip()
 
 
 def read_file_content(path):
@@ -61,6 +64,42 @@ def write_file_content(path, content):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as file:
         file.write(content)
+
+
+def _atomic_write(path, content):
+    parent = os.path.dirname(path)
+    os.makedirs(parent, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(dir=parent, prefix=".bid-write-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as file:
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def _append_log_once(vc_system, record):
+    if record not in vc_system.get_log().splitlines():
+        vc_system.append_log(record)
+
+
+def _latest_event_count(log, kind, task_number):
+    prefixes = [f"{kind}: task=T{task_number} count="]
+    if kind == "task_rework":
+        prefixes.append(f"rework_limit: task=T{task_number} count=")
+    counts = []
+    for line in log.splitlines():
+        for prefix in prefixes:
+            if line.startswith(prefix):
+                try:
+                    counts.append(int(line[len(prefix):].split()[0]))
+                except (ValueError, IndexError):
+                    pass
+                break
+    return max(counts, default=0)
 
 
 def _append_missing_tasks(todo_text, missing):
@@ -103,31 +142,19 @@ def _task_base_state(vc_system, task_number=None):
     return current
 
 
-def _task_rework_reason(vc_system):
-    current = vc_system.get_current()
-    if not current:
+def _task_rework_reason(vc_system, task_number, base_state):
+    if not base_state:
         return None
-    log = vc_system.get_log()
-    marker = f"### {current}\n"
-    start = log.rfind(marker)
-    if start < 0:
-        return None
-    section = log[start + len(marker):]
+    section = vc_system.get_log()
     reason = None
     for line in section.splitlines():
         stripped = line.strip()
-        if not stripped:
-            continue
-        if stripped.startswith("## ") or stripped.startswith("### "):
-            break
-        match = re.search(r"\brework_reason:\s*(.*)", stripped)
+        match = re.search(
+            rf"\brework_reason: task=T{task_number} base={re.escape(base_state)} "
+            r"candidate=s\d+ reason=(.*)", stripped,
+        )
         if match:
-            raw = match.group(1).strip() or ""
-            reason_match = re.search(r"\breason=(\S.*)", raw)
-            if reason_match:
-                reason = reason_match.group(1).strip()
-            else:
-                reason = raw or None
+            reason = match.group(1).strip() or None
     return reason
 
 
@@ -252,6 +279,10 @@ def _resolve_provisional_state(vc_system, todo_text):
 
 
 def ensure_workspace(workspace):
+    for rel in ("docs", *adapter_mod.CONTROL_ROOTS):
+        if os.path.islink(os.path.join(workspace, rel)):
+            raise ValueError(f"protected control path must not be a symlink: {rel}")
+        adapter_mod._safe_path(workspace, rel)
     docs = os.path.join(workspace, "docs")
     os.makedirs(docs, exist_ok=True)
     write_file_content(os.path.join(docs, "manager.md"), load_prompt("manager"))
@@ -290,7 +321,8 @@ def run_worker_session(number, config, backend=None, feedback=None, task_base_st
         except Exception:
             obs.end(sess_tok, status="error", reason="vc save failed")
             if base_state:
-                vc_system.restore(base_state, preserve_todo=True)
+                vc_system.restore_workspace(base_state, preserve_todo=True)
+                vc_system.set_current(base_state)
             return {"status": "error", "reason": "vc save failed after worker"}
         obs.event("candidate_submitted", task=f"T{number}", base_state=base_state, candidate_state=state)
         obs.end(sess_tok, status="submitted", candidate_state=state)
@@ -317,7 +349,8 @@ def run_worker_session(number, config, backend=None, feedback=None, task_base_st
 
     if base_state:
         try:
-            vc_system.restore(base_state, preserve_todo=True)
+            vc_system.restore_workspace(base_state, preserve_todo=True)
+            vc_system.set_current(base_state)
         except Exception as exc:
             obs.end(sess_tok, status="error", reason=f"rollback failed: {exc}")
             return {"status": "error", "reason": f"rollback failed: {exc}"}
@@ -334,13 +367,13 @@ def run_worker_session(number, config, backend=None, feedback=None, task_base_st
 def init_project(user_task, config, backend=None):
     workspace = config["workspace"]
     parent = os.path.dirname(workspace)
-    backup_dir = os.path.join(parent, ".bid_backup") if parent else "/tmp/.bid_backup"
+    backup_dir = os.path.join(parent, ".bid_backup") if parent else os.path.join(os.getcwd(), ".bid_backup")
 
     # Transactional: rename existing workspace to backup, restore on failure
     ws_exists = os.path.exists(workspace)
     if ws_exists:
-        if os.path.exists(backup_dir):
-            shutil.rmtree(backup_dir, ignore_errors=True)
+        if os.path.lexists(backup_dir):
+            return {"status": "error", "reason": f"refusing to overwrite existing backup path: {backup_dir}"}
         os.rename(workspace, backup_dir)
 
     try:
@@ -426,6 +459,7 @@ def _collect_reconcile_evidence(vc_system, workspace, tasks, active, todo_text):
         candidate_root = os.path.join(vc_system.states_dir, rec["candidate"])
         diff = adapter_mod._workspace_diff(base_root, candidate_root)
         run_evidence = _run_evidence_from_log(log_text, rec["candidate"])
+        workspace = adapter_mod._workspace_listing(candidate_root)
         parts.append(
             f"### Task T{number}\n"
             f"Description: {description}\n"
@@ -433,7 +467,8 @@ def _collect_reconcile_evidence(vc_system, workspace, tasks, active, todo_text):
             f"Candidate: {rec['candidate']}\n"
             f"Task Reviewer verdict: ACCEPT\n"
             f"RUN evidence:\n{run_evidence}\n"
-            f"Base -> candidate diff:\n{diff}"
+            f"Base -> candidate diff:\n{diff}\n"
+            f"Candidate workspace snapshot:\n{workspace}"
         )
     return "\n\n".join(parts)
 
@@ -486,7 +521,7 @@ def _validate_reconcile_decision(decision, tasks, active):
         if not rework.get("reason", "").strip():
             return "REWORK requires a non-empty reason"
         if n0 in done:
-            return "task appears in both # Done and # Rework"
+            return f"task T{n0} appears in both # Done and # Rework"
         if any(number >= n0 for number in done):
             return "no task at or after the rework task may appear in # Done"
         expected_done = {n for n in provisional_numbers if n < n0}
@@ -530,73 +565,110 @@ def _validate_reconcile_decision(decision, tasks, active):
     return None
 
 
-def _apply_reconcile_decision(vc_system, workspace, todo_text, tasks, active, decision, reviewer_feedback):
-    """Apply a validated Manager decision. All mutations live here."""
+def _apply_reconcile_decision(
+    vc_system, workspace, todo_text, tasks, active, decision, reviewer_feedback,
+    manager_rework_count=0, manager_rework_limit=3,
+):
+    """Journal the decision first, then replay its idempotent effects to completion."""
+    intent_path = os.path.join(vc_system.bid_dir, "reconcile.json")
+    if os.path.exists(intent_path):
+        raise RuntimeError("unreplayed reconciliation intent exists")
+    intent = {
+        "id": uuid.uuid4().hex,
+        "todo": todo_text,
+        "active": active,
+        "decision": decision,
+        "feedback": reviewer_feedback,
+        "manager_rework_count": manager_rework_count,
+        "manager_rework_limit": manager_rework_limit,
+    }
+    _atomic_write(intent_path, json.dumps(intent, ensure_ascii=False))
+    return _replay_reconcile_intent(vc_system, workspace, intent, reviewer_feedback)
+
+
+def _replay_reconcile_intent(vc_system, workspace, intent, reviewer_feedback=None):
     obs = get_log(workspace)
+    todo_text = intent["todo"]
+    active = {int(number): record for number, record in intent["active"].items()}
+    decision = intent["decision"]
+    feedback = reviewer_feedback if reviewer_feedback is not None else intent.get("feedback", {})
     done = decision.get("done", [])
     rework = decision.get("rework")
-    add = decision.get("add", [])
-    replace = decision.get("replace")
-    project = decision.get("project")
+    project = decision["project"]
+
+    for number in sorted(done):
+        todo_text = todo_mod.set_task_checked(todo_text, number, True)
+        rec = active[number]
+        _append_log_once(
+            vc_system,
+            f"ratified: task=T{number} base={rec['base']} candidate={rec['candidate']}",
+        )
 
     if rework is not None:
-        n0 = rework["task"]
-        base_state = active[n0]["base"]
-
-        # 1. Ratify the declared earlier Done prefix.
-        for number in sorted(done):
-            todo_text = todo_mod.set_task_checked(todo_text, number, True)
-            rec = active[number]
-            vc_system.append_log(
-                f"ratified: task=T{number} base={rec['base']} candidate={rec['candidate']}"
-            )
-
-        # 2-3. Restore the live workspace to the rework task's fixed base.
+        number = rework["task"]
+        base_state = active[number]["base"]
         vc_system.restore_workspace(base_state, preserve_todo=True)
         vc_system.set_current(base_state)
-
-        # 4. Uncheck Tn and every later provisional task.
-        for number in sorted(active):
-            if number >= n0:
-                todo_text = todo_mod.set_task_checked(todo_text, number, False)
-
-        # 5. Invalidate records for the entire suffix.
-        for number in sorted(active):
-            if number >= n0:
-                rec = active[number]
-                vc_system.append_log(
-                    f"invalidate: task=T{number} base={rec['base']} "
-                    f"candidate={rec['candidate']} reason=rework-suffix"
+        for task_number, rec in sorted(active.items()):
+            if task_number >= number:
+                todo_text = todo_mod.set_task_checked(todo_text, task_number, False)
+                _append_log_once(
+                    vc_system,
+                    f"invalidate: task=T{task_number} base={rec['base']} "
+                    f"candidate={rec['candidate']} reason=rework-suffix",
                 )
-
-        # 6. Preserve normalized feedback for Tn only.
         reason = " ".join(rework["reason"].split()).strip()
-        reviewer_feedback[n0] = reason
-        vc_system._append_log(base_state,
-            f"rework_reason: task=T{n0} base={base_state} "
-            f"candidate={active[n0]['candidate']} reason={reason}")
-        obs.event("rework", task=f"T{n0}", base_state=base_state,
-                  candidate=active[n0]["candidate"])
-    else:
-        for number in sorted(done):
-            todo_text = todo_mod.set_task_checked(todo_text, number, True)
-            rec = active[number]
-            vc_system.append_log(
-                f"ratified: task=T{number} base={rec['base']} candidate={rec['candidate']}"
-            )
-            obs.event("ratify", task=f"T{number}", base=rec["base"],
-                      candidate=rec["candidate"])
+        feedback[number] = reason
+        reason_record = (
+            f"rework_reason: task=T{number} base={base_state} "
+            f"candidate={active[number]['candidate']} reason={reason}"
+        )
+        _append_log_once(vc_system, reason_record)
+        _append_log_once(
+            vc_system,
+            f"manager_rework: task=T{number} count={intent['manager_rework_count']} "
+            f"limit={intent['manager_rework_limit']}",
+        )
+        obs.event("rework", task=f"T{number}", base_state=base_state,
+                  candidate=active[number]["candidate"])
+    if decision.get("add"):
+        todo_text = _append_missing_tasks(todo_text, decision["add"])
+    if decision.get("replace") is not None:
+        todo_text = _replace_unchecked_tasks(
+            todo_text, decision["replace"], todo_mod.parse_todo(todo_text)
+        )
 
-    if add:
-        todo_text = _append_missing_tasks(todo_text, add)
-    if replace is not None:
-        # Rebuild from the CURRENT todo (already ratified / uncheck mutations),
-        # never from the stale pre-decision task list.
-        current_tasks = todo_mod.parse_todo(todo_text)
-        todo_text = _replace_unchecked_tasks(todo_text, replace, current_tasks)
+    _atomic_write(os.path.join(workspace, "docs", "todo.md"), todo_text)
+    if rework is None and project != "COMPLETE":
+        marker = f"reconcile_commit: {intent['id']}"
+        state = _reconciliation_state(vc_system.get_log(), marker)
+        if state is None:
+            vc_system.save_state("Manager (reconcile)", f"project reconciliation\n{marker}")
 
-    write_file_content(os.path.join(workspace, "docs/todo.md"), todo_text)
+    os.remove(os.path.join(vc_system.bid_dir, "reconcile.json"))
     return todo_text, project
+
+
+def _reconciliation_state(log, marker):
+    headers = list(re.finditer(r"### (s\d+)\n", log))
+    for index, header in enumerate(headers):
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(log)
+        if marker in log[header.end():end]:
+            return header.group(1)
+    return None
+
+
+def _resume_reconcile_intent(vc_system, workspace):
+    path = os.path.join(vc_system.bid_dir, "reconcile.json")
+    if not os.path.exists(path):
+        return None, None, None
+    try:
+        with open(path, encoding="utf-8") as file:
+            intent = json.load(file)
+        todo_text, project = _replay_reconcile_intent(vc_system, workspace, intent)
+        return todo_text, project, None
+    except Exception as exc:
+        return None, None, f"reconciliation recovery failed: {exc}"
 
 
 def _replace_unchecked_tasks(todo_text, descriptions, tasks):
@@ -634,15 +706,50 @@ def _reconcile_batch(vc_system, config, backend, active, todo_text, reviewer_fee
                 break
             error = validation_error
         correction = (
-            f"No valid reconciliation decision was found. {error} "
-            "Return only the reconciliation sections."
+            f"Invalid decision: {error}. Correct this validation error. "
+            "Each provisional task must appear in exactly one of # Done or # Rework. "
+            "Omit # Add unless a distinct required deliverable is missing from the checklist. "
+            "Omit # Replace Remaining Plan unless unchecked tasks already exist. "
+            "Use the candidate evidence to choose the disposition; return only needed sections."
         )
+        overlap = re.fullmatch(r"task T(\d+) appears in both # Done and # Rework", error)
+        if overlap:
+            correction += (
+                f" T{overlap.group(1)} cannot be in both sections: keep it in # Rework "
+                "if the evidence shows unmet work, or # Done if it is satisfied."
+            )
+        if "CONTINUE requires executable unchecked work" in error:
+            unchecked, provisional = _simulate_decision(tasks, decision)
+            correction += (
+                f" Your selected sections leave {unchecked} unchecked and {provisional} provisional tasks."
+                " Reassess whether any distinct required work remains after this decision; "
+                "if none remains, use COMPLETE rather than inventing a duplicate task."
+            )
         decision = None
     if decision is None:
         return {"status": "error", "reason": correction or "failed to produce valid reconciliation"}
 
+    rework = decision.get("rework")
+    rework_number = rework["task"] if rework else None
+    rework_limit = config.get("max_manager_reworks", 3)
+    rework_count = 0
+    if rework_number is not None:
+        rework_count = _latest_event_count(
+            vc_system.get_log(), "manager_rework", rework_number
+        ) + 1
+        if rework_count > rework_limit:
+            _append_log_once(
+                vc_system,
+                f"manager_rework_limit: task=T{rework_number} count={rework_count} limit={rework_limit}",
+            )
+            return {
+                "status": "error",
+                "reason": f"T{rework_number} exceeded Manager REWORK limit ({rework_count} > {rework_limit})",
+            }
+
     todo_text, project = _apply_reconcile_decision(
-        vc_system, workspace, todo_text, tasks, active, decision, reviewer_feedback
+        vc_system, workspace, todo_text, tasks, active, decision, reviewer_feedback,
+        manager_rework_count=rework_count, manager_rework_limit=rework_limit,
     )
     obs.event("manager_decision", project=project, done=decision.get("done", []),
               rework=decision.get("rework"), add=decision.get("add", []))
@@ -650,11 +757,6 @@ def _reconcile_batch(vc_system, config, backend, active, todo_text, reviewer_fee
     if project == "COMPLETE":
         return {"status": "done"}
 
-    # REWORK already restored the workspace and rewound `current` to the
-    # task's fixed base; saving another state would break restart feedback
-    # recovery, which reads the latest `### {current}` section.
-    if decision.get("rework") is None:
-        vc_system.save_state("Manager (reconcile)", "project reconciliation")
     return {"status": "continue"}
 
 
@@ -671,10 +773,43 @@ def _run_project_inner(config, backend=None):
     workspace = config["workspace"]
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
+    _, recovered_project, recovery_error = _resume_reconcile_intent(vc_system, workspace)
+    if recovery_error:
+        return {"status": "error", "reason": recovery_error}
+    if recovered_project == "COMPLETE":
+        return {"status": "done"}
     backend = backend or create_backend(config)
     reviewer_feedback = {}
     respawn_counts = {}
-    rework_counts = {}
+    log = vc_system.get_log()
+    rework_counts = {
+        task["number"]: _latest_event_count(log, "task_rework", task["number"])
+        for task in todo_mod.parse_todo(
+            read_file_content(os.path.join(workspace, "docs/todo.md"))
+        )
+    }
+    max_task_reworks = config.get("max_task_reworks", 3)
+    terminal_task = next(
+        (
+            number
+            for number in rework_counts
+            if any(
+                line.startswith(f"rework_limit: task=T{number} ")
+                for line in log.splitlines()
+            )
+        ),
+        None,
+    )
+    if terminal_task is not None:
+        return {"status": "error", "reason": f"T{terminal_task} has a persisted Task Reviewer REWORK limit record"}
+    exhausted_task = next(
+        (number for number, count in rework_counts.items() if count > max_task_reworks),
+        None,
+    )
+    if exhausted_task is not None:
+        return {"status": "error", "reason": f"T{exhausted_task} exceeded Task Reviewer REWORK limit ({rework_counts[exhausted_task]} > {max_task_reworks})"}
+    if any(line.startswith("manager_rework_limit:") for line in log.splitlines()):
+        return {"status": "error", "reason": "Manager REWORK limit already exhausted"}
     current_task_number = None
     current_task_base_state = None
     obs = get_log(workspace)
@@ -714,7 +849,9 @@ def _run_project_inner(config, backend=None):
         if current_task_number != number or current_task_base_state is None:
             current_task_number = number
             current_task_base_state = _task_base_state(vc_system, task_number=number)
-        feedback = reviewer_feedback.get(number) or _task_rework_reason(vc_system)
+        feedback = reviewer_feedback.get(number) or _task_rework_reason(
+            vc_system, number, current_task_base_state
+        )
         if feedback:
             reviewer_feedback[number] = feedback
         print(f"Worker {number}...")
@@ -760,11 +897,16 @@ def _run_project_inner(config, backend=None):
         if review.get("verdict") == "REWORK":
             rework_counts[number] = rework_counts.get(number, 0) + 1
             reviewer_feedback[number] = " ".join(review.get("reason", "").split()).strip()
+            max_reworks = config.get("max_task_reworks", 3)
+            _append_log_once(
+                vc_system,
+                f"task_rework: task=T{number} count={rework_counts[number]} "
+                f"limit={max_reworks} candidate={result['state']}",
+            )
             print(f"Worker {number} rework {rework_counts[number]}: {reviewer_feedback[number]}")
             obs.event("rework", task=f"T{number}", base_state=current_task_base_state,
                       candidate_state=result.get("state"), count=rework_counts[number])
 
-            max_reworks = config.get("max_task_reworks", 3)
             if rework_counts[number] > max_reworks:
                 # Harness-owned bound on Reviewer-triggered retries. The last
                 # rejected candidate remains preserved as a VC state; record
@@ -804,7 +946,6 @@ def _run_project_inner(config, backend=None):
 
         if review.get("verdict") == "ACCEPT":
             reviewer_feedback.pop(number, None)
-            rework_counts.pop(number, None)
             obs.event("accept", task=f"T{number}", candidate_state=result.get("state"))
             # Record-first admission: the provisional record is appended to the
             # append-only VC log BEFORE the TODO marker is flipped to `[-]`.
