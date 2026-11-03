@@ -8,9 +8,19 @@ from importlib.resources import files
 
 from . import adapter as adapter_mod
 from . import model as model_mod
+from . import repo_context as repo_context_mod
 from . import todo as todo_mod
 from . import vc as vc_mod
 from .observability import get_log
+
+
+def normalize_worker_continuity(value):
+    raw = "" if value is None else str(value).strip().lower()
+    if raw in ("", "reset"):
+        return "reset"
+    if raw == "continuous":
+        return "continuous"
+    raise ValueError("BID_WORKER_CONTINUITY must be one of: reset, continuous")
 
 
 def get_config():
@@ -31,6 +41,17 @@ def get_config():
         "max_manager_reworks": int(os.environ.get("BID_MAX_MANAGER_REWORKS", "3")),
         "allow_host_run": os.environ.get("BID_ALLOW_HOST_RUN") == "1",
         "protocol_grammar": os.environ.get("BID_PROTOCOL_GRAMMAR") == "1",
+        "worker_continuity": normalize_worker_continuity(os.environ.get("BID_WORKER_CONTINUITY", "reset")),
+        "repo_context_mode": repo_context_mod.normalize_mode(os.environ.get("BID_REPO_CONTEXT", "0")),
+        "repo_context_max_chars": int(os.environ.get("BID_REPO_CONTEXT_MAX_CHARS", "12000")),
+        "repo_context_max_find_hits": int(os.environ.get("BID_REPO_CONTEXT_MAX_FIND_HITS", "100")),
+        "repo_context_max_finds": int(os.environ.get("BID_REPO_CONTEXT_MAX_FINDS", "32")),
+        "repo_context_find_closure_max_chars": int(
+            os.environ.get("BID_REPO_CONTEXT_FIND_CLOSURE_MAX_CHARS", "8000")
+        ),
+        "repo_context_max_file_bytes": int(
+            os.environ.get("BID_REPO_CONTEXT_MAX_FILE_BYTES", "1048576")
+        ),
     }
 
 
@@ -293,7 +314,7 @@ def ensure_workspace(workspace):
 
 MAX_WORKER_RESPAWNS = 3
 
-def run_worker_session(number, config, backend=None, feedback=None, task_base_state=None):
+def run_worker_session(number, config, backend=None, feedback=None, task_base_state=None, prior_messages=None):
     workspace = config["workspace"]
     ensure_workspace(workspace)
     vc_system = vc_mod.VersionControl(workspace)
@@ -302,9 +323,11 @@ def run_worker_session(number, config, backend=None, feedback=None, task_base_st
 
     sess_tok = obs.start("worker_session", task=f"T{number}", base_state=base_state, has_feedback=bool(feedback))
     try:
-        worker_adapter = adapter_mod.WorkerAdapter(config, number, feedback=feedback)
+        worker_adapter = adapter_mod.WorkerAdapter(config, number, feedback=feedback, prior_messages=prior_messages)
         b = backend or create_backend(config)
         result = worker_adapter.run(b)
+        if result.get("status") == "done" and getattr(worker_adapter, "_history_messages", None) is not None:
+            result["_history_messages"] = [dict(m) for m in worker_adapter._history_messages]
     except Exception as exc:
         result = {"status": "error", "reason": str(exc)}
 
@@ -326,7 +349,7 @@ def run_worker_session(number, config, backend=None, feedback=None, task_base_st
             return {"status": "error", "reason": "vc save failed after worker"}
         obs.event("candidate_submitted", task=f"T{number}", base_state=base_state, candidate_state=state)
         obs.end(sess_tok, status="submitted", candidate_state=state)
-        return {
+        out = {
             "status": "submitted",
             "summary": f"T{number} submitted",
             "termination": "normal",
@@ -334,6 +357,9 @@ def run_worker_session(number, config, backend=None, feedback=None, task_base_st
             "base_state": base_state,
             "run_evidence": run_evidence,
         }
+        if result.get("_history_messages"):
+            out["_history_messages"] = result["_history_messages"]
+        return out
 
     if result.get("status") in {"stalled", "timeout"}:
         obs.event("rollback", task=f"T{number}", reason=result.get("status"), to_state=base_state)
@@ -812,6 +838,8 @@ def _run_project_inner(config, backend=None):
         return {"status": "error", "reason": "Manager REWORK limit already exhausted"}
     current_task_number = None
     current_task_base_state = None
+    prior_worker_messages = None
+    prior_task_number = None
     obs = get_log(workspace)
 
     while True:
@@ -855,9 +883,13 @@ def _run_project_inner(config, backend=None):
         if feedback:
             reviewer_feedback[number] = feedback
         print(f"Worker {number}...")
+        # Experiment-only: carry conversation messages when advancing Tn -> Tn+1
+        prior_to_pass = None
+        if config.get("worker_continuity") == "continuous" and prior_worker_messages is not None and prior_task_number is not None and prior_task_number != number:
+            prior_to_pass = prior_worker_messages
         try:
             result = run_worker_session(number, config, backend=backend, feedback=feedback,
-                                         task_base_state=current_task_base_state)
+                                         task_base_state=current_task_base_state, prior_messages=prior_to_pass)
         except Exception as exc:
             return {"status": "error", "reason": f"Worker {number} exception: {exc}"}
         if result["status"] in {"stalled", "timeout"}:
@@ -947,6 +979,10 @@ def _run_project_inner(config, backend=None):
         if review.get("verdict") == "ACCEPT":
             reviewer_feedback.pop(number, None)
             obs.event("accept", task=f"T{number}", candidate_state=result.get("state"))
+            # Experiment-only: capture conversation for continuous mode (copy messages only)
+            if config.get("worker_continuity") == "continuous" and result.get("_history_messages"):
+                prior_worker_messages = [dict(m) for m in result["_history_messages"]]
+                prior_task_number = number
             # Record-first admission: the provisional record is appended to the
             # append-only VC log BEFORE the TODO marker is flipped to `[-]`.
             vc_system.append_log(

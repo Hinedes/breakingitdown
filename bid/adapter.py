@@ -1,6 +1,7 @@
 import difflib
 import hashlib
 import inspect
+import json
 import os
 import shlex
 import re
@@ -13,6 +14,7 @@ import time
 
 from . import permissions
 from . import protocol
+from . import repo_context as repo_context_mod
 from . import search as search_mod
 from . import todo as todo_mod
 from . import vc as vc_mod
@@ -74,26 +76,23 @@ def _file_metadata(path):
     return f"bytes={len(data)};end={ending};trailing={count}"
 
 
+def _read_signature(rel, fhash):
+    return f"READ | {rel} | {fhash}"
+
+
 RUN_OUTPUT_LIMIT = 2000
 
-CONTROL_ROOTS = (
-    ".bid",
-    "docs/task.md",
-    "docs/todo.md",
-    "docs/worker.md",
-    "docs/manager.md",
-    "docs/project-status.md",
-    "docs/decisions.md",
-    "docs/reviews",
-)
+CONTROL_ROOTS = tuple(sorted(permissions.CONTROL_ROOTS))
 
 TASK_REVIEWER_SYSTEM = """You are BID Task Reviewer.
 Judge whether the candidate satisfies the assigned task using only the
-provided original request, task, fixed-base-to-candidate diff, and candidate
-workspace snapshot. Check every concrete deliverable against that evidence.
+provided original request, task, fixed-base-to-candidate diff, and bounded
+candidate workspace snapshot (a final-state view). Check every concrete deliverable against that evidence.
 The snapshot marks each file's UTF-8 byte count and exact trailing newline count.
-Missing files, incorrect literal content, or an empty diff when the task requires
-a change are concrete unmet requirements. When the task specifies a trailing
+An empty diff is acceptable only when the candidate final state already satisfies
+the current task (it may inherit a correct implementation from its base);
+otherwise it is an unmet requirement. Missing files or incorrect literal content
+are concrete unmet requirements. When the task specifies a trailing
 newline count, compare it exactly with the snapshot's `trailing=` value. A
 Worker `Done` command is not proof of completion. ACCEPT only when the evidence
 supports the current task; otherwise REWORK with the specific requirement.
@@ -148,6 +147,10 @@ def _command_label(cmd):
         return f"RUN {cmd['command']}"
     if cmd["type"] == "Done":
         return "Done"
+    if cmd["type"] == "MAP":
+        return f"MAP {cmd.get('path', '')}".rstrip()
+    if cmd["type"] == "FIND":
+        return f"FIND {cmd.get('query', '')}".rstrip()
     return cmd["type"]
 
 
@@ -265,10 +268,42 @@ def _validate_direct_deletion(argv, workspace):
 # ── Command parsing ──────────────────────────────────────────────────
 
 _KNOWN_CMDS = {"READ ", "WRITE ", "RUN ", "SEARCH ", "REPLACE "}
+_REPO_CONTEXT_NOTICE = (
+    "Repository tools are available: use MAP for a bounded filesystem view "
+    "and FIND <literal> for exhaustive fixed-literal search."
+)
+_REPO_CONTEXT_ORIENTATION_FOOTER = (
+    "Use MAP to inspect a narrower directory and FIND to locate a fixed literal.\n"
+    "Do not repeat the same MAP or FIND request without changing the query or scope."
+)
+_FIND_LITERAL_GUIDANCE = (
+    "FIND is fixed-literal, not regex. Characters such as . * [ ] ^ $ and quotes "
+    "are searched literally."
+)
+_FIND_CLOSURE_STATEMENT = (
+    "FIND is now closed for this Worker; remaining work must use READ, WRITE, "
+    "REPLACE, RUN, SEARCH, or Done."
+)
+_FIND_CLOSED_RESULT = (
+    "FIND is closed for this Worker; use READ, WRITE, REPLACE, RUN, SEARCH, or Done."
+)
+_FIND_CLOSURE_TRUNCATION = "... [FIND evidence truncated]"
+_EXECUTION_PHASE_INSTRUCTION = (
+    "Repository retrieval is complete and FIND is unavailable.\n"
+    "Continue using READ, WRITE, REPLACE, RUN, SEARCH, or Done."
+)
+
+
+def _repo_tools_in_config(config):
+    return repo_context_mod.repo_context_tools_enabled(
+        repo_context_mod.normalize_mode(config.get("repo_context_mode", "off"))
+    )
 
 
 def available_command_names(config):
     names = ["READ"]
+    if _repo_tools_in_config(config):
+        names.extend(("MAP", "FIND"))
     if config.get("max_searches_per_worker", 10) > 0:
         names.append("SEARCH")
     names.extend(("WRITE", "REPLACE"))
@@ -302,7 +337,36 @@ def _run_backend(backend, messages, tools, max_tokens, timeout=None, grammar=Non
     return backend.run(messages, tools, **kwargs)
 
 
-def _parse_content_into_turns(content, finish_reason=None):
+def _escape_find_closure_text(value):
+    return json.dumps(str(value), ensure_ascii=True)[1:-1]
+
+
+def _display_find_query(query, limit=160):
+    displayed = []
+    used = 0
+    for index, char in enumerate(query):
+        if char.isprintable():
+            escaped = char
+        elif ord(char) <= 0xFF:
+            escaped = f"\\x{ord(char):02x}"
+        else:
+            escaped = f"\\u{ord(char):04x}"
+        if used + len(escaped) > limit:
+            return "".join(displayed) + "..."
+        displayed.append(escaped)
+        used += len(escaped)
+        if index + 1 >= len(query):
+            break
+    return "".join(displayed)
+
+
+def _parse_content_into_turns(content, finish_reason=None, repo_context_mode="off"):
+    # Keep the current finish_reason positional API while allowing compact
+    # direct tests/callers to pass the mode as the second positional argument.
+    if repo_context_mode == "off" and finish_reason in {"0", "1", "off", "tools", "inject"}:
+        repo_context_mode = finish_reason
+        finish_reason = None
+    repo_tools = repo_context_mod.repo_context_tools_enabled(repo_context_mode)
     lines = content.split("\n")
     commands = []
     i = 0
@@ -318,6 +382,26 @@ def _parse_content_into_turns(content, finish_reason=None):
         if stripped.startswith("SEARCH "):
             query = stripped[7:].strip()
             commands.append({"type": "SEARCH", "query": query})
+            i += 1
+            continue
+
+        if repo_tools and stripped == "MAP":
+            commands.append({"type": "MAP", "path": ""})
+            i += 1
+            continue
+
+        if repo_tools and stripped.startswith("MAP "):
+            commands.append({"type": "MAP", "path": stripped[4:].strip()})
+            i += 1
+            continue
+
+        if repo_tools and stripped == "FIND":
+            commands.append({"type": "FIND", "query": ""})
+            i += 1
+            continue
+
+        if repo_tools and stripped.startswith("FIND "):
+            commands.append({"type": "FIND", "query": stripped[5:]})
             i += 1
             continue
 
@@ -412,13 +496,16 @@ def _parse_content_into_turns(content, finish_reason=None):
     return commands
 
 
-def _find_unknown_commands(content, commands):
+def _find_unknown_commands(content, commands, repo_context_mode="off"):
+    repo_tools = repo_context_mod.repo_context_tools_enabled(repo_context_mode)
     lines = content.split("\n")
     consumed = set()
     li = 0
     while li < len(lines):
         s = lines[li].strip()
         if s == "Done" or s.startswith("SEARCH ") or s.startswith("READ ") or s.startswith("RUN "):
+            consumed.add(li); li += 1; continue
+        if repo_tools and (s == "MAP" or s.startswith("MAP ") or s == "FIND" or s.startswith("FIND ")):
             consumed.add(li); li += 1; continue
         if s.startswith("WRITE "):
             consumed.add(li); li += 1
@@ -586,20 +673,494 @@ class ManagerInitAdapter:
 class WorkerAdapter:
     MAX_SOFT_RESETS = 3
 
-    def __init__(self, config, task_number, search_provider=None, feedback=None):
+    def __init__(self, config, task_number, search_provider=None, feedback=None, prior_messages=None):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
         self._vc = vc_mod.VersionControl(self.workspace)
+        self.repo_context_mode = repo_context_mod.normalize_mode(
+            config.get("repo_context_mode", "off")
+        )
+        # Experiment-only: carry conversation messages across tasks (no Python state)
+        if config.get("worker_continuity") == "continuous" and prior_messages:
+            self._prior_messages = [dict(m) for m in prior_messages]
+        else:
+            self._prior_messages = None
+        self._history_messages = None
         self._search_provider = search_provider or search_mod.create_provider(config)
         self._search_cache = search_mod.SearchCache(self.workspace)
         self._search_count = 0
         self._search_limit = config.get("max_searches_per_worker", 10)
+        self._find_attempts = 0
+        self._find_limit = config.get("repo_context_max_finds", 32)
+        self._find_ledger = {}
+        self._find_evidence = []
+        self._find_closed = False
+        self._find_closure_packet = ""
+        self._execution_phase_handoff_done = False
+        self._last_find_useful = False
         self._cache_hits = 0
         self.feedback = feedback or ""
         self._run_evidence = []
         self._implicit_write_count = 0
         self.obs = get_log(self.workspace)
+        self._repo_context = None
+        if repo_context_mod.repo_context_tools_enabled(self.repo_context_mode):
+            self._repo_context = repo_context_mod.RepositoryContext(
+                self.workspace,
+                max_chars=config.get("repo_context_max_chars", 12000),
+                max_find_hits=config.get("repo_context_max_find_hits", 100),
+                max_file_bytes=config.get("repo_context_max_file_bytes", 1048576),
+            )
+        self._read_knowledge_ledger = {}
+        self._read_delivery_ledger = set()
+        self._repo_event_entries = []
+
+    def _worker_result(self, status, **fields):
+        result = {"status": status}
+        result.update(fields)
+        if self._context_tools_enabled():
+            result["observability_events"] = list(self._repo_event_entries)
+        return result
+
+    def _context_tools_enabled(self):
+        return repo_context_mod.repo_context_tools_enabled(self.repo_context_mode)
+
+    def _context_injection_enabled(self):
+        return repo_context_mod.repo_context_injection_enabled(self.repo_context_mode)
+
+    def _record_context_event(self, name, duration=None, **metadata):
+        if not self._context_tools_enabled():
+            return
+        metadata["mode"] = self.repo_context_mode
+        if duration is not None:
+            metadata["duration_ms"] = round(max(0.0, duration) * 1000, 3)
+        for key, value in list(metadata.items()):
+            if isinstance(value, str):
+                metadata[key] = value[:160]
+        entry = self.obs.event(name, **metadata)
+        self._repo_event_entries = getattr(self, "_repo_event_entries", [])
+        self._repo_event_entries.append(entry)
+
+    def _refresh_repo_context(self):
+        started = time.monotonic()
+        try:
+            stats = self._repo_context.refresh()
+        except Exception:
+            self._record_context_event(
+                "repo_context_refresh",
+                time.monotonic() - started,
+                ok=False,
+                error="refresh failed",
+            )
+            return None
+        self._record_context_event(
+            "repo_context_refresh",
+            time.monotonic() - started,
+            ok=True,
+            **stats,
+        )
+        return stats
+
+    def _render_orientation(self):
+        started = time.monotonic()
+        stats = self._refresh_repo_context()
+        if stats is None:
+            self._record_context_event(
+                "repo_context_map",
+                time.monotonic() - started,
+                ok=False,
+                entry_count=0,
+                result_count=0,
+                truncated=False,
+                source="orientation",
+            )
+            return "Repository context warning: workspace index refresh failed."
+
+        map_result = self._repo_context.map_result(refresh=False)
+        prefix = "# Workspace orientation\n\n"
+        suffix = f"\n\n{_REPO_CONTEXT_ORIENTATION_FOOTER}\n\n{_REPO_CONTEXT_NOTICE}"
+        max_chars = max(0, int(self.config.get("repo_context_max_chars", 12000)))
+        map_budget = max_chars - len(prefix) - len(suffix)
+        if map_budget <= 0:
+            self._record_context_event(
+                "repo_context_map",
+                time.monotonic() - started,
+                ok=True,
+                scope=".",
+                entry_count=map_result["entry_count"],
+                result_count=map_result["entry_count"],
+                truncated=True,
+                source="orientation",
+            )
+            return (prefix + suffix)[:max_chars]
+        bounded_map = repo_context_mod.render_workspace_map(
+            self._repo_context.index,
+            max_chars=map_budget,
+        )
+        self._record_context_event(
+            "repo_context_map",
+            time.monotonic() - started,
+            ok=True,
+            scope=".",
+            entry_count=map_result["entry_count"],
+            result_count=map_result["entry_count"],
+            truncated=repo_context_mod._is_truncated(bounded_map),
+            source="orientation",
+        )
+        return (prefix + bounded_map + suffix)[:max_chars]
+
+    def _startup_context_text(self):
+        if not self._context_tools_enabled():
+            return ""
+        if self._context_injection_enabled():
+            return self._render_orientation()
+        if self._refresh_repo_context() is None:
+            return _REPO_CONTEXT_NOTICE + "\nRepository context warning: workspace index refresh failed."
+        return _REPO_CONTEXT_NOTICE
+
+    def _reset_context_text(self):
+        if not self._context_tools_enabled():
+            return ""
+        if self._context_injection_enabled():
+            return self._render_orientation()
+        return _REPO_CONTEXT_NOTICE
+
+    def _map_command(self, requested_path):
+        started = time.monotonic()
+        safe, err, rel = permissions.check_path_safety(requested_path or ".", self.workspace)
+        if not safe:
+            result = f"error: {err}"
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return result
+        if rel != "." and repo_context_mod.is_excluded_path(rel):
+            result = f"error: path is excluded from repository context: {requested_path}"
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return result
+        absolute = os.path.join(self.workspace, rel)
+        if not os.path.exists(absolute):
+            result = f"error: path not found: {requested_path or '.'}"
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return result
+        if not os.path.isdir(absolute):
+            result = f"error: not a directory: {requested_path or '.'}"
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return result
+        if self._refresh_repo_context() is None:
+            result = "error: repository context refresh failed"
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return result
+        scope = None if rel == "." else rel
+        map_result = self._repo_context.map_result(scope=scope, refresh=False)
+        self._record_context_event(
+            "repo_context_map", time.monotonic() - started, ok=True,
+            scope=scope or ".", entry_count=map_result["entry_count"],
+            result_count=map_result["entry_count"], truncated=map_result["truncated"],
+            source="command",
+        )
+        return map_result["output"]
+
+    def _finish_find_attempt(self, result, attempt):
+        if self._find_limit > 0 and attempt == self._find_limit:
+            return result + "\n\n" + self._close_find()
+        return result
+
+    def _build_find_closure_packet(self, fingerprint=None, warning=False):
+        max_chars = self.config.get(
+            "repo_context_find_closure_max_chars",
+            repo_context_mod.DEFAULT_FIND_CLOSURE_MAX_CHARS,
+        )
+        try:
+            max_chars = max(0, int(max_chars))
+        except (TypeError, ValueError):
+            max_chars = repo_context_mod.DEFAULT_FIND_CLOSURE_MAX_CHARS
+
+        if warning:
+            current_records = []
+            stale_count = len(self._find_evidence)
+        else:
+            current_records = [
+                record
+                for record in self._find_evidence
+                if record["fingerprint"] == fingerprint
+            ]
+            stale_count = len(self._find_evidence) - len(current_records)
+
+        positive_records = [
+            record for record in current_records if record["match_count"] > 0
+        ]
+        zero_literals = sorted({
+            record["literal"]
+            for record in current_records
+            if record["match_count"] == 0
+        })
+        coordinates = {}
+        positive_without_coordinates = set()
+        for record in current_records:
+            if record["match_count"] <= 0:
+                continue
+            valid_hits = 0
+            for hit in record["hits"]:
+                path = hit.get("path")
+                line = hit.get("line")
+                normalized = repo_context_mod._relative_path(path)
+                if (
+                    not isinstance(path, str)
+                    or normalized != path
+                    or os.path.isabs(path)
+                    or repo_context_mod.is_excluded_path(path)
+                    or not isinstance(line, int)
+                    or line < 1
+                ):
+                    continue
+                valid_hits += 1
+                key = (path, line)
+                coordinate = coordinates.setdefault(
+                    key,
+                    {"excerpt": "", "literals": {}},
+                )
+                literal_matches = coordinate["literals"].setdefault(
+                    record["literal"], set()
+                )
+                literal_matches.add(record["match_count"])
+                excerpt = _escape_find_closure_text(hit.get("excerpt", ""))
+                if not coordinate["excerpt"] or excerpt < coordinate["excerpt"]:
+                    coordinate["excerpt"] = excerpt
+            if not valid_hits:
+                positive_without_coordinates.add(
+                    (record["literal"], record["match_count"])
+                )
+
+        coordinate_lines = []
+        for (path, line), coordinate in sorted(coordinates.items()):
+            literal_parts = []
+            for literal in sorted(coordinate["literals"]):
+                matches = ",".join(
+                    str(count) for count in sorted(coordinate["literals"][literal])
+                )
+                literal_parts.append(
+                    f"{_escape_find_closure_text(literal)} (matches={matches})"
+                )
+            display_path = _escape_find_closure_text(path)
+            coordinate_lines.append(
+                f"- {display_path}:{line}: literals={'; '.join(literal_parts)} "
+                f"excerpt={coordinate['excerpt']}"
+            )
+
+        positive_lines = [
+            f"- literal={_escape_find_closure_text(literal)} matches={matches} "
+            "(no emitted coordinates)"
+            for literal, matches in sorted(positive_without_coordinates)
+        ]
+        zero_lines = [
+            f"- literal={_escape_find_closure_text(literal)} matches=0"
+            for literal in zero_literals
+        ]
+        lines = [
+            "# FIND evidence closure",
+            f"fingerprint={fingerprint or 'unavailable'}",
+            f"executed={len(current_records)}; positive={len(positive_records)}; "
+            f"zero-result-literals={len(zero_literals)}; "
+            f"coordinates={len(coordinates)}",
+        ]
+        if warning:
+            lines.append("warning=final repository refresh failed; stale evidence omitted")
+        elif stale_count:
+            lines.append(f"stale evidence excluded={stale_count}")
+        candidates = coordinate_lines + positive_lines + zero_lines
+
+        closure = _FIND_CLOSURE_STATEMENT
+
+        def render(body, truncated=False):
+            suffix = closure
+            if truncated:
+                suffix += " " + _FIND_CLOSURE_TRUNCATION
+            return "\n".join(body + [suffix])
+
+        body = list(lines)
+        truncated = False
+        for candidate in candidates:
+            if len(render(body + [candidate])) <= max_chars:
+                body.append(candidate)
+            else:
+                truncated = True
+                break
+        if truncated:
+            while len(body) > 1 and len(render(body, truncated=True)) > max_chars:
+                body.pop()
+        packet = render(body, truncated=truncated)
+        if len(packet) > max_chars:
+            compact_closure = (
+                "FIND closed for this Worker; use READ, WRITE, REPLACE, RUN, SEARCH, or Done."
+            )
+            packet = "\n".join([lines[0], compact_closure])
+            if truncated:
+                packet += " " + _FIND_CLOSURE_TRUNCATION
+            if len(packet) > max_chars:
+                packet = compact_closure
+                if truncated:
+                    packet += " " + _FIND_CLOSURE_TRUNCATION
+            if len(packet) > max_chars:
+                packet = packet[:max_chars]
+
+        return packet, {
+            "executed_query_count": len(current_records),
+            "positive_query_count": len(positive_records),
+            "distinct_coordinate_count": len(coordinates),
+            "zero_result_query_count": len(zero_literals),
+            "packet_length": len(packet),
+            "truncated": truncated,
+            "packet_sha256": hashlib.sha256(packet.encode("utf-8")).hexdigest(),
+        }
+
+    def _close_find(self):
+        if self._find_closed:
+            return self._find_closure_packet
+        self._find_closed = True
+        if self._refresh_repo_context() is None:
+            packet, metrics = self._build_find_closure_packet(warning=True)
+        else:
+            fingerprint = repo_context_mod.search_state_fingerprint(
+                self._repo_context.index
+            )
+            packet, metrics = self._build_find_closure_packet(fingerprint)
+        self._find_closure_packet = packet
+        self._record_context_event(
+            "repo_context_find_closure",
+            closed=True,
+            **metrics,
+        )
+        return packet
+
+    def _find_command(self, query):
+        if self._find_closed:
+            return _FIND_CLOSED_RESULT
+        self._find_attempts += 1
+        self._last_find_useful = False
+        attempt = self._find_attempts
+        query_hash = hashlib.sha256(query.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+        if attempt > self._find_limit:
+            result = f"error: FIND limit ({self._find_limit}) reached"
+            self._record_context_event(
+                "repo_context_find",
+                ok=False,
+                outcome="budget_rejected",
+                attempt=attempt,
+                limit=self._find_limit,
+                query_hash=query_hash,
+                query_length=len(query),
+                result_count=0,
+                total_matches=0,
+                truncated=False,
+                source="command",
+            )
+            return result
+
+        started = time.monotonic()
+        if self._refresh_repo_context() is None:
+            result = "error: repository context refresh failed"
+            self._record_context_event(
+                "repo_context_find", time.monotonic() - started, ok=False,
+                outcome="error",
+                attempt=attempt,
+                query_hash=query_hash,
+                query_length=len(query), result_count=0, truncated=False, source="command",
+            )
+            return self._finish_find_attempt(result, attempt)
+
+        index_state = repo_context_mod.search_state_fingerprint(self._repo_context.index)
+        previous = self._find_ledger.get(query)
+        if previous and previous["index_state"] == index_state:
+            result = (
+                "unchanged: identical FIND query was already answered for the current repository state\n"
+                f"query: {_display_find_query(query)}\n"
+                f"previous matches: {previous['matches']}"
+            )
+            self._record_context_event(
+                "repo_context_find",
+                time.monotonic() - started,
+                outcome="deduplicated",
+                attempt=attempt,
+                query_hash=query_hash,
+                query_length=len(query),
+                index_state=index_state,
+                ok=previous.get("ok", True),
+                result_count=previous["matches"],
+                total_matches=previous["matches"],
+                truncated=False,
+                source="command",
+            )
+            return self._finish_find_attempt(result, attempt)
+
+        search_result = self._repo_context.find_result(query, refresh=False)
+        result = search_result["output"]
+        if (
+            search_result["ok"]
+            and search_result["total_matches"] == 0
+            and any(char in query for char in ".*[]^$'\"|?+()\\")
+        ):
+            result += "\n" + _FIND_LITERAL_GUIDANCE
+        self._find_ledger[query] = {
+            "index_state": index_state,
+            "matches": search_result["total_matches"],
+            "ok": search_result["ok"],
+        }
+        self._find_evidence.append({
+            "literal": query,
+            "fingerprint": index_state,
+            "match_count": search_result["total_matches"],
+            "hits": [dict(hit) for hit in search_result["hits"]],
+            "execution_order": len(self._find_evidence) + 1,
+        })
+        self._last_find_useful = search_result["ok"]
+        self._record_context_event(
+            "repo_context_find", time.monotonic() - started,
+            ok=search_result["ok"],
+            outcome="executed",
+            attempt=attempt,
+            query_hash=query_hash,
+            index_state=index_state,
+            query_length=len(query),
+            result_count=len(search_result["hits"]),
+            total_matches=search_result["total_matches"],
+            truncated=search_result["truncated"],
+            skipped_binary=search_result["skipped"].get("binary", 0),
+            skipped_oversized=search_result["skipped"].get("oversized", 0),
+            skipped_unreadable=search_result["skipped"].get("unreadable", 0),
+            source="command",
+        )
+        return self._finish_find_attempt(result, attempt)
+
+    def _execution_phase_messages(self, worker_policy, task_description, feedback):
+        messages = [
+            {"role": "system", "content": worker_policy},
+            {"role": "user", "content": task_description},
+        ]
+        if feedback:
+            messages.append({
+                "role": "user",
+                "content": f"Previous reviewer feedback:\n{feedback}",
+            })
+        messages.extend([
+            {"role": "user", "content": self._find_closure_packet},
+            {"role": "user", "content": _EXECUTION_PHASE_INSTRUCTION},
+        ])
+        return messages
 
     def run(self, backend):
         if hasattr(backend, "role"):
@@ -608,19 +1169,26 @@ class WorkerAdapter:
         tasks = todo_mod.parse_todo(todo_text)
         task = todo_mod.get_task(tasks, self.task_number)
         if not task:
-            return {"status": "error", "reason": f"T{self.task_number} not found in TODO"}
+            return self._worker_result(
+                "error", reason=f"T{self.task_number} not found in TODO"
+            )
 
         worker_policy = render_worker_policy(
             _read(self.workspace, "docs/worker.md"), self.config
         )
-        task_prompt = (
-            f"\nTask T{self.task_number}: {task['description']}\n\n"
-        )
+        task_description = f"Task T{self.task_number}: {task['description']}"
         task_statement = (self.config.get("task_statement") or "").strip()
         if task_statement:
-            task_prompt += f"Full public issue statement:\n{task_statement}\n\n"
+            task_description += f"\n\nFull public issue statement:\n{task_statement}"
+        task_prompt = f"\n{task_description}\n\n"
+        feedback_prompt = ""
         if self.feedback:
-            task_prompt += f"\nPrevious reviewer feedback:\n{self.feedback}\n"
+            feedback_prompt = f"Previous reviewer feedback:\n{self.feedback}"
+            task_prompt += f"\n{feedback_prompt}\n"
+        base_task_prompt = task_prompt
+        startup_context = self._startup_context_text()
+        if startup_context:
+            task_prompt += "\n\n" + startup_context
 
         messages = [
             {"role": "system", "content": worker_policy},
@@ -631,6 +1199,9 @@ class WorkerAdapter:
                 ),
             },
         ]
+        if self._prior_messages is not None:
+            messages = [dict(m) for m in self._prior_messages] + messages
+        self._history_messages = messages
 
         observer = Observer(self.workspace, self.task_number)
         worker_timeout = self.config.get("worker_timeout", 3600)
@@ -642,7 +1213,8 @@ class WorkerAdapter:
         turn_repeat = 0
         last_turn_signature = None
         repeated_turns = 0
-        _read_tracker = {}  # canonical_rel_path → (useful_count, last_hash)
+        off_read_state = {}  # preserve off-mode full-read behavior
+        self._read_delivery_ledger.clear()
 
         def workspace_state_signature():
             state = repr(sorted(
@@ -660,7 +1232,21 @@ class WorkerAdapter:
         while True:
             remaining = worker_timeout - (time.monotonic() - session_start)
             if remaining <= 0:
-                return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
+                return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
+            if self._find_closed and not self._execution_phase_handoff_done:
+                self._read_delivery_ledger.clear()
+                messages = self._execution_phase_messages(
+                    worker_policy, task_description, self.feedback
+                )
+                self._execution_phase_handoff_done = True
+                self._record_context_event(
+                    "repo_context_execution_phase_handoff",
+                    find_attempts=self._find_attempts,
+                    packet_length=len(self._find_closure_packet),
+                    message_count=len(messages),
+                    feedback=bool(self.feedback),
+                )
+
             req_tok = self.obs.start("model_request", role="worker", task=f"T{self.task_number}", attempt=1)
             try:
                 response = _run_backend(
@@ -670,7 +1256,9 @@ class WorkerAdapter:
                 )
             except Exception as exc:
                 self.obs.end(req_tok, error=str(exc))
-                return {"status": "error", "reason": f"model request failed: {exc}"}
+                return self._worker_result(
+                    "error", reason=f"model request failed: {exc}"
+                )
             usage = response.get("usage") or {}
             self.obs.end(
                 req_tok,
@@ -682,7 +1270,7 @@ class WorkerAdapter:
 
             raw_content = response.get("content") or ""
             if time.monotonic() - session_start >= worker_timeout:
-                return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
+                return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
             content = raw_content.strip()
             if os.environ.get("BID_IMPLICIT_WRITE") == "1":
                 finish_reason = response.get("finish_reason", "stop")
@@ -699,9 +1287,25 @@ class WorkerAdapter:
             policy_violation = False
 
             if content:
-                commands = _parse_content_into_turns(content, finish_reason)
+                commands = _parse_content_into_turns(
+                    content, finish_reason, self.repo_context_mode
+                )
             else:
                 commands = []
+
+            response_has_non_find = any(cmd["type"] != "FIND" for cmd in commands)
+            if self._find_closed and any(cmd["type"] == "FIND" for cmd in commands):
+                if not response_has_non_find:
+                    self._record_context_event(
+                        "repo_context_post_handoff_find_stall",
+                        find_attempts=self._find_attempts,
+                        packet_length=len(self._find_closure_packet),
+                    )
+                    return self._worker_result(
+                        "stalled",
+                        reason="FIND issued after retrieval closure",
+                    )
+                commands = [cmd for cmd in commands if cmd["type"] != "FIND"]
 
             if not commands:
                 _log_worker_event(self._vc, "worker parsed command", "(none)")
@@ -713,13 +1317,17 @@ class WorkerAdapter:
                 last_sig = sig
                 messages.append({
                     "role": "user",
-                    "content": f"No executable BID command was found. Respond only with actual {', '.join(available_command_names(self.config))} commands. Do not explain or describe the commands."
+                    "content": (
+                        "No executable BID command was found. Respond only with actual "
+                        + ", ".join(available_command_names(self.config))
+                        + " commands. Do not explain or describe the commands."
+                    )
                 })
             else:
                 for cmd in commands:
                     remaining = worker_timeout - (time.monotonic() - session_start)
                     if remaining <= 0:
-                        return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
+                        return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
                     _log_worker_event(self._vc, "worker parsed command", _command_label(cmd))
                     cmd_tok = self.obs.start("command", task=f"T{self.task_number}", type=cmd["type"])
                     if cmd["type"] == "Done":
@@ -729,6 +1337,8 @@ class WorkerAdapter:
                         continue
 
                     if cmd["type"] == "READ":
+                        rel = cmd.get("path", "")
+                        read_sig = None
                         try:
                             safe, err, rel = permissions.check_path_safety(cmd["path"], self.workspace)
                             if not safe:
@@ -751,13 +1361,121 @@ class WorkerAdapter:
                                             f"File contents:\n{_read(self.workspace, rel)}"
                                         )
                                         fhash = _hash_file(abs_path)
-                                        prev = _read_tracker.get(rel)
-                                        if not prev or prev[1] != fhash:
-                                            useful = True
-                                        _read_tracker[rel] = (1 if not prev else prev[0] + 1, fhash)
+                                        if self._context_tools_enabled():
+                                            if fhash == "?":
+                                                outcome = None
+                                            else:
+                                                known_hash = self._read_knowledge_ledger.get(rel)
+                                                delivery_key = (rel, fhash)
+                                                if known_hash is None or known_hash != fhash:
+                                                    self._read_delivery_ledger.difference_update({
+                                                        key
+                                                        for key in self._read_delivery_ledger
+                                                        if key[0] == rel
+                                                    })
+                                                    self._read_knowledge_ledger[rel] = fhash
+                                                    self._read_delivery_ledger.add(delivery_key)
+                                                    useful = True
+                                                    outcome = "new_or_changed"
+                                                    full_read = True
+                                                    unique_path = known_hash is None
+                                                elif delivery_key not in self._read_delivery_ledger:
+                                                    self._read_delivery_ledger.add(delivery_key)
+                                                    outcome = "rehydrated"
+                                                    full_read = True
+                                                    unique_path = False
+                                                else:
+                                                    result = (
+                                                        f"unchanged: {rel} was already supplied earlier in this Worker context\n"
+                                                        f"sha256: {fhash[:12]}"
+                                                    )
+                                                    outcome = "deduplicated"
+                                                    full_read = False
+                                                    unique_path = False
+
+                                                event_name = (
+                                                    "repo_context_read_deduplicated"
+                                                    if outcome == "deduplicated"
+                                                    else "repo_context_read"
+                                                )
+                                                self._record_context_event(
+                                                    event_name,
+                                                    path=rel,
+                                                    sha256=fhash[:12],
+                                                    outcome=outcome,
+                                                    full_read=full_read,
+                                                    unique_path=unique_path,
+                                                    read_count=1,
+                                                    count=1,
+                                                )
+                                            read_sig = (
+                                                _read_signature(rel, fhash)
+                                                if fhash != "?"
+                                                else None
+                                            )
+                                        else:
+                                            prev = off_read_state.get(rel)
+                                            if not prev or prev[1] != fhash:
+                                                useful = True
+                                            off_read_state[rel] = (
+                                                1 if not prev else prev[0] + 1,
+                                                fhash,
+                                            )
+                                            read_sig = (
+                                                _read_signature(rel, fhash)
+                                                if fhash != "?"
+                                                else None
+                                            )
                         except ValueError as e:
                             result = str(e)
-                        sig = f"READ {rel}|{result[:50]}"
+                        if read_sig is None:
+                            sig = f"READ {rel}|{result[:50]}"
+                        else:
+                            sig = read_sig
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
+                        messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
+                        continue
+
+                    if cmd["type"] == "MAP":
+                        result = self._map_command(cmd.get("path", ""))
+                        if not result.startswith("error:"):
+                            useful = True
+                        sig = f"MAP {cmd.get('path', '')}|{result[:50]}"
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
+                        messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
+                        continue
+
+                    if cmd["type"] == "FIND":
+                        if self._find_closed:
+                            if not response_has_non_find:
+                                self.obs.end(cmd_tok)
+                                self._record_context_event(
+                                    "repo_context_post_handoff_find_stall",
+                                    find_attempts=self._find_attempts,
+                                    packet_length=len(self._find_closure_packet),
+                                )
+                                return self._worker_result(
+                                    "stalled",
+                                    reason="FIND issued after retrieval closure",
+                                )
+                            self.obs.end(cmd_tok)
+                            continue
+                        result = self._find_command(cmd.get("query", ""))
+                        if self._last_find_useful:
+                            useful = True
+                        sig = f"FIND {cmd.get('query', '')}|{result[:50]}"
                         if sig == last_sig:
                             turn_repeat += 1
                         else:
@@ -805,6 +1523,7 @@ class WorkerAdapter:
                         try:
                             result = self._write_command(cmd["path"], cmd["content"])
                             if not result.startswith("error"):
+                                self._purge_read_delivery(cmd["path"])
                                 if cmd.get("implicit"):
                                     self._implicit_write_count += 1
                                 if observer.poll_changes():
@@ -832,7 +1551,7 @@ class WorkerAdapter:
                                 remaining = worker_timeout - (time.monotonic() - session_start)
                                 if remaining <= 0:
                                     self.obs.end(cmd_tok, status="timeout")
-                                    return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
+                                    return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
                                 result = self._run_command(cmd["command"], remaining=remaining)
                             except Exception as exc:
                                 result = f"error: execution failed: {exc}"
@@ -905,6 +1624,7 @@ class WorkerAdapter:
                         if result.startswith("error"):
                             replace_failed = True
                         if not result.startswith("error"):
+                            self._purge_read_delivery(cmd["path"])
                             if observer.poll_changes():
                                 changed = True
                         sig = f"REPLACE {cmd['path']}|{result[:50]}"
@@ -959,10 +1679,14 @@ class WorkerAdapter:
                 last_turn_signature = turn_signature
 
             # Unknown-command feedback
-            unknown_cmds = _find_unknown_commands(raw_content, commands)
+            unknown_cmds = _find_unknown_commands(
+                raw_content, commands, self.repo_context_mode
+            )
             if unknown_cmds:
                 err_msg = ("error: unknown command(s): " + ", ".join(unknown_cmds[:3])
                            + f"\nAllowed commands are {', '.join(available_command_names(self.config))}.")
+                if "RUN" in available_command_names(self.config):
+                    err_msg += "\nTo inspect directories, use RUN ls."
                 messages.append({"role": "user", "content": err_msg})
                 _log_worker_event(self._vc, "worker result", err_msg)
                 # NOT counted as useful or changed; does NOT reset repeat
@@ -972,9 +1696,12 @@ class WorkerAdapter:
                 saw_done = False
 
             if time.monotonic() - session_start >= worker_timeout:
-                return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
+                return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
             if saw_done:
-                return {"status": "done", "checked": False, "run_evidence": list(self._run_evidence)}
+                self._history_messages = [dict(m) for m in messages]
+                return self._worker_result(
+                    "done", checked=False, run_evidence=list(self._run_evidence)
+                )
 
             current_state = workspace_state_signature()
             if useful:
@@ -997,20 +1724,33 @@ class WorkerAdapter:
             if (turn_repeat >= repeat_limit or repeated_turns >= repeat_limit) and not changed and not useful:
                 soft_resets += 1
                 if soft_resets > self.MAX_SOFT_RESETS:
-                    return {"status": "stalled", "reason": f"repeated action without progress"}
+                    return self._worker_result(
+                        "stalled", reason="repeated action without progress"
+                    )
                 system = messages[0]
-                messages = [
-                    system,
-                    {
-                        "role": "user",
-                        "content": (
-                            f"{task_prompt}\n\n"
-                            f"[ERROR: did not make progress. "
-                            f"Last command: {last_sig.split('|')[0] if '|' in last_sig else last_sig}. "
-                            f"Try a different approach.]"
-                        ),
-                    },
-                ]
+                self._read_delivery_ledger.clear()
+                reset_error = (
+                    f"[ERROR: did not make progress. "
+                    f"Last command: {last_sig.split('|')[0] if '|' in last_sig else last_sig}. "
+                    f"Try a different approach.]"
+                )
+                if self._execution_phase_handoff_done:
+                    messages = self._execution_phase_messages(
+                        worker_policy, task_description, self.feedback
+                    )
+                    messages.append({"role": "user", "content": reset_error})
+                else:
+                    reset_context = self._reset_context_text()
+                    reset_prompt = base_task_prompt
+                    if reset_context:
+                        reset_prompt += "\n\n" + reset_context
+                    messages = [
+                        system,
+                        {
+                            "role": "user",
+                            "content": f"{reset_prompt}\n\n{reset_error}",
+                        },
+                    ]
                 observer = Observer(self.workspace, self.task_number)
                 last_sig = None
                 turn_repeat = 0
@@ -1023,9 +1763,11 @@ class WorkerAdapter:
                 observer.mark_activity()
 
             if observer.inactive_for() > inactivity_timeout:
-                return {"status": "timeout", "reason": f"inactive {observer.inactive_for():.0f}s"}
+                return self._worker_result(
+                    "timeout", reason=f"inactive {observer.inactive_for():.0f}s"
+                )
 
-        return {"status": "timeout", "reason": f"Worker deadline {worker_timeout}s exceeded"}
+        return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
 
     def _write_command(self, path, content):
         if re.search(r"[<>|;&`'\"]", path):
@@ -1045,6 +1787,16 @@ class WorkerAdapter:
         abs_path = os.path.join(self.workspace, rel)
         metadata = _file_metadata(abs_path)
         return f"wrote {os.path.getsize(abs_path)} bytes to {rel}; {metadata.split(';', 1)[1]}"
+
+    def _purge_read_delivery(self, path):
+        if not self._context_tools_enabled():
+            return
+        safe, _, rel = permissions.check_path_safety(path, self.workspace)
+        if not safe:
+            return
+        self._read_delivery_ledger.difference_update({
+            key for key in self._read_delivery_ledger if key[0] == rel
+        })
 
     def _replace_text(self, path, old_text, new_text):
         if not old_text:
@@ -1357,17 +2109,34 @@ class TaskReviewAdapter:
         if not os.path.isdir(candidate_root):
             return {"verdict": "ERROR", "reason": f"candidate state {self.candidate_state} not found", "task_number": self.task_number}
         diff_text = _workspace_diff(base_root, candidate_root)
+        candidate_listing = _workspace_listing(candidate_root)
         candidate_id = self.candidate_state
 
+        # HARD SCOPE: Original is background, Current Task is acceptance boundary; later tasks out of scope
+        later_tasks = [t for t in tasks if t["number"] > self.task_number and t["state"] != "done"]
+        out_of_scope_block = ""
+        if later_tasks:
+            out_of_scope_block = (
+                "The following later checklist tasks are explicitly OUT OF SCOPE for this review and MUST NOT cause REWORK:\n"
+                + "\n".join(f"- {t['id']} {t['description']}" for t in later_tasks)
+                + "\n\n"
+            )
         prompt = (
             "# Review Assignment\n\n"
-            f"Original request:\n{task_md}\n\n"
-            f"Task:\n{task['description']}\n\n"
+            "## BACKGROUND ONLY — Original request (context for global constraints, not acceptance):\n"
+            f"{task_md}\n\n"
+            "## CURRENT TASK — Acceptance boundary (sole requirement for ACCEPT/REWORK):\n"
+            f"{task['description']}\n\n"
             f"Fixed base: {self.base_state}\n"
-             f"Submitted candidate: {candidate_id}\n\n"
-             f"Base -> candidate diff:\n{diff_text}\n\n"
-             f"Candidate workspace snapshot:\n{_workspace_listing(candidate_root)}\n\n"
-             "No harness-owned verification was executed against this submitted candidate.\n\n"
+            f"Submitted candidate: {candidate_id}\n\n"
+            f"Base -> candidate diff:\n{diff_text}\n\n"
+            f"Candidate final state (bounded snapshot view):\n{candidate_listing}\n\n"
+            "No harness-owned verification was executed against this submitted candidate.\n\n"
+            "CRITICAL SCOPE RULE: ACCEPT or REWORK must be based SOLELY on whether the candidate satisfies the CURRENT TASK above.\n"
+            "Requirements delegated to later checklist tasks are out of scope for this review.\n"
+            "Missing work for later tasks MUST NOT cause REWORK.\n"
+            + out_of_scope_block +
+            "Global constraints that remain binding for current task (from Original request): no unrelated refactors, preserve named invariants (PhysicallyInvalidError in argus.solve, beam cone), safety.\n\n"
              "Judge only whether the submitted candidate satisfies the stated current task. "
              "Use the original request only as background constraints. "
              "Unfinished later checklist tasks are not grounds for REWORK.\n\n"

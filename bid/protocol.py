@@ -1,3 +1,5 @@
+from . import repo_context
+
 PLAN_GRAMMAR = r'''
 root ::= item ("\n" item)* "\n"?
 item ::= "- [ ] " text
@@ -8,6 +10,8 @@ WORKER_GRAMMAR = r'''
 root ::= command "\n"?
 command ::= read | search | run | write | replace | "Done"
 read ::= "READ " path
+map ::= "MAP" (" " path)?
+find ::= "FIND " line
 search ::= "SEARCH " line
 run ::= "RUN " line
 write ::= "WRITE " path "\n" body "END WRITE"
@@ -22,6 +26,10 @@ line ::= [^\n]+
 
 def _worker_grammar(config):
     commands = ["read"]
+    if repo_context.repo_context_tools_enabled(
+        repo_context.normalize_mode(config.get("repo_context_mode", "off"))
+    ):
+        commands.extend(("map", "find"))
     if config.get("max_searches_per_worker", 10) > 0:
         commands.append("search")
     if config.get("allow_host_run", False) or callable(config.get("run_executor")):

@@ -140,6 +140,11 @@ Search results are cached persistently under `.bid/search_cache/`, and provider 
 
 The Worker submits its candidate with `Done`.
 
+When `BID_REPO_CONTEXT=tools` or `inject`, the text protocol additionally
+supports `MAP` or `MAP <relative-directory>` and `FIND <fixed literal>`. These
+commands are read-only. `FIND` is fixed-literal, not regex, and reports exact
+`path:line` coordinates over readable indexed UTF-8 text only.
+
 ### 3. Candidate snapshot
 
 A completed Worker session is saved as a named workspace snapshot. BID records the task base state, candidate state, and accumulated `RUN` evidence.
@@ -198,6 +203,37 @@ Workspace snapshots are retained for candidate submission, reconciliation, rollb
 
 An append-only JSONL observability log records model requests, commands, timings, token usage, transitions, candidate submission, rollback, and reconciliation events.
 
+## Experimental repository context
+
+This is an explicitly ablatable process optimization, not a presumed
+correctness mechanism:
+
+- `off`, empty, and `0` preserve the current Worker command and READ behavior.
+- `tools` enables deterministic indexing, freshness, MAP, FIND, and duplicate
+  READ suppression, with only a short capability notice and no injected map.
+- `inject` enables `tools` plus a bounded factual map at startup and after a
+  Worker soft reset. `1` is an alias for `inject`.
+
+Unknown non-empty mode values are rejected. The index is local, versioned, and
+atomically stored under `.bid/repo_context/`. It includes file paths and
+classifications while searchable entries are regular UTF-8 text files within
+the configured byte limit. Binary, oversized, unreadable, symlink, BID
+control, and common metadata/cache paths are not searched. Multiple matches on
+one line count as non-overlapping literal occurrences. Output is bounded by
+the configured map, hit, and file-size limits.
+
+Repeated unchanged text-protocol READs in one Worker history epoch return a
+short SHA-256 notice; changed files and post-reset reads return full content.
+The in-memory ledger is not shared across Worker sessions.
+
+This is file-level Tier 1 orientation, not a symbol graph, call graph,
+embedding, semantic summary, or impact tracer. Expected direct effects are
+reduced repository rediscovery, repeated reads, tool calls, latency, or
+context consumption; correctness effects are unknown. Generic context
+injection has not been shown to reliably improve coding-agent pass rates.
+The three modes exist for controlled ablation against the current BID
+baseline; no performance or correctness improvement is claimed.
+
 ## Workspace protection
 
 BID separates project files from harness control state. Worker access is checked against workspace-relative path rules.
@@ -251,6 +287,13 @@ These values are configurable through environment variables.
 | `BID_PROVISIONAL_BATCH` | `4` | Provisional tasks before Manager reconciliation |
 | `BID_MAX_TASK_REWORKS` | `3` | Task Reviewer reworks allowed per task |
 | `BID_MAX_MANAGER_REWORKS` | `3` | Manager-directed reworks allowed per task |
+| `BID_WORKER_CONTINUITY` | `reset` | `reset` gives every task a fresh Worker conversation; `continuous` carries prior successful-task conversation (experimental ablation) |
+| `BID_REPO_CONTEXT` | `0` | `off`, `tools`, or `inject`; `1` aliases `inject` (experimental) |
+| `BID_REPO_CONTEXT_MAX_CHARS` | `12000` | Bound for maps and injected orientation |
+| `BID_REPO_CONTEXT_MAX_FIND_HITS` | `100` | Maximum emitted literal-search hits |
+| `BID_REPO_CONTEXT_MAX_FINDS` | `32` | FIND commands allowed per Worker before closure |
+| `BID_REPO_CONTEXT_FIND_CLOSURE_MAX_CHARS` | `8000` | Bound for the deterministic FIND closure evidence |
+| `BID_REPO_CONTEXT_MAX_FILE_BYTES` | `1048576` | Maximum UTF-8 file size indexed for search |
 | `BID_BACKEND` | unset | Set to `mock` for the built-in mock backend |
 | `BID_PROTOCOL_GRAMMAR` | unset | Set to `1` to send role-specific syntax-only GBNF constraints to compatible llama.cpp endpoints; semantic review and completion decisions remain with the model |
 | `BID_SEARCH_MOCK` | unset | Set to `1` for the mock search provider |
@@ -262,6 +305,8 @@ These values are configurable through environment variables.
 - `bid/vc.py` — workspace snapshots and VC event history
 - `bid/todo.py` — canonical task parsing and state transitions
 - `bid/permissions.py` — workspace path and role permissions
+- `bid/protocol.py` — single source for the Worker command protocol
+- `bid/repo_context.py` — optional file-level repository index, MAP/FIND, READ accounting
 - `bid/search.py` — bounded search, persistent search cache, stored research evidence
 - `bid/observability.py` / `bid/observer.py` — event logging and activity/change observation
 - `bid/model.py` — model backends
