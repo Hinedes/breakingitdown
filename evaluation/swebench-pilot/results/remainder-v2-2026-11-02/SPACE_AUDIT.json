@@ -1,0 +1,78 @@
+{
+  "generated_utc": "2026-11-02",
+  "mode": "read-only audit; no delete/repair/restart/settings change",
+  "host": "DESKTOP-Q12S8Q1",
+  "volume_c": {
+    "total_bytes": 999127248896,
+    "free_bytes": 32182272,
+    "used_bytes": 993126891520,
+    "reserved_bytes": 5968175104,
+    "free_note": "30.7 MB at audit time (was 36,024,320 B ~34 MiB minutes earlier); shrinking"
+  },
+  "geometry": {
+    "disk_count": 1,
+    "disk0": {"size": "931 GB", "free_unallocated": "1024 KB", "partition_style": "GPT", "status": "Online"},
+    "volumes": [
+      {"letter": "C", "fs": "NTFS", "size": "930 GB", "role": "Boot"},
+      {"letter": null, "fs": "FAT32", "size": "100 MB", "role": "System/EFI"},
+      {"letter": null, "fs": "NTFS", "size": "909 MB", "role": "Hidden WinRE"}
+    ],
+    "other_disks_or_removable": "none (fsutil fsinfo drives reports only C:)",
+    "expand_feasible": false,
+    "expand_reason": "no unallocated space on the only disk (1 MB) and no second disk; dynamic VHD cannot add host capacity"
+  },
+  "wsl_vhd": {
+    "path": "C:\\Users\\user\\AppData\\Local\\Packages\\CanonicalGroupLimited.Ubuntu22.04LTS_79rhkp1fndgsc\\LocalState\\ext4.vhdx",
+    "logical_bytes": 184516870144,
+    "valid_data_bytes": 184516857856,
+    "sparse": false,
+    "note": "essentially fully allocated ~171.8 GiB; guest 72 GiB free is virtual and returns host bytes only by trim/compact after recovery"
+  },
+  "measured_dirs_bytes": {
+    "C:\\Users": 902598665432,
+    "C:\\Users\\jay": 363553108460,
+    "C:\\Users\\user": 248886972498,
+    "C:\\Users\\user\\AppData\\Local\\Packages": 185167757594,
+    "C:\\Users\\che": 116203118933,
+    "C:\\Users\\user\\AppData\\Local\\Temp": 6297253895,
+    "C:\\Users\\TEMP": 1315567906,
+    "C:\\Users\\uksha": 1112780728,
+    "C:\\Users\\Public": 75801623,
+    "C:\\Users\\nandh": 57512,
+    "C:\\Users\\Waqar Afrdi": 346559,
+    "C:\\Windows": 47679936727,
+    "C:\\ProgramData": 12976096553,
+    "C:\\Windows\\Temp": 282624129,
+    "C:\\Windows\\SoftwareDistribution\\Download": 1284406,
+    "C:\\$Recycle.Bin": 418165234,
+    "C:\\pagefile.sys": 8589934592,
+    "C:\\swapfile.sys": 16777216,
+    "C:\\tmp": 10698
+  },
+  "not_measured": [
+    "C:\\Program Files (remote-shell parenthesis quoting failed)",
+    "C:\\Program Files (x86) (same)",
+    "C:\\Users\\WsiAccount (robocopy produced no output; access)",
+    "C:\\Users\\Default (not measured)",
+    "C:\\Recovery"
+  ],
+  "users_sum_gap_bytes": "about 171 GB: C:\\Users total 902.6 GB vs measured profiles ~731.2 GB; access-denied/unmeasured profile dirs, not claimed freeable",
+  "cleanup_candidates": [
+    {"path": "C:\\Users\\user\\AppData\\Local\\Temp", "bytes": 6297253895, "kind": "temp cache, recreatable", "risk": "low", "approval": "user delete approval", "owner": "user"},
+    {"path": "C:\\pagefile.sys", "bytes": 8589934592, "kind": "system pagefile (not a delete)", "risk": "medium: system setting + reboot", "approval": "settings change + reboot approval", "owner": "system"},
+    {"path": "C:\\$Recycle.Bin", "bytes": 418165234, "kind": "trash", "risk": "low, but user trash", "approval": "user confirmation", "owner": "user"},
+    {"path": "C:\\Windows\\Temp", "bytes": 282624129, "kind": "temp cache, recreatable", "risk": "low", "approval": "admin delete approval", "owner": "system"},
+    {"path": "C:\\Windows\\SoftwareDistribution\\Download", "bytes": 1284406, "kind": "update download cache, recreatable", "risk": "low", "approval": "admin delete approval", "owner": "system"},
+    {"path": "WSL ext4.vhdx", "bytes": 184516870144, "kind": "task WSL disk; compact after recovery only", "risk": "high until FS recovered", "approval": "recovery plan approval", "owner": "task"}
+  ],
+  "not_owned": [
+    "C:\\Users\\jay 338.6 GiB",
+    "C:\\Users\\che 108.2 GiB",
+    "C:\\Users\\user (non-WSL) data inside the 231.8 GiB profile",
+    "C:\\ProgramData 12.1 GiB",
+    "C:\\Windows 44.4 GiB"
+  ],
+  "no_task_owned_windows_cache_found": true,
+  "estimated_easy_recovery_bytes": 6998045155,
+  "estimated_easy_recovery_note": "user Temp + Windows Temp + WU download + Recycle Bin = ~6.5 GiB; plus up to 8 GiB if pagefile is shrunk/moved by setting (reboot), not a deletion"
+}

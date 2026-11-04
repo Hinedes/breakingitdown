@@ -1,0 +1,59 @@
+{
+  "identity": "development-smoke-2026-11-02-qwen3-4b-dependency-no-grammar",
+  "source_identity": "working-tree-2026-11-02-reconcile-id-fix",
+  "source_manifest_sha256": "dfd07d0dddb12d3e9be20bd1d30289e8e7c34a820cbea2eb1adcdd371f7f1ba3",
+  "task": "Create greeting.py defining greeting(name), which returns `Hello, {name}!`. Create main.py using `from greeting import greeting`, and make it print the result of `greeting('BID')` when run. Create only those two files.",
+  "scenario": "dependency",
+  "config": {
+    "BID_MODEL_ENDPOINT": "http://127.0.0.1:8082/v1/chat/completions",
+    "BID_MODEL_NAME": "Qwen3-4B-Instruct-2507-Q8_0",
+    "BID_MAX_TOKENS": "2048",
+    "BID_REQUEST_TIMEOUT": "20",
+    "BID_WORKER_TIMEOUT": "45",
+    "BID_INACTIVITY_TIMEOUT": "30",
+    "BID_REPEAT_ACTION_LIMIT": "3",
+    "BID_MAX_TASK_REWORKS": "1",
+    "BID_MAX_MANAGER_REWORKS": "1",
+    "BID_PROVISIONAL_BATCH": "1",
+    "BID_MAX_SEARCHES": "0",
+    "BID_PROTOCOL_GRAMMAR": "0"
+  },
+  "commands": [
+    {
+      "command": "bid init <task>",
+      "returncode": 0,
+      "stdout": "Initializing project with task: Create greeting.py defining greeting(name), which returns `Hello, {name}!`. Create main.py using `from greeting import greeting`, and make it print the result of `greeting('BID')` when run. Create only those two files.\nProject initialized. Use 'bid run' to start working.\n",
+      "stderr": ""
+    },
+    {
+      "command": "bid run",
+      "returncode": 0,
+      "stdout": "Worker 1...\nWorker 1 submitted T1 (normal, s2).\nWorker 2...\nWorker 2 submitted T2 (normal, s4).\nTask completed!\n",
+      "stderr": ""
+    }
+  ],
+  "roles": {
+    "manager": 1,
+    "worker": 4,
+    "reviewer": 2,
+    "manager_reconcile": 3
+  },
+  "requests": 10,
+  "wall_s": 3.281,
+  "artifact_hex": null,
+  "artifact_pass": true,
+  "runnable_check": {
+    "command": [
+      "/home/iclab/bid-studies/2026-11-01-llama1b/test-venv-epoch-10/bin/python",
+      "main.py"
+    ],
+    "returncode": 0,
+    "stdout": "Hello, BID!\n",
+    "stderr": "",
+    "pass": true
+  },
+  "todo": "- [x] T1 \u2014 create greeting.py with function greeting(name) that returns `Hello, {name}!`\n- [x] T2 \u2014 create main.py with `from greeting import greeting` and print greeting('BID') when run",
+  "vc_log": "\n## 02/11/2026\n\n### s0\nInitial project state\n\n## 02/11/2026\n\n### s1\nManager (init) completed.\nProject initialized\n\nworker raw response:\n  WRITE greeting.py\n  def greeting(name):\n      return f\"Hello, {name}!\"\n  END WRITE\n\nworker parsed command:\n  WRITE greeting.py\n\nworker result:\n  wrote 48 bytes to greeting.py; end=none;trailing=0\n\nworker raw response:\n  Done\n\nworker parsed command:\n  Done\n\nworker result:\n  done\n\n## 02/11/2026\n\n### s2\nWorker 1 completed.\nT1 candidate base=s1\nprovisional: task=T1 base=s1 candidate=s2 review=ACCEPT\nratified: task=T1 base=s1 candidate=s2\n\n## 02/11/2026\n\n### s3\nManager (reconcile) completed.\nproject reconciliation\nreconcile_commit: 8dd4eb9e8d084e8e9c460b5ba9ff2799\n\nworker raw response:\n  WRITE main.py\n  from greeting import greeting\n  print(greeting('BID'))\n  END WRITE\n\nworker parsed command:\n  WRITE main.py\n\nworker result:\n  wrote 52 bytes to main.py; end=none;trailing=0\n\nworker raw response:\n  Done\n\nworker parsed command:\n  Done\n\nworker result:\n  done\n\n## 02/11/2026\n\n### s4\nWorker 2 completed.\nT2 candidate base=s3\nprovisional: task=T2 base=s3 candidate=s4 review=ACCEPT\nratified: task=T2 base=s3 candidate=s4",
+  "full_loop": true,
+  "trace_sha256": "6e7ae8eb1dfafcf67c5ac9bf2eca87b07e81dca9094bf4d3acf2474eaaa38277"
+}

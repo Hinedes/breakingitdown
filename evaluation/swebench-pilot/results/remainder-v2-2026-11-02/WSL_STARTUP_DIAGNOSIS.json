@@ -1,0 +1,80 @@
+{
+  "at": "2026-11-02",
+  "mode": "read-only Windows-side diagnosis of the WSL VM start failure; no starts/retries/repairs",
+  "distro": "Ubuntu-22.04 (Stopped)",
+  "wsl_version": "2.6.3.0",
+  "kernel_version": "6.6.87.2-1",
+  "host_free_bytes": 5796823040,
+  "wslconfig": {
+    "path": "C:\\Users\\user\\.wslconfig",
+    "bytes": 34,
+    "fields": {"memory": "100GB", "swap": "32GB"},
+    "note": "read as data only"
+  },
+  "services": {
+    "WslService": "RUNNING",
+    "vmcompute": "RUNNING",
+    "hns": "RUNNING",
+    "LxssManager": "not installed (expected on the Store WSL2 build)"
+  },
+  "processes": {
+    "vmmemWSL": "pid 2352, started 2026-10-30T19:19:57 (utility VM alive until failure)",
+    "wslservice": "pid 4984, started 2026-11-02T03:33:37",
+    "vmcompute": "pid 8672, started 2026-10-30T19:19:57",
+    "wsl/wslhost/wslrelay": "several, from 2026-10-30 and 2026-11-02",
+    "docker_containerd": "none (guest VM down)"
+  },
+  "vhd": {
+    "path": "C:\\Users\\user\\AppData\\Local\\Packages\\CanonicalGroupLimited.Ubuntu22.04LTS_79rhkp1fndgsc\\LocalState\\ext4.vhdx",
+    "bytes": 184516870144,
+    "attributes": "Archive (not read-only)",
+    "mtime": "2026-11-02T23:26:56",
+    "sparse": false
+  },
+  "swap_file": {
+    "checked": [
+      "C:\\Users\\user\\AppData\\Local\\Temp\\swap.vhdx",
+      "C:\\Users\\user\\AppData\\Local\\Temp\\swap.vhdx",
+      "C:\\Users\\user\\AppData\\Local\\Temp\\swap.vhdx"
+    ],
+    "result": "missing at all default locations",
+    "hypothesis": "WSL may recreate/allocate its configured 32GB swap VHDX on VM start; only 5.4 GiB host free. Dynamic VHDX may not preallocate, so this is a candidate, not proven."
+  },
+  "events": {
+    "compute_admin": "only Information (Host Compute Service started 2026-10-30/10-23/10-21); no errors",
+    "compute_operational": "last events 2026-11-02T23:26:57 Information 2008/2009 (query/queue notification result 0x0)",
+    "worker_admin": "2026-11-02T23:26:56.646 Event 18508 Information: VM 86042566-... 'was shut down by the guest operating system'; VmSwitch port deletions at same second",
+    "storagevsp_admin": "last event 2026-11-02T22:40:08 Information 300",
+    "system_errors": "no WSL/Hyper-V/disk errors; nearest unrelated errors are Volsnap 14:31 (shadow copy growth, disk full) and DCOM warnings",
+    "application_errors": "none in the last 2 h"
+  },
+  "failure": {
+    "command": "wsl -d Ubuntu-22.04 -u iclab -- /bin/df -hT / /mnt/c",
+    "error": "The distribution failed to start. Error code: 6, failure step: 2 / Wsl/Service/CreateInstance/E_FAIL",
+    "system_distro": "wsl --system also E_FAIL after the VM shut down"
+  },
+  "interpretation": {
+    "ext4_broken_proven": false,
+    "reason": "E_FAIL from CreateInstance and the VM being torn down by its guest do not identify the ext4 layer; no storage/VHD error event exists at the failure time",
+    "candidate_layers": [
+      "utility VM lifecycle/config (swap=32GB vs 5.4GiB free; VM shut down by guest init)",
+      "distro instance creation (HCS) failing and WSL then stopping the VM",
+      "filesystem/VHD still possible but not evidenced by these events"
+    ]
+  },
+  "actions_not_taken": [
+    "no WSL start retry",
+    "no wsl --shutdown / service restart / host reboot",
+    "no config change",
+    "no fsck / mount / compact / delete",
+    "no guest cleanup"
+  ],
+  "options_ranked": [
+    {"rank": 1, "option": "back up .wslconfig, set swap=0 (or remove swap), then ONE start attempt", "risk": "low, reversible", "needs": "explicit settings-change permission"},
+    {"rank": 2, "option": "if still E_FAIL: controlled wsl --shutdown (and/or WslService restart) then one start", "risk": "medium, kills the utility VM", "needs": "explicit permission"},
+    {"rank": 3, "option": "if the VM starts but the distro still fails: attach the vhdx read-only (wsl --mount --vhd --bare) and inspect; then decide on journal repair", "risk": "medium", "needs": "explicit permission, no repair yet"},
+    {"rank": 4, "option": "in-place fsck on the existing vhdx", "risk": "high, data-loss risk", "needs": "explicit risk approval"},
+    {"rank": 5, "option": "image the vhdx before repair", "risk": "low but needs ~185GB free - not available (5.4GB)", "needs": "external storage; not a prerequisite"}
+  ],
+  "note": "the earlier statement that host space is no longer the blocker is corrected: with swap=32GB and 5.4GiB free, swap/VM startup remains a live candidate; ext4 damage is unproven"
+}

@@ -1,0 +1,5 @@
+- [ ] T1 — Create `handoff-note.txt` with the specified content, including the final newline.
+- [ ] T2 — Confirm the workbench is clear.
+- [ ] T3 — Place the checklist by the entrance.
+- [ ] T4 — Leave the lights on.
+- [ ] T5 — Save `handoff-note.txt` to the local file system.

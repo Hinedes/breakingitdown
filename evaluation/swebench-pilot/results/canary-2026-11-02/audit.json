@@ -1,0 +1,304 @@
+{
+  "issue": "django__django-10097",
+  "source_sha256": "f4999e9656a553321af77c2111340ac80c6899be1afe84a1e0d708d31a828f23",
+  "manifest_sha256": "9e662f1174352ffe349fd9e14ef0957aa8bee4308e3c502fcc56d572c995f0c0",
+  "cells": {
+    "worker": {
+      "run_id": "verified20-worker-f4999e9656a5-a1-4c0992c00cff",
+      "cell_status": "error",
+      "cell_error": "runner exit=1 timed_out=False",
+      "terminal_status": "error",
+      "terminal_error": "runner exit=1 timed_out=False",
+      "setup_seconds": 4.31,
+      "agent_seconds": 146.13,
+      "wall_budget_seconds": 600,
+      "elapsed_seconds_including_setup_and_grading": 350.01,
+      "grading_seconds": 198.13,
+      "first_request_offset_s": 31.61,
+      "model_activity_s": 114.03,
+      "requests_accepted": 4,
+      "requests_rejected": 0,
+      "by_role": {
+        "worker": {
+          "accepted": 4,
+          "rejected": 0,
+          "prompt": 29382,
+          "completion": 16384,
+          "cached": 28137,
+          "actual": 45766
+        }
+      },
+      "totals_accepted": {
+        "prompt": 29382,
+        "completion": 16384,
+        "cached": 28137,
+        "actual": 45766
+      },
+      "max_prompt_tokens": 13530,
+      "max_completion_tokens": 4096,
+      "max_tokens_requested": [
+        4096
+      ],
+      "completion_at_cap": 4,
+      "rejections": [],
+      "events": {
+        "count": 16,
+        "kinds": {
+          "model_request:worker": 8,
+          "command:REPLACE_UNTERMINATED": 8
+        },
+        "last": {
+          "ts_utc": "2026-11-02T12:23:28.069Z",
+          "elapsed_s": 145.839,
+          "event": "command",
+          "phase": "end",
+          "duration_s": 0.0,
+          "task": "T1",
+          "type": "REPLACE_UNTERMINATED"
+        }
+      },
+      "agent_patch_empty": true,
+      "agent_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "prediction_model": "bid-pilot-worker",
+      "prediction_patch_touches": [
+        "diff --git a/.bid-empty-patch b/.bid-empty-patch"
+      ],
+      "prediction_file_sha256": "e524e5acc136bd91850528ea80da69a7e61b045732f2349bfd63bc69d01efe29",
+      "workspace_git_status": "?? .bid/\n?? docs/manager.md\n?? docs/todo.md\n?? docs/worker.md"
+    },
+    "mini": {
+      "run_id": "verified20-mini-f4999e9656a5-a1-ead922bee6fa",
+      "cell_status": "ok",
+      "cell_error": "",
+      "terminal_status": "ok",
+      "terminal_error": "",
+      "setup_seconds": 6.03,
+      "agent_seconds": 27.7,
+      "wall_budget_seconds": 600,
+      "elapsed_seconds_including_setup_and_grading": 231.04,
+      "grading_seconds": 196.37,
+      "first_request_offset_s": 2.61,
+      "model_activity_s": 24.09,
+      "requests_accepted": 12,
+      "requests_rejected": 0,
+      "by_role": {
+        "mini": {
+          "accepted": 12,
+          "rejected": 0,
+          "prompt": 62337,
+          "completion": 2930,
+          "cached": 55668,
+          "actual": 65267
+        }
+      },
+      "totals_accepted": {
+        "prompt": 62337,
+        "completion": 2930,
+        "cached": 55668,
+        "actual": 65267
+      },
+      "max_prompt_tokens": 8403,
+      "max_completion_tokens": 460,
+      "max_tokens_requested": [
+        4096
+      ],
+      "completion_at_cap": 0,
+      "rejections": [],
+      "events": {
+        "count": 0,
+        "kinds": {},
+        "last": null
+      },
+      "agent_patch_empty": true,
+      "agent_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "prediction_model": "bid-pilot-mini",
+      "prediction_patch_touches": [
+        "diff --git a/.bid-empty-patch b/.bid-empty-patch"
+      ],
+      "prediction_file_sha256": "2a091ede010eac69a89e1bd27b996ae7688cef33e64a6158c8aab6481266834f",
+      "workspace_git_status": "",
+      "mini_agent_exit_status": "RepeatedFormatError",
+      "mini_submission_chars": 0,
+      "mini_api_calls": 12,
+      "stored_assistant_turns": [
+        {
+          "n": 1,
+          "names": [
+            "bash"
+          ]
+        },
+        {
+          "n": 1,
+          "names": [
+            "bash"
+          ]
+        },
+        {
+          "n": 1,
+          "names": [
+            "bash"
+          ]
+        },
+        {
+          "n": 1,
+          "names": [
+            "bash"
+          ]
+        },
+        {
+          "n": 1,
+          "names": [
+            "bash"
+          ]
+        },
+        {
+          "n": 1,
+          "names": [
+            "bash"
+          ]
+        },
+        {
+          "n": 1,
+          "names": [
+            "bash"
+          ]
+        },
+        {
+          "n": 1,
+          "names": [
+            "bash"
+          ]
+        }
+      ],
+      "api_responses": 12,
+      "responses_with_native_tool_calls": 8,
+      "finish_reasons": {
+        "tool_calls": 8,
+        "stop": 4
+      }
+    },
+    "bid": {
+      "run_id": "verified20-bid-f4999e9656a5-a1-7a2b2a22ea9c",
+      "cell_status": "error",
+      "cell_error": "runner exit=1 timed_out=False",
+      "terminal_status": "error",
+      "terminal_error": "runner exit=1 timed_out=False",
+      "setup_seconds": 4.46,
+      "agent_seconds": 442.52,
+      "wall_budget_seconds": 600,
+      "elapsed_seconds_including_setup_and_grading": 643.24,
+      "grading_seconds": 195.36,
+      "first_request_offset_s": 1.98,
+      "model_activity_s": 439.58,
+      "requests_accepted": 15,
+      "requests_rejected": 1,
+      "by_role": {
+        "manager": {
+          "accepted": 1,
+          "rejected": 0,
+          "prompt": 969,
+          "completion": 170,
+          "cached": 5,
+          "actual": 1139
+        },
+        "worker": {
+          "accepted": 14,
+          "rejected": 1,
+          "prompt": 127160,
+          "completion": 45077,
+          "cached": 112565,
+          "actual": 172237
+        }
+      },
+      "totals_accepted": {
+        "prompt": 128129,
+        "completion": 45247,
+        "cached": 112570,
+        "actual": 173376
+      },
+      "max_prompt_tokens": 17977,
+      "max_completion_tokens": 4096,
+      "max_tokens_requested": [
+        0,
+        4096
+      ],
+      "completion_at_cap": 11,
+      "rejections": [
+        {
+          "status": 429,
+          "role": "worker",
+          "error": "paired-condition token budget exhausted before preflight",
+          "usage_known": false,
+          "prompt_estimate": 17977,
+          "used_tokens": 173376
+        }
+      ],
+      "events": {
+        "count": 72,
+        "kinds": {
+          "model_request:manager": 2,
+          "run_project:": 2,
+          "worker_session:": 3,
+          "model_request:worker": 30,
+          "command:READ": 6,
+          "command:REPLACE_UNTERMINATED": 22,
+          "rollback:": 2,
+          "worker_session:timeout": 2,
+          "respawn:": 2,
+          "worker_session:error": 1
+        },
+        "last": {
+          "ts_utc": "2026-11-02T12:38:05.641Z",
+          "elapsed_s": 442.067,
+          "event": "run_project",
+          "phase": "end",
+          "duration_s": 439.594
+        }
+      },
+      "agent_patch_empty": true,
+      "agent_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "prediction_model": "bid-pilot-bid",
+      "prediction_patch_touches": [
+        "diff --git a/.bid-empty-patch b/.bid-empty-patch"
+      ],
+      "prediction_file_sha256": "c73910d3def9866a316f7c688520e10c7cd9d8bae1890ce586b846174b984665",
+      "workspace_git_status": "?? .bid/\n?? docs/decisions.md\n?? docs/manager.md\n?? docs/project-status.md\n?? docs/task.md\n?? docs/todo.md\n?? docs/worker.md"
+    }
+  },
+  "server": {
+    "pilot_record_stopped": {
+      "pid": 18002,
+      "reason": "SIGTERM stopped process",
+      "stopped": true
+    },
+    "wrapper_record_stopped": {
+      "stopped": false,
+      "reason": "executable mismatch"
+    },
+    "identity": {
+      "pid": 18002,
+      "starttime_ticks": 7969035
+    },
+    "pid_files": {
+      "server.pid": "18002",
+      "pilot.pid": "18031"
+    },
+    "server_log_exit": [
+      "20.25.744.390 I srv    operator(): operator(): cleaning up before exit..."
+    ],
+    "now": {
+      "pid_18002": "gone",
+      "llama": "none",
+      "proxy_or_pilot": "none",
+      "containers": "none",
+      "gpu": "391 MiB, 16303 MiB",
+      "disk": "/dev/sdd        251G  166G   73G  70% /"
+    }
+  },
+  "totals_all_cells": {
+    "prompt": 219848,
+    "completion": 64561,
+    "cached": 196375,
+    "actual": 284409
+  }
+}

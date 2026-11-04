@@ -1,0 +1,8 @@
+# Epoch-20 prospective safety-corrected cohort
+
+- Immutable source manifest: `e925ca9e3d3e6c3c6e9cb6f9be19e04aa9f171bffd74ba4e6299d0e12d20c051` (36 source/fixture files). Ubuntu checks: 197 passed; Windows: 175 passed, ten capability-specific skips.
+- Same 3B Q8_0 model, Q8_0 KV, constrained text protocol, isolated RUN, task/oracle definitions, distinct seeds, five conditions and equal 100,000-token/300-second cell budgets as the prospective epoch-18 matrix. See `MATRIX18_PLAN.md` for full definitions. All 128K cells precede the 64K block; within-block paired order is seeded.
+- Epoch 18 remains a preserved partial cohort: 17 complete outcomes, one explicit safety interruption, 27 pending. A bounded workspace scan found no symlinks, but it was stopped rather than silently editing its source. Do not pool these repeated seeds with epoch 20 as independent samples.
+- Changes for epoch 20 are filesystem boundary and timeout hardening, not task solutions or oracle hints. Host-side copies, observers, diffs, signatures and artifact hashes must not follow generated symlinks or open named pipes. Symbolic control roots are refused before initialization. A trusted namespace init owns model command descendants, including session-detaching commands.
+- Independent artifact scoring remains authoritative. Also report harness completion, role coverage, maximum actual prompt length, baseline-relative checks and time/tokens. Manager rejection of a correct artifact is retained as a false-negative terminal outcome, not automatically overridden.
+- Preserve raw outcomes and traces incrementally and export portable summaries. One model loaded at a time, localhost-only serving, no staging/commits/pushes. Original cutoff: 08:00 Taipei; no new cell in the final ten minutes.

@@ -1,0 +1,76 @@
+{
+  "at": "2026-11-02",
+  "mode": "user-authorized TEMP cleanup (regular files only), read-only guest probe after",
+  "free_before_bytes": 30511104,
+  "free_after_bytes": 5797646336,
+  "freed_bytes": 5767135232,
+  "freed_gib": 5.37,
+  "cutoff": "2026-11-01T23:21:45 (files newer than 24h skipped)",
+  "roots": [
+    {
+      "label": "user_temp",
+      "root": "C:\\Users\\user\\AppData\\Local\\Temp",
+      "canonical_ok": true,
+      "exists": true,
+      "root_is_reparse": false,
+      "deleted_files": 959,
+      "deleted_bytes": 5485643549,
+      "removed_empty_dirs": 550,
+      "skipped_recent_24h": 64,
+      "skipped_protected": 2782,
+      "skipped_reparse": 0,
+      "skipped_locked": 0,
+      "enumerate_errors": 0,
+      "top_files": [
+        {"path": "C:\\Users\\user\\AppData\\Local\\Temp\\vscode-stable-user-x64\\CodeSetup-stable-e646868227c3e3a9e3f24277c8c7220be42c0be7.exe", "bytes": 248800480},
+        {"path": "C:\\Users\\user\\AppData\\Local\\Temp\\3naxtwni\\VisualStudio.GitHub.Copilot.140091DE81DDAD8D2111\\VisualStudio.GitHub.Copilot.vsix", "bytes": 207391052},
+        {"path": "C:\\Users\\user\\AppData\\Local\\Temp\\3naxtwni\\Microsoft.Android.Sdk.net10.36.1.118.D412B1B33004980DD1A8\\b3a1368223fc8c3406114bfbc704f4cd-x64.msi", "bytes": 123678720},
+        {"path": "C:\\Users\\user\\AppData\\Local\\Temp\\DiagOutputDir\\RdClientAutoTrace\\RdClientAutoTrace-WppAutoTrace-20261028-090242-560.etl", "bytes": 104857600}
+      ]
+    },
+    {
+      "label": "windows_temp",
+      "root": "C:\\Windows\\Temp",
+      "canonical_ok": true,
+      "exists": true,
+      "root_is_reparse": false,
+      "deleted_files": 83,
+      "deleted_bytes": 280312669,
+      "removed_empty_dirs": 7,
+      "skipped_recent_24h": 12,
+      "skipped_protected": 0,
+      "skipped_reparse": 0,
+      "skipped_locked": 1,
+      "enumerate_errors": 0,
+      "top_files": [
+        {"path": "C:\\Windows\\Temp\\wctDC24.tmp", "bytes": 134649192},
+        {"path": "C:\\Windows\\Temp\\wct70C4.tmp", "bytes": 132779408}
+      ]
+    }
+  ],
+  "skipped_by_policy": {
+    "newer_than_24h": 76,
+    "protected_name_extension": 2782,
+    "reparse_points": 0,
+    "locked_or_denied": 1
+  },
+  "not_touched": [
+    "Recycle Bin (not approved)",
+    "Downloads",
+    "WSL vhdx / any .vhdx",
+    "models/GGUF/checkpoints/archives/datasets",
+    "project/source/study/artifact-named files",
+    "any path outside the two exact TEMP roots"
+  ],
+  "guest_probe": {
+    "command": "wsl -d Ubuntu-22.04 -u iclab -- /bin/df -h /",
+    "result": "getpwnam(iclab) failed 5 / WSL_E_USER_NOT_FOUND",
+    "guest_online": false,
+    "note": "host space alone did not revive the offline device; no restart/repair attempted"
+  },
+  "space_after": {
+    "c_free_bytes": 5797646336,
+    "c_total_bytes": 999127248896,
+    "expand_still_impossible": "disk 0 has 1 MB unallocated"
+  }
+}

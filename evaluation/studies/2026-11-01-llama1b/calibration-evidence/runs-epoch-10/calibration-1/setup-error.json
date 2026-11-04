@@ -1,0 +1,7 @@
+{
+  "phase": "runner startup",
+  "error": "ModuleNotFoundError: No module named study",
+  "model_requests": 0,
+  "trace_created": false,
+  "preserved": true
+}

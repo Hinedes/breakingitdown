@@ -1,0 +1,2 @@
+- [ ] T1 — Create `tag.txt` with exact string `MINT` followed by one newline.
+- [ ] T2 — Modify `tag.txt` to contain only the exact string `MINT` followed by one newline.

@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import errno
 import tempfile
 import time
 from datetime import date
@@ -17,31 +18,64 @@ class VersionControl:
         self.current_file = os.path.join(self.bid_dir, "current")
         self.log_file = os.path.join(self.bid_dir, "log.md")
         self.lock_file = os.path.join(self.bid_dir, "lock")
+        self._lock_handle = None
 
     def _acquire_lock(self):
         os.makedirs(self.bid_dir, exist_ok=True)
         deadline = time.monotonic() + _LOCK_TIMEOUT
+        handle = open(self.lock_file, "a+b")
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"\0")
+                handle.flush()
         while time.monotonic() < deadline:
             try:
-                fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                os.close(fd)
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._lock_handle = handle
                 return
-            except FileExistsError:
+            except (BlockingIOError, OSError) as exc:
+                if isinstance(exc, OSError) and exc.errno not in (None, errno.EACCES, errno.EAGAIN, errno.EDEADLK, errno.EWOULDBLOCK):
+                    handle.close()
+                    raise
                 time.sleep(0.1)
+        handle.close()
         raise RuntimeError(f"could not acquire VC lock within {_LOCK_TIMEOUT}s")
 
     def _release_lock(self):
+        handle, self._lock_handle = self._lock_handle, None
+        if handle is None:
+            return
         try:
-            os.remove(self.lock_file)
-        except OSError:
-            pass
+            if os.name == "nt":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
     def init(self):
-        if os.path.isdir(self.bid_dir):
-            shutil.rmtree(self.bid_dir)
-        os.makedirs(self.states_dir, exist_ok=True)
         self._acquire_lock()
         try:
+            os.makedirs(self.states_dir, exist_ok=True)
+            for item in os.listdir(self.bid_dir):
+                if item != "lock":
+                    path = os.path.join(self.bid_dir, item)
+                    if os.path.isdir(path):
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
+            os.makedirs(self.states_dir, exist_ok=True)
             self._save_snapshot_atomic("s0")
             self._set_current("s0")
             self._append_log("s0", "Initial project state")
@@ -100,17 +134,17 @@ class VersionControl:
                 for item in os.listdir(snapshot):
                     src = os.path.join(snapshot, item)
                     dst = os.path.join(restore_tmp, item)
-                    if os.path.isdir(src):
-                        shutil.copytree(src, dst)
+                    if not os.path.islink(src) and os.path.isdir(src):
+                        shutil.copytree(src, dst, symlinks=True)
                     else:
-                        shutil.copy2(src, dst)
+                        shutil.copy2(src, dst, follow_symlinks=False)
 
                 # Delete live workspace contents (preserve .bid)
                 for item in os.listdir(self.workspace):
                     if item == ".bid":
                         continue
                     path = os.path.join(self.workspace, item)
-                    if os.path.isdir(path):
+                    if not os.path.islink(path) and os.path.isdir(path):
                         shutil.rmtree(path)
                     else:
                         os.remove(path)
@@ -159,15 +193,15 @@ class VersionControl:
                 for item in os.listdir(snapshot):
                     src = os.path.join(snapshot, item)
                     dst = os.path.join(restore_tmp, item)
-                    if os.path.isdir(src):
-                        shutil.copytree(src, dst)
+                    if not os.path.islink(src) and os.path.isdir(src):
+                        shutil.copytree(src, dst, symlinks=True)
                     else:
-                        shutil.copy2(src, dst)
+                        shutil.copy2(src, dst, follow_symlinks=False)
                 for item in os.listdir(self.workspace):
                     if item == ".bid":
                         continue
                     path = os.path.join(self.workspace, item)
-                    if os.path.isdir(path):
+                    if not os.path.islink(path) and os.path.isdir(path):
                         shutil.rmtree(path)
                     else:
                         os.remove(path)
@@ -187,7 +221,11 @@ class VersionControl:
         self._validate_state_name(name)
         if not os.path.isdir(os.path.join(self.states_dir, name)):
             raise ValueError(f"state {name} not found")
-        self._set_current(name)
+        self._acquire_lock()
+        try:
+            self._set_current(name)
+        finally:
+            self._release_lock()
 
     def get_log(self):
         if not os.path.exists(self.log_file):
@@ -215,10 +253,10 @@ class VersionControl:
                 continue
             source = os.path.join(self.workspace, item)
             target = os.path.join(destination, item)
-            if os.path.isdir(source):
-                shutil.copytree(source, target)
+            if not os.path.islink(source) and os.path.isdir(source):
+                shutil.copytree(source, target, symlinks=True)
             else:
-                shutil.copy2(source, target)
+                shutil.copy2(source, target, follow_symlinks=False)
         final = os.path.join(self.states_dir, name)
         if os.path.isdir(final):
             shutil.rmtree(final)

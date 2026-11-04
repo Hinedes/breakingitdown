@@ -1,0 +1,7 @@
+{
+  "supervisor": "GNU timeout",
+  "command_deadline_seconds": 330,
+  "timeout_exit_code": 0,
+  "termination": "completed before external timeout",
+  "process_group": "created with start_new_session; no generation left running before follow-up"
+}

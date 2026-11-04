@@ -1,15 +1,20 @@
 import difflib
 import hashlib
+import inspect
+import json
 import os
 import shlex
 import re
 import subprocess
 import sys
 import shutil
+import stat
 import tempfile
 import time
 
 from . import permissions
+from . import protocol
+from . import repo_context as repo_context_mod
 from . import search as search_mod
 from . import todo as todo_mod
 from . import vc as vc_mod
@@ -58,22 +63,41 @@ def _hash_file(path):
         return "?"
 
 
+def _file_metadata(path):
+    with open(path, "rb") as file:
+        data = file.read()
+    trailing = data[len(data.rstrip(b"\r\n")):]
+    count = len(re.findall(rb"\r\n|\r|\n", trailing))
+    ending = (
+        "CRLF" if data.endswith(b"\r\n") else
+        "LF" if data.endswith(b"\n") else
+        "CR" if data.endswith(b"\r") else "none"
+    )
+    return f"bytes={len(data)};end={ending};trailing={count}"
+
+
+def _read_signature(rel, fhash):
+    return f"READ | {rel} | {fhash}"
+
+
 RUN_OUTPUT_LIMIT = 2000
 
-CONTROL_ROOTS = (
-    ".bid",
-    "docs/task.md",
-    "docs/todo.md",
-    "docs/worker.md",
-    "docs/manager.md",
-    "docs/project-status.md",
-    "docs/decisions.md",
-    "docs/reviews",
-)
+CONTROL_ROOTS = tuple(sorted(permissions.CONTROL_ROOTS))
 
 TASK_REVIEWER_SYSTEM = """You are BID Task Reviewer.
 Judge whether the candidate satisfies the assigned task using only the
-provided original request, task, and fixed-base-to-candidate diff.
+provided original request, task, fixed-base-to-candidate diff, and bounded
+candidate workspace snapshot (a final-state view). Check every concrete deliverable against that evidence.
+The snapshot marks each file's UTF-8 byte count and exact trailing newline count.
+An empty diff is acceptable only when the candidate final state already satisfies
+the current task (it may inherit a correct implementation from its base);
+otherwise it is an unmet requirement. Missing files or incorrect literal content
+are concrete unmet requirements. When the task specifies a trailing
+newline count, compare it exactly with the snapshot's `trailing=` value. A
+Worker `Done` command is not proof of completion. ACCEPT only when the evidence
+supports the current task; otherwise REWORK with the specific requirement.
+The verdict must agree with the reason: if the reason identifies a missing,
+incorrect, or unmet requirement, return REWORK, never ACCEPT.
 
 Return exactly one of:
 
@@ -123,6 +147,10 @@ def _command_label(cmd):
         return f"RUN {cmd['command']}"
     if cmd["type"] == "Done":
         return "Done"
+    if cmd["type"] == "MAP":
+        return f"MAP {cmd.get('path', '')}".rstrip()
+    if cmd["type"] == "FIND":
+        return f"FIND {cmd.get('query', '')}".rstrip()
     return cmd["type"]
 
 
@@ -130,18 +158,20 @@ def _snapshot_control_state(workspace):
     snapshot = tempfile.mkdtemp(prefix="bid-control-")
     for rel in CONTROL_ROOTS:
         source = os.path.join(workspace, rel)
-        if not os.path.exists(source):
+        if not os.path.lexists(source):
             continue
         target = os.path.join(snapshot, rel)
-        if os.path.isdir(source):
-            shutil.copytree(source, target)
+        if not os.path.islink(source) and os.path.isdir(source):
+            shutil.copytree(source, target, symlinks=True)
         else:
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copy2(source, target)
+            shutil.copy2(source, target, follow_symlinks=False)
     return snapshot
 
 
 def _entry_signature(path):
+    if os.path.islink(path):
+        return ("symlink", os.readlink(path))
     if not os.path.exists(path):
         return None
     if os.path.isfile(path):
@@ -172,20 +202,20 @@ def _restore_control_state(workspace, snapshot):
         target = os.path.join(workspace, rel)
         if os.path.isdir(target) and not os.path.islink(target):
             shutil.rmtree(target)
-        elif os.path.exists(target):
+        elif os.path.lexists(target):
             os.remove(target)
 
     for rel in CONTROL_ROOTS:
         source = os.path.join(snapshot, rel)
-        if not os.path.exists(source):
+        if not os.path.lexists(source):
             continue
         target = os.path.join(workspace, rel)
-        if os.path.isdir(source):
+        if not os.path.islink(source) and os.path.isdir(source):
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copytree(source, target)
+            shutil.copytree(source, target, symlinks=True)
         else:
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.copy2(source, target)
+            shutil.copy2(source, target, follow_symlinks=False)
 
 
 def format_run_evidence(entries):
@@ -238,9 +268,100 @@ def _validate_direct_deletion(argv, workspace):
 # ── Command parsing ──────────────────────────────────────────────────
 
 _KNOWN_CMDS = {"READ ", "WRITE ", "RUN ", "SEARCH ", "REPLACE "}
+_REPO_CONTEXT_NOTICE = (
+    "Repository tools are available: use MAP for a bounded filesystem view "
+    "and FIND <literal> for exhaustive fixed-literal search."
+)
+_REPO_CONTEXT_ORIENTATION_FOOTER = (
+    "Use MAP to inspect a narrower directory and FIND to locate a fixed literal.\n"
+    "Do not repeat the same MAP or FIND request without changing the query or scope."
+)
+_FIND_LITERAL_GUIDANCE = (
+    "FIND is fixed-literal, not regex. Characters such as . * [ ] ^ $ and quotes "
+    "are searched literally."
+)
+# RUN and SEARCH can be disabled, so these texts point at the instructions instead of listing commands.
+_FIND_CLOSURE_STATEMENT = (
+    "FIND is now closed for this Worker; continue with the other commands in your instructions."
+)
+_FIND_CLOSED_RESULT = (
+    "FIND is closed for this Worker; use the other commands in your instructions."
+)
+_FIND_CLOSURE_TRUNCATION = "... [FIND evidence truncated]"
+_EXECUTION_PHASE_INSTRUCTION = (
+    "Repository retrieval is complete and FIND is unavailable.\n"
+    "Continue with the other commands in your instructions."
+)
 
 
-def _parse_content_into_turns(content, finish_reason=None):
+def _repo_tools_in_config(config):
+    return repo_context_mod.repo_context_tools_enabled(
+        repo_context_mod.normalize_mode(config.get("repo_context_mode", "off"))
+    )
+
+
+def available_command_names(config):
+    names = ["READ"]
+    if _repo_tools_in_config(config):
+        names.extend(("MAP", "FIND"))
+    if config.get("max_searches_per_worker", 10) > 0:
+        names.append("SEARCH")
+    names.extend(("WRITE", "REPLACE"))
+    if config.get("allow_host_run", False) or callable(config.get("run_executor")):
+        names.append("RUN")
+    names.append("Done")
+    return tuple(names)
+
+
+def render_worker_policy(policy, config):
+    optional = []
+    if config.get("max_searches_per_worker", 10) > 0:
+        optional.append("SEARCH <query>")
+    if config.get("allow_host_run", False) or callable(config.get("run_executor")):
+        optional.append("RUN <program> [arguments...]")
+    replacement = "\n".join(optional) if optional else "No optional commands are enabled for this session."
+    return policy.replace("{{OPTIONAL_COMMANDS}}", replacement)
+
+
+def _run_backend(backend, messages, tools, max_tokens, timeout=None, grammar=None):
+    parameters = inspect.signature(backend.run).parameters.values()
+    accepts_timeout = any(p.name == "timeout" or p.kind == p.VAR_KEYWORD for p in parameters)
+    accepts_grammar = any(p.name == "grammar" or p.kind == p.VAR_KEYWORD for p in parameters)
+    kwargs = {"max_tokens": max_tokens}
+    if timeout is not None and accepts_timeout:
+        kwargs["timeout"] = timeout
+    if grammar is not None:
+        if not accepts_grammar:
+            raise TypeError("protocol grammar requires a backend that accepts grammar")
+        kwargs["grammar"] = grammar
+    return backend.run(messages, tools, **kwargs)
+
+
+def _escape_find_closure_text(value):
+    return json.dumps(str(value), ensure_ascii=True)[1:-1]
+
+
+def _display_find_query(query, limit=160):
+    displayed = []
+    used = 0
+    for index, char in enumerate(query):
+        if char.isprintable():
+            escaped = char
+        elif ord(char) <= 0xFF:
+            escaped = f"\\x{ord(char):02x}"
+        else:
+            escaped = f"\\u{ord(char):04x}"
+        if used + len(escaped) > limit:
+            return "".join(displayed) + "..."
+        displayed.append(escaped)
+        used += len(escaped)
+        if index + 1 >= len(query):
+            break
+    return "".join(displayed)
+
+
+def _parse_content_into_turns(content, finish_reason=None, repo_context_mode="off"):
+    repo_tools = repo_context_mod.repo_context_tools_enabled(repo_context_mode)
     lines = content.split("\n")
     commands = []
     i = 0
@@ -256,6 +377,26 @@ def _parse_content_into_turns(content, finish_reason=None):
         if stripped.startswith("SEARCH "):
             query = stripped[7:].strip()
             commands.append({"type": "SEARCH", "query": query})
+            i += 1
+            continue
+
+        if repo_tools and stripped == "MAP":
+            commands.append({"type": "MAP", "path": ""})
+            i += 1
+            continue
+
+        if repo_tools and stripped.startswith("MAP "):
+            commands.append({"type": "MAP", "path": stripped[4:].strip()})
+            i += 1
+            continue
+
+        if repo_tools and stripped == "FIND":
+            commands.append({"type": "FIND", "query": ""})
+            i += 1
+            continue
+
+        if repo_tools and stripped.startswith("FIND "):
+            commands.append({"type": "FIND", "query": stripped[5:]})
             i += 1
             continue
 
@@ -350,13 +491,16 @@ def _parse_content_into_turns(content, finish_reason=None):
     return commands
 
 
-def _find_unknown_commands(content, commands):
+def _find_unknown_commands(content, commands, repo_context_mode="off"):
+    repo_tools = repo_context_mod.repo_context_tools_enabled(repo_context_mode)
     lines = content.split("\n")
     consumed = set()
     li = 0
     while li < len(lines):
         s = lines[li].strip()
         if s == "Done" or s.startswith("SEARCH ") or s.startswith("READ ") or s.startswith("RUN "):
+            consumed.add(li); li += 1; continue
+        if repo_tools and (s == "MAP" or s.startswith("MAP ") or s == "FIND" or s.startswith("FIND ")):
             consumed.add(li); li += 1; continue
         if s.startswith("WRITE "):
             consumed.add(li); li += 1
@@ -416,6 +560,8 @@ def validate_todo_tasks(tasks):
             return False, f"{t['id']} must start unchecked"
         if not t["description"].strip():
             return False, f"{t['id']} has empty description"
+        if t["description"].strip().casefold() in {"description", "task", "todo item"}:
+            return False, f"{t['id']} has a placeholder description"
     return True, None
 
 
@@ -432,6 +578,8 @@ class ManagerInitAdapter:
         self.obs = get_log(self.workspace)
 
     def run(self, backend):
+        if hasattr(backend, "role"):
+            backend.role = "manager"
         manager_md = _read(self.workspace, "docs/manager.md")
         task_md = _read(self.workspace, "docs/task.md")
 
@@ -440,11 +588,17 @@ class ManagerInitAdapter:
             {
                 "role": "user",
                 "content": (
-                    f"# Task\n\n{task_md}\n\n"
-                    "Create a checklist for this task. Return only unchecked Markdown checklist lines:\n\n"
-                    "- [ ] Description\n"
-                    "- [ ] Description\n\n"
-                    "Keep the steps natural. If a step is a deliberate no-op, that is fine.\n\n"
+                    f"{task_md.rstrip()}\n\n"
+                    "Create a short, ordered checklist that preserves every deliverable and explicit constraint. "
+                    "Each distinct deliverable must appear exactly once. If all requirements concern one "
+                    "standalone file, use exactly one task for that file; do not split writing it into a "
+                    "second create, inspect, or verification task. Each item must name its target file or "
+                    "files and include the public interface and relevant "
+                    "input/output requirements the Worker needs. For literal content, copy all required text "
+                    "verbatim into the item; do not split content lines into tasks. Every item must change a file. Do not add "
+                    "no-op or verification-only items. Return only unchecked Markdown checklist lines:\n\n"
+                    "Use the exact prefix `- [ ] ` for each line, followed by a concrete file-producing action. "
+                    "Do not use placeholder descriptions.\n"
                 ),
             },
         ]
@@ -452,7 +606,10 @@ class ManagerInitAdapter:
         for attempt in range(self.RETRY_LIMIT):
             req_tok = self.obs.start("model_request", role="manager", retry=attempt)
             try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
+                response = _run_backend(
+                    backend, messages, [], self.config.get("max_tokens", 32768),
+                    grammar=protocol.grammar_for(self.config, "manager"),
+                )
             except Exception as exc:
                 self.obs.end(req_tok, error=str(exc))
                 return {"status": "error", "reason": f"model request failed: {exc}"}
@@ -478,9 +635,9 @@ class ManagerInitAdapter:
                     "role": "user",
                     "content": (
                         "Return only checklist lines in this exact format:\n"
-                        "- [ ] Description\n"
-                        "- [ ] Description\n\n"
-                        "No commentary. No code fences. Got:\n\n"
+                        "Use the exact prefix `- [ ] ` followed by a concrete file-producing action. "
+                        "Do not use placeholder descriptions.\n"
+                        "No commentary, headings, or code fences. Each item must change a file. Got:\n\n"
                         + content.strip()[:500]
                     ),
                 })
@@ -490,11 +647,23 @@ class ManagerInitAdapter:
     @staticmethod
     def _todo(text):
         descriptions = []
+        in_fence = False
         for line in text.splitlines():
+            if line.lstrip().startswith("```"):
+                if not descriptions:
+                    return None
+                in_fence = not in_fence
+                continue
             if not line.strip():
                 continue
-            match = re.fullmatch(r"\s*[-*]\s+\[ \]\s+(.+?)\s*", line)
+            match = None if in_fence else re.fullmatch(r"\s*[-*]\s+\[ \]\s+(.+?)\s*", line)
             if not match:
+                # shortcut: a fenced block or indented line under an item is folded into that item
+                # as one line (newlines and indentation are lost); any other stray line still rejects
+                # the plan. Upgrade to multi-line todo entries if tasks need verbatim multi-line content.
+                if descriptions and (in_fence or line[0].isspace()):
+                    descriptions[-1] += " " + line.strip()
+                    continue
                 return None
             description = match.group(1).strip()
             label = re.fullmatch(r"T\d+\b\s*(?:[—–-]\s*)?(.*)", description)
@@ -511,34 +680,504 @@ class ManagerInitAdapter:
 class WorkerAdapter:
     MAX_SOFT_RESETS = 3
 
-    def __init__(self, config, task_number, search_provider=None, feedback=None):
+    def __init__(self, config, task_number, search_provider=None, feedback=None, prior_messages=None):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
         self._vc = vc_mod.VersionControl(self.workspace)
+        self.repo_context_mode = repo_context_mod.normalize_mode(
+            config.get("repo_context_mode", "off")
+        )
+        # Experiment-only: carry conversation messages across tasks (no Python state)
+        if config.get("worker_continuity") == "continuous" and prior_messages:
+            self._prior_messages = [dict(m) for m in prior_messages]
+        else:
+            self._prior_messages = None
+        self._history_messages = None
         self._search_provider = search_provider or search_mod.create_provider(config)
         self._search_cache = search_mod.SearchCache(self.workspace)
         self._search_count = 0
         self._search_limit = config.get("max_searches_per_worker", 10)
+        self._find_attempts = 0
+        self._find_limit = config.get("repo_context_max_finds", 32)
+        self._find_ledger = {}
+        self._find_evidence = []
+        self._find_closed = False
+        self._find_closure_packet = ""
+        self._execution_phase_handoff_done = False
+        self._last_find_useful = False
         self._cache_hits = 0
         self.feedback = feedback or ""
         self._run_evidence = []
         self._implicit_write_count = 0
         self.obs = get_log(self.workspace)
+        self._repo_context = None
+        if repo_context_mod.repo_context_tools_enabled(self.repo_context_mode):
+            self._repo_context = repo_context_mod.RepositoryContext(
+                self.workspace,
+                max_chars=config.get("repo_context_max_chars", 12000),
+                max_find_hits=config.get("repo_context_max_find_hits", 100),
+                max_file_bytes=config.get("repo_context_max_file_bytes", 1048576),
+            )
+        self._read_knowledge_ledger = {}
+        self._read_delivery_ledger = set()
+        self._repo_event_entries = []
+
+    def _worker_result(self, status, **fields):
+        result = {"status": status}
+        result.update(fields)
+        if self._context_tools_enabled():
+            result["observability_events"] = list(self._repo_event_entries)
+        return result
+
+    def _context_tools_enabled(self):
+        return repo_context_mod.repo_context_tools_enabled(self.repo_context_mode)
+
+    def _context_injection_enabled(self):
+        return repo_context_mod.repo_context_injection_enabled(self.repo_context_mode)
+
+    def _record_context_event(self, name, duration=None, **metadata):
+        if not self._context_tools_enabled():
+            return
+        metadata["mode"] = self.repo_context_mode
+        if duration is not None:
+            metadata["duration_ms"] = round(max(0.0, duration) * 1000, 3)
+        for key, value in list(metadata.items()):
+            if isinstance(value, str):
+                metadata[key] = value[:160]
+        entry = self.obs.event(name, **metadata)
+        self._repo_event_entries = getattr(self, "_repo_event_entries", [])
+        self._repo_event_entries.append(entry)
+
+    def _refresh_repo_context(self):
+        started = time.monotonic()
+        try:
+            stats = self._repo_context.refresh()
+        except Exception:
+            self._record_context_event(
+                "repo_context_refresh",
+                time.monotonic() - started,
+                ok=False,
+                error="refresh failed",
+            )
+            return None
+        self._record_context_event(
+            "repo_context_refresh",
+            time.monotonic() - started,
+            ok=True,
+            **stats,
+        )
+        return stats
+
+    def _render_orientation(self):
+        started = time.monotonic()
+        stats = self._refresh_repo_context()
+        if stats is None:
+            self._record_context_event(
+                "repo_context_map",
+                time.monotonic() - started,
+                ok=False,
+                entry_count=0,
+                result_count=0,
+                truncated=False,
+                source="orientation",
+            )
+            return "Repository context warning: workspace index refresh failed."
+
+        map_result = self._repo_context.map_result(refresh=False)
+        prefix = "# Workspace orientation\n\n"
+        suffix = f"\n\n{_REPO_CONTEXT_ORIENTATION_FOOTER}\n\n{_REPO_CONTEXT_NOTICE}"
+        max_chars = max(0, int(self.config.get("repo_context_max_chars", 12000)))
+        map_budget = max_chars - len(prefix) - len(suffix)
+        if map_budget <= 0:
+            self._record_context_event(
+                "repo_context_map",
+                time.monotonic() - started,
+                ok=True,
+                scope=".",
+                entry_count=map_result["entry_count"],
+                result_count=map_result["entry_count"],
+                truncated=True,
+                source="orientation",
+            )
+            return (prefix + suffix)[:max_chars]
+        bounded_map = repo_context_mod.render_workspace_map(
+            self._repo_context.index,
+            max_chars=map_budget,
+        )
+        self._record_context_event(
+            "repo_context_map",
+            time.monotonic() - started,
+            ok=True,
+            scope=".",
+            entry_count=map_result["entry_count"],
+            result_count=map_result["entry_count"],
+            truncated=repo_context_mod._is_truncated(bounded_map),
+            source="orientation",
+        )
+        return (prefix + bounded_map + suffix)[:max_chars]
+
+    def _startup_context_text(self):
+        if not self._context_tools_enabled():
+            return ""
+        if self._context_injection_enabled():
+            return self._render_orientation()
+        if self._refresh_repo_context() is None:
+            return _REPO_CONTEXT_NOTICE + "\nRepository context warning: workspace index refresh failed."
+        return _REPO_CONTEXT_NOTICE
+
+    def _reset_context_text(self):
+        if not self._context_tools_enabled():
+            return ""
+        if self._context_injection_enabled():
+            return self._render_orientation()
+        return _REPO_CONTEXT_NOTICE
+
+    def _map_command(self, requested_path):
+        started = time.monotonic()
+
+        def fail(message):
+            self._record_context_event(
+                "repo_context_map", time.monotonic() - started, ok=False,
+                entry_count=0, result_count=0, truncated=False, source="command",
+            )
+            return message
+
+        shown = requested_path or "."
+        safe, err, rel = permissions.check_path_safety(shown, self.workspace)
+        if not safe:
+            return fail(f"error: {err}")
+        if rel != "." and repo_context_mod.is_excluded_path(rel):
+            return fail(f"error: path is excluded from repository context: {requested_path}")
+        absolute = os.path.join(self.workspace, rel)
+        if not os.path.exists(absolute):
+            return fail(f"error: path not found: {shown}")
+        if not os.path.isdir(absolute):
+            return fail(f"error: not a directory: {shown}")
+        if self._refresh_repo_context() is None:
+            return fail("error: repository context refresh failed")
+        scope = None if rel == "." else rel
+        map_result = self._repo_context.map_result(scope=scope, refresh=False)
+        self._record_context_event(
+            "repo_context_map", time.monotonic() - started, ok=True,
+            scope=scope or ".", entry_count=map_result["entry_count"],
+            result_count=map_result["entry_count"], truncated=map_result["truncated"],
+            source="command",
+        )
+        return map_result["output"]
+
+    def _finish_find_attempt(self, result, attempt):
+        if self._find_limit > 0 and attempt == self._find_limit:
+            return result + "\n\n" + self._close_find()
+        return result
+
+    def _build_find_closure_packet(self, fingerprint=None, warning=False):
+        max_chars = self.config.get(
+            "repo_context_find_closure_max_chars",
+            repo_context_mod.DEFAULT_FIND_CLOSURE_MAX_CHARS,
+        )
+        try:
+            max_chars = max(0, int(max_chars))
+        except (TypeError, ValueError):
+            max_chars = repo_context_mod.DEFAULT_FIND_CLOSURE_MAX_CHARS
+
+        if warning:
+            current_records = []
+            stale_count = len(self._find_evidence)
+        else:
+            current_records = [
+                record
+                for record in self._find_evidence
+                if record["fingerprint"] == fingerprint
+            ]
+            stale_count = len(self._find_evidence) - len(current_records)
+
+        positive_records = [
+            record for record in current_records if record["match_count"] > 0
+        ]
+        zero_literals = sorted({
+            record["literal"]
+            for record in current_records
+            if record["match_count"] == 0
+        })
+        coordinates = {}
+        positive_without_coordinates = set()
+        for record in current_records:
+            if record["match_count"] <= 0:
+                continue
+            valid_hits = 0
+            for hit in record["hits"]:
+                path = hit.get("path")
+                line = hit.get("line")
+                normalized = repo_context_mod._relative_path(path)
+                if (
+                    not isinstance(path, str)
+                    or normalized != path
+                    or os.path.isabs(path)
+                    or repo_context_mod.is_excluded_path(path)
+                    or not isinstance(line, int)
+                    or line < 1
+                ):
+                    continue
+                valid_hits += 1
+                key = (path, line)
+                coordinate = coordinates.setdefault(
+                    key,
+                    {"excerpt": "", "literals": {}},
+                )
+                literal_matches = coordinate["literals"].setdefault(
+                    record["literal"], set()
+                )
+                literal_matches.add(record["match_count"])
+                excerpt = _escape_find_closure_text(hit.get("excerpt", ""))
+                if not coordinate["excerpt"] or excerpt < coordinate["excerpt"]:
+                    coordinate["excerpt"] = excerpt
+            if not valid_hits:
+                positive_without_coordinates.add(
+                    (record["literal"], record["match_count"])
+                )
+
+        coordinate_lines = []
+        for (path, line), coordinate in sorted(coordinates.items()):
+            literal_parts = []
+            for literal in sorted(coordinate["literals"]):
+                matches = ",".join(
+                    str(count) for count in sorted(coordinate["literals"][literal])
+                )
+                literal_parts.append(
+                    f"{_escape_find_closure_text(literal)} (matches={matches})"
+                )
+            display_path = _escape_find_closure_text(path)
+            coordinate_lines.append(
+                f"- {display_path}:{line}: literals={'; '.join(literal_parts)} "
+                f"excerpt={coordinate['excerpt']}"
+            )
+
+        positive_lines = [
+            f"- literal={_escape_find_closure_text(literal)} matches={matches} "
+            "(no emitted coordinates)"
+            for literal, matches in sorted(positive_without_coordinates)
+        ]
+        zero_lines = [
+            f"- literal={_escape_find_closure_text(literal)} matches=0"
+            for literal in zero_literals
+        ]
+        lines = [
+            "# FIND evidence closure",
+            f"fingerprint={fingerprint or 'unavailable'}",
+            f"executed={len(current_records)}; positive={len(positive_records)}; "
+            f"zero-result-literals={len(zero_literals)}; "
+            f"coordinates={len(coordinates)}",
+        ]
+        if warning:
+            lines.append("warning=final repository refresh failed; stale evidence omitted")
+        elif stale_count:
+            lines.append(f"stale evidence excluded={stale_count}")
+        candidates = coordinate_lines + positive_lines + zero_lines
+
+        closure = _FIND_CLOSURE_STATEMENT
+
+        def render(body, truncated=False):
+            suffix = closure
+            if truncated:
+                suffix += " " + _FIND_CLOSURE_TRUNCATION
+            return "\n".join(body + [suffix])
+
+        body = list(lines)
+        truncated = False
+        for candidate in candidates:
+            if len(render(body + [candidate])) <= max_chars:
+                body.append(candidate)
+            else:
+                truncated = True
+                break
+        if truncated:
+            while len(body) > 1 and len(render(body, truncated=True)) > max_chars:
+                body.pop()
+        packet = render(body, truncated=truncated)
+        if len(packet) > max_chars:
+            compact_closure = _FIND_CLOSED_RESULT
+            packet = "\n".join([lines[0], compact_closure])
+            if truncated:
+                packet += " " + _FIND_CLOSURE_TRUNCATION
+            if len(packet) > max_chars:
+                packet = compact_closure
+                if truncated:
+                    packet += " " + _FIND_CLOSURE_TRUNCATION
+            if len(packet) > max_chars:
+                packet = packet[:max_chars]
+
+        return packet, {
+            "executed_query_count": len(current_records),
+            "positive_query_count": len(positive_records),
+            "distinct_coordinate_count": len(coordinates),
+            "zero_result_query_count": len(zero_literals),
+            "packet_length": len(packet),
+            "truncated": truncated,
+            "packet_sha256": hashlib.sha256(packet.encode("utf-8")).hexdigest(),
+        }
+
+    def _close_find(self):
+        if self._find_closed:
+            return self._find_closure_packet
+        self._find_closed = True
+        if self._refresh_repo_context() is None:
+            packet, metrics = self._build_find_closure_packet(warning=True)
+        else:
+            fingerprint = repo_context_mod.search_state_fingerprint(
+                self._repo_context.index
+            )
+            packet, metrics = self._build_find_closure_packet(fingerprint)
+        self._find_closure_packet = packet
+        self._record_context_event(
+            "repo_context_find_closure",
+            closed=True,
+            **metrics,
+        )
+        return packet
+
+    def _find_command(self, query):
+        if self._find_closed:
+            return _FIND_CLOSED_RESULT
+        self._find_attempts += 1
+        self._last_find_useful = False
+        attempt = self._find_attempts
+        query_hash = hashlib.sha256(query.encode("utf-8", "surrogatepass")).hexdigest()[:16]
+        if attempt > self._find_limit:
+            result = f"error: FIND limit ({self._find_limit}) reached"
+            self._record_context_event(
+                "repo_context_find",
+                ok=False,
+                outcome="budget_rejected",
+                attempt=attempt,
+                limit=self._find_limit,
+                query_hash=query_hash,
+                query_length=len(query),
+                result_count=0,
+                total_matches=0,
+                truncated=False,
+                source="command",
+            )
+            return result
+
+        started = time.monotonic()
+        if self._refresh_repo_context() is None:
+            result = "error: repository context refresh failed"
+            self._record_context_event(
+                "repo_context_find", time.monotonic() - started, ok=False,
+                outcome="error",
+                attempt=attempt,
+                query_hash=query_hash,
+                query_length=len(query), result_count=0, truncated=False, source="command",
+            )
+            return self._finish_find_attempt(result, attempt)
+
+        index_state = repo_context_mod.search_state_fingerprint(self._repo_context.index)
+        previous = self._find_ledger.get(query)
+        if previous and previous["index_state"] == index_state:
+            result = (
+                "unchanged: identical FIND query was already answered for the current repository state\n"
+                f"query: {_display_find_query(query)}\n"
+                f"previous matches: {previous['matches']}"
+            )
+            self._record_context_event(
+                "repo_context_find",
+                time.monotonic() - started,
+                outcome="deduplicated",
+                attempt=attempt,
+                query_hash=query_hash,
+                query_length=len(query),
+                index_state=index_state,
+                ok=previous.get("ok", True),
+                result_count=previous["matches"],
+                total_matches=previous["matches"],
+                truncated=False,
+                source="command",
+            )
+            return self._finish_find_attempt(result, attempt)
+
+        search_result = self._repo_context.find_result(query, refresh=False)
+        result = search_result["output"]
+        if (
+            search_result["ok"]
+            and search_result["total_matches"] == 0
+            and any(char in query for char in ".*[]^$'\"|?+()\\")
+        ):
+            result += "\n" + _FIND_LITERAL_GUIDANCE
+        self._find_ledger[query] = {
+            "index_state": index_state,
+            "matches": search_result["total_matches"],
+            "ok": search_result["ok"],
+        }
+        self._find_evidence.append({
+            "literal": query,
+            "fingerprint": index_state,
+            "match_count": search_result["total_matches"],
+            "hits": [dict(hit) for hit in search_result["hits"]],
+            "execution_order": len(self._find_evidence) + 1,
+        })
+        self._last_find_useful = search_result["ok"]
+        self._record_context_event(
+            "repo_context_find", time.monotonic() - started,
+            ok=search_result["ok"],
+            outcome="executed",
+            attempt=attempt,
+            query_hash=query_hash,
+            index_state=index_state,
+            query_length=len(query),
+            result_count=len(search_result["hits"]),
+            total_matches=search_result["total_matches"],
+            truncated=search_result["truncated"],
+            skipped_binary=search_result["skipped"].get("binary", 0),
+            skipped_oversized=search_result["skipped"].get("oversized", 0),
+            skipped_unreadable=search_result["skipped"].get("unreadable", 0),
+            source="command",
+        )
+        return self._finish_find_attempt(result, attempt)
+
+    def _execution_phase_messages(self, worker_policy, task_description, feedback):
+        messages = [
+            {"role": "system", "content": worker_policy},
+            {"role": "user", "content": task_description},
+        ]
+        if feedback:
+            messages.append({
+                "role": "user",
+                "content": f"Previous reviewer feedback:\n{feedback}",
+            })
+        messages.extend([
+            {"role": "user", "content": self._find_closure_packet},
+            {"role": "user", "content": _EXECUTION_PHASE_INSTRUCTION},
+        ])
+        return messages
 
     def run(self, backend):
+        if hasattr(backend, "role"):
+            backend.role = "worker"
         todo_text = _read(self.workspace, "docs/todo.md")
         tasks = todo_mod.parse_todo(todo_text)
         task = todo_mod.get_task(tasks, self.task_number)
         if not task:
-            return {"status": "error", "reason": f"T{self.task_number} not found in TODO"}
+            return self._worker_result(
+                "error", reason=f"T{self.task_number} not found in TODO"
+            )
 
-        worker_policy = _read(self.workspace, "docs/worker.md")
-        task_prompt = (
-            f"\nTask T{self.task_number}: {task['description']}\n\n"
+        worker_policy = render_worker_policy(
+            _read(self.workspace, "docs/worker.md"), self.config
         )
+        task_description = f"Task T{self.task_number}: {task['description']}"
+        task_statement = (self.config.get("task_statement") or "").strip()
+        if task_statement:
+            task_description += f"\n\nFull public issue statement:\n{task_statement}"
+        task_prompt = f"\n{task_description}\n\n"
+        feedback_prompt = ""
         if self.feedback:
-            task_prompt += f"\nPrevious reviewer feedback:\n{self.feedback}\n"
+            feedback_prompt = f"Previous reviewer feedback:\n{self.feedback}"
+            task_prompt += f"\n{feedback_prompt}\n"
+        base_task_prompt = task_prompt
+        startup_context = self._startup_context_text()
+        if startup_context:
+            task_prompt += "\n\n" + startup_context
 
         messages = [
             {"role": "system", "content": worker_policy},
@@ -549,24 +1188,67 @@ class WorkerAdapter:
                 ),
             },
         ]
+        if self._prior_messages is not None:
+            messages = [dict(m) for m in self._prior_messages] + messages
 
         observer = Observer(self.workspace, self.task_number)
-        hard_ceiling = self.config.get("worker_timeout", 3600)
+        worker_timeout = self.config.get("worker_timeout", 3600)
         inactivity_timeout = self.config.get("inactivity_timeout", 600)
         repeat_limit = self.config.get("repeat_action_limit", 5)
         session_start = time.monotonic()
         soft_resets = 0
         last_sig = None
         turn_repeat = 0
-        _read_tracker = {}  # canonical_rel_path → (useful_count, last_hash)
+        last_turn_signature = None
+        repeated_turns = 0
+        missing_reads = 0
+        no_progress = 0
+        off_read_state = {}  # preserve off-mode full-read behavior
+        self._read_delivery_ledger.clear()
 
-        while time.monotonic() - session_start < hard_ceiling:
+        def workspace_state_signature():
+            state = repr(sorted(
+                (path, digest)
+                for path, digest in observer._snapshot.items()
+                if not _review_path_blocked(path)
+                and not path.startswith((".pytest_cache/", "__pycache__/"))
+            ))
+            return hashlib.sha256(state.encode("utf-8")).digest()
+
+        previous_state = workspace_state_signature()
+        seen_states = {previous_state}
+        repeated_state_revisits = 0
+
+        while True:
+            remaining = worker_timeout - (time.monotonic() - session_start)
+            if remaining <= 0:
+                return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
+            if self._find_closed and not self._execution_phase_handoff_done:
+                self._read_delivery_ledger.clear()
+                messages = self._execution_phase_messages(
+                    worker_policy, task_description, self.feedback
+                )
+                self._execution_phase_handoff_done = True
+                self._record_context_event(
+                    "repo_context_execution_phase_handoff",
+                    find_attempts=self._find_attempts,
+                    packet_length=len(self._find_closure_packet),
+                    message_count=len(messages),
+                    feedback=bool(self.feedback),
+                )
+
             req_tok = self.obs.start("model_request", role="worker", task=f"T{self.task_number}", attempt=1)
             try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
+                response = _run_backend(
+                    backend, messages, [], self.config.get("max_tokens", 32768),
+                    min(remaining, self.config.get("request_timeout", remaining)),
+                    grammar=protocol.grammar_for(self.config, "worker"),
+                )
             except Exception as exc:
                 self.obs.end(req_tok, error=str(exc))
-                return {"status": "error", "reason": f"model request failed: {exc}"}
+                return self._worker_result(
+                    "error", reason=f"model request failed: {exc}"
+                )
             usage = response.get("usage") or {}
             self.obs.end(
                 req_tok,
@@ -577,6 +1259,8 @@ class WorkerAdapter:
             )
 
             raw_content = response.get("content") or ""
+            if time.monotonic() - session_start >= worker_timeout:
+                return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
             content = raw_content.strip()
             if os.environ.get("BID_IMPLICIT_WRITE") == "1":
                 finish_reason = response.get("finish_reason", "stop")
@@ -593,9 +1277,25 @@ class WorkerAdapter:
             policy_violation = False
 
             if content:
-                commands = _parse_content_into_turns(content, finish_reason)
+                commands = _parse_content_into_turns(
+                    content, finish_reason, self.repo_context_mode
+                )
             else:
                 commands = []
+
+            response_has_non_find = any(cmd["type"] != "FIND" for cmd in commands)
+            if self._find_closed and any(cmd["type"] == "FIND" for cmd in commands):
+                if not response_has_non_find:
+                    self._record_context_event(
+                        "repo_context_post_handoff_find_stall",
+                        find_attempts=self._find_attempts,
+                        packet_length=len(self._find_closure_packet),
+                    )
+                    return self._worker_result(
+                        "stalled",
+                        reason="FIND issued after retrieval closure",
+                    )
+                commands = [cmd for cmd in commands if cmd["type"] != "FIND"]
 
             if not commands:
                 _log_worker_event(self._vc, "worker parsed command", "(none)")
@@ -607,12 +1307,21 @@ class WorkerAdapter:
                 last_sig = sig
                 messages.append({
                     "role": "user",
-                    "content": "No executable BID command was found. Respond only with actual READ, WRITE, RUN, or Done commands. Do not explain or describe the commands."
+                    "content": (
+                        "No executable BID command was found. Respond only with actual "
+                        + ", ".join(available_command_names(self.config))
+                        + " commands. Do not explain or describe the commands."
+                    )
                 })
             else:
                 for cmd in commands:
+                    remaining = worker_timeout - (time.monotonic() - session_start)
+                    if remaining <= 0:
+                        return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
                     _log_worker_event(self._vc, "worker parsed command", _command_label(cmd))
                     cmd_tok = self.obs.start("command", task=f"T{self.task_number}", type=cmd["type"])
+                    if cmd["type"] != "READ":
+                        missing_reads = 0
                     if cmd["type"] == "Done":
                         saw_done = True
                         _log_worker_event(self._vc, "worker result", "done")
@@ -620,6 +1329,8 @@ class WorkerAdapter:
                         continue
 
                     if cmd["type"] == "READ":
+                        rel = cmd.get("path", "")
+                        read_sig = None
                         try:
                             safe, err, rel = permissions.check_path_safety(cmd["path"], self.workspace)
                             if not safe:
@@ -637,15 +1348,131 @@ class WorkerAdapter:
                                     elif not os.path.isfile(abs_path):
                                         result = f"not a file: {cmd['path']}"
                                     else:
-                                        result = _read(self.workspace, rel)
+                                        result = (
+                                            f"File metadata: {_file_metadata(abs_path)}\n"
+                                            f"File contents:\n{_read(self.workspace, rel)}"
+                                        )
                                         fhash = _hash_file(abs_path)
-                                        prev = _read_tracker.get(rel)
-                                        if not prev or prev[1] != fhash:
-                                            useful = True
-                                        _read_tracker[rel] = (1 if not prev else prev[0] + 1, fhash)
+                                        if self._context_tools_enabled():
+                                            if fhash == "?":
+                                                outcome = None
+                                            else:
+                                                known_hash = self._read_knowledge_ledger.get(rel)
+                                                delivery_key = (rel, fhash)
+                                                if known_hash is None or known_hash != fhash:
+                                                    self._read_delivery_ledger.difference_update({
+                                                        key
+                                                        for key in self._read_delivery_ledger
+                                                        if key[0] == rel
+                                                    })
+                                                    self._read_knowledge_ledger[rel] = fhash
+                                                    self._read_delivery_ledger.add(delivery_key)
+                                                    useful = True
+                                                    outcome = "new_or_changed"
+                                                    full_read = True
+                                                    unique_path = known_hash is None
+                                                elif delivery_key not in self._read_delivery_ledger:
+                                                    self._read_delivery_ledger.add(delivery_key)
+                                                    outcome = "rehydrated"
+                                                    full_read = True
+                                                    unique_path = False
+                                                else:
+                                                    result = (
+                                                        f"unchanged: {rel} was already supplied earlier in this Worker context\n"
+                                                        f"sha256: {fhash[:12]}"
+                                                    )
+                                                    outcome = "deduplicated"
+                                                    full_read = False
+                                                    unique_path = False
+
+                                                event_name = (
+                                                    "repo_context_read_deduplicated"
+                                                    if outcome == "deduplicated"
+                                                    else "repo_context_read"
+                                                )
+                                                self._record_context_event(
+                                                    event_name,
+                                                    path=rel,
+                                                    sha256=fhash[:12],
+                                                    outcome=outcome,
+                                                    full_read=full_read,
+                                                    unique_path=unique_path,
+                                                    read_count=1,
+                                                    count=1,
+                                                )
+                                            read_sig = (
+                                                _read_signature(rel, fhash)
+                                                if fhash != "?"
+                                                else None
+                                            )
+                                        else:
+                                            prev = off_read_state.get(rel)
+                                            if not prev or prev[1] != fhash:
+                                                useful = True
+                                            off_read_state[rel] = (
+                                                1 if not prev else prev[0] + 1,
+                                                fhash,
+                                            )
+                                            read_sig = (
+                                                _read_signature(rel, fhash)
+                                                if fhash != "?"
+                                                else None
+                                            )
                         except ValueError as e:
                             result = str(e)
-                        sig = f"READ {rel}|{result[:50]}"
+                        if result.startswith("file not found:"):
+                            # one signature for every miss: guessing different paths is the same stall
+                            missing_reads += 1
+                            sig = "READ|file not found"
+                            if missing_reads >= 2:
+                                result += "\n" + self._missing_file_hint()
+                        else:
+                            missing_reads = 0
+                            sig = f"READ {rel}|{result[:50]}" if read_sig is None else read_sig
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
+                        messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
+                        continue
+
+                    if cmd["type"] == "MAP":
+                        result = self._map_command(cmd.get("path", ""))
+                        if not result.startswith("error:"):
+                            useful = True
+                        sig = f"MAP {cmd.get('path', '')}|{result[:50]}"
+                        if sig == last_sig:
+                            turn_repeat += 1
+                        else:
+                            turn_repeat = 0
+                        last_sig = sig
+                        _log_worker_event(self._vc, "worker result", result)
+                        messages.append({"role": "user", "content": result})
+                        self.obs.end(cmd_tok)
+                        continue
+
+                    if cmd["type"] == "FIND":
+                        if self._find_closed:
+                            if not response_has_non_find:
+                                self.obs.end(cmd_tok)
+                                self._record_context_event(
+                                    "repo_context_post_handoff_find_stall",
+                                    find_attempts=self._find_attempts,
+                                    packet_length=len(self._find_closure_packet),
+                                )
+                                return self._worker_result(
+                                    "stalled",
+                                    reason="FIND issued after retrieval closure",
+                                )
+                            self.obs.end(cmd_tok)
+                            continue
+                        result = self._find_command(cmd.get("query", ""))
+                        if self._last_find_useful:
+                            useful = True
+                        sig = f"FIND {cmd.get('query', '')}|{result[:50]}"
                         if sig == last_sig:
                             turn_repeat += 1
                         else:
@@ -657,7 +1484,9 @@ class WorkerAdapter:
                         continue
 
                     if cmd["type"] == "SEARCH":
-                        if self._search_count >= self._search_limit:
+                        if self._search_limit <= 0:
+                            result = "error: SEARCH disabled for this session"
+                        elif self._search_count >= self._search_limit:
                             result = f"error: search limit ({self._search_limit}) reached"
                         else:
                             self._search_count += 1  # all attempts count toward ceiling
@@ -674,6 +1503,8 @@ class WorkerAdapter:
                                 else:
                                     result = f"Search completed. {n} source(s) saved to {path}."
                                     useful = True
+                                if observer.poll_changes():
+                                    changed = True
                         sig = f"SEARCH {search_mod._query_hash(cmd['query'])}|{result[:50]}"
                         if sig == last_sig:
                             turn_repeat += 1
@@ -689,11 +1520,11 @@ class WorkerAdapter:
                         try:
                             result = self._write_command(cmd["path"], cmd["content"])
                             if not result.startswith("error"):
-                                useful = True
+                                self._purge_read_delivery(cmd["path"])
                                 if cmd.get("implicit"):
                                     self._implicit_write_count += 1
-                            if observer.poll_changes():
-                                changed = True
+                                if observer.poll_changes():
+                                    changed = True
                         except ValueError as e:
                             result = str(e)
                         sig = f"WRITE {cmd['path']}|{result[:50]}"
@@ -714,7 +1545,11 @@ class WorkerAdapter:
                         evidence_count_before = len(self._run_evidence)
                         try:
                             try:
-                                result = self._run_command(cmd["command"])
+                                remaining = worker_timeout - (time.monotonic() - session_start)
+                                if remaining <= 0:
+                                    self.obs.end(cmd_tok, status="timeout")
+                                    return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
+                                result = self._run_command(cmd["command"], remaining=remaining)
                             except Exception as exc:
                                 result = f"error: execution failed: {exc}"
 
@@ -786,7 +1621,7 @@ class WorkerAdapter:
                         if result.startswith("error"):
                             replace_failed = True
                         if not result.startswith("error"):
-                            useful = True
+                            self._purge_read_delivery(cmd["path"])
                             if observer.poll_changes():
                                 changed = True
                         sig = f"REPLACE {cmd['path']}|{result[:50]}"
@@ -832,12 +1667,23 @@ class WorkerAdapter:
                     messages.append({"role": "user", "content": result})
                     self.obs.end(cmd_tok)
 
+            if commands:
+                turn_signature = tuple(tuple(sorted(cmd.items())) for cmd in commands)
+                if turn_signature == last_turn_signature and not changed and not useful:
+                    repeated_turns += 1
+                else:
+                    repeated_turns = 0
+                last_turn_signature = turn_signature
+
             # Unknown-command feedback
-            unknown_cmds = _find_unknown_commands(raw_content, commands)
+            unknown_cmds = _find_unknown_commands(
+                raw_content, commands, self.repo_context_mode
+            )
             if unknown_cmds:
                 err_msg = ("error: unknown command(s): " + ", ".join(unknown_cmds[:3])
-                           + "\nAllowed commands are READ, WRITE, RUN, Done."
-                           + "\nTo inspect directories, use RUN ls.")
+                           + f"\nAllowed commands are {', '.join(available_command_names(self.config))}.")
+                if "RUN" in available_command_names(self.config):
+                    err_msg += "\nTo inspect directories, use RUN ls."
                 messages.append({"role": "user", "content": err_msg})
                 _log_worker_event(self._vc, "worker result", err_msg)
                 # NOT counted as useful or changed; does NOT reset repeat
@@ -846,30 +1692,78 @@ class WorkerAdapter:
             if policy_violation or fence_violation or replace_failed:
                 saw_done = False
 
+            if time.monotonic() - session_start >= worker_timeout:
+                return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
             if saw_done:
-                return {"status": "done", "checked": False, "run_evidence": list(self._run_evidence)}
+                if self.config.get("worker_continuity") == "continuous":
+                    self._history_messages = [dict(m) for m in messages]
+                return self._worker_result(
+                    "done", checked=False, run_evidence=list(self._run_evidence)
+                )
+
+            current_state = workspace_state_signature()
+            if useful:
+                seen_states = {current_state}
+                repeated_state_revisits = 0
+            elif current_state != previous_state:
+                if current_state in seen_states:
+                    repeated_state_revisits += 1
+                    if repeated_state_revisits >= repeat_limit:
+                        return {
+                            "status": "stalled",
+                            "reason": "workspace repeatedly returned to earlier states",
+                        }
+                else:
+                    seen_states.add(current_state)
+                    repeated_state_revisits = 0
+            previous_state = current_state
+
+            # A cycle of different errors (A, B, C, A, ...) never repeats the previous turn, so count
+            # consecutive turns that neither changed a file nor learned something new. FIND turns are
+            # neutral: the FIND budget and its closure already bound them.
+            if changed or useful:
+                no_progress = 0
+            elif not any(cmd["type"] == "FIND" for cmd in commands):
+                no_progress += 1
 
             # Soft reset on repeat stall
-            if turn_repeat >= repeat_limit and not changed and not useful:
+            if (turn_repeat >= repeat_limit or repeated_turns >= repeat_limit
+                    or no_progress >= 2 * repeat_limit) and not changed and not useful:
                 soft_resets += 1
                 if soft_resets > self.MAX_SOFT_RESETS:
-                    return {"status": "stalled", "reason": f"repeated action without progress"}
+                    return self._worker_result(
+                        "stalled", reason="repeated action without progress"
+                    )
                 system = messages[0]
-                messages = [
-                    system,
-                    {
-                        "role": "user",
-                        "content": (
-                            f"{task_prompt}\n\n"
-                            f"[ERROR: did not make progress. "
-                            f"Last command: {last_sig.split('|')[0] if '|' in last_sig else last_sig}. "
-                            f"Try a different approach.]"
-                        ),
-                    },
-                ]
+                self._read_delivery_ledger.clear()
+                reset_error = (
+                    f"[ERROR: did not make progress. "
+                    f"Last command: {last_sig.split('|')[0] if '|' in last_sig else last_sig}. "
+                    f"Try a different approach.]"
+                )
+                if self._execution_phase_handoff_done:
+                    messages = self._execution_phase_messages(
+                        worker_policy, task_description, self.feedback
+                    )
+                    messages.append({"role": "user", "content": reset_error})
+                else:
+                    reset_context = self._reset_context_text()
+                    reset_prompt = base_task_prompt
+                    if reset_context:
+                        reset_prompt += "\n\n" + reset_context
+                    messages = [
+                        system,
+                        {
+                            "role": "user",
+                            "content": f"{reset_prompt}\n\n{reset_error}",
+                        },
+                    ]
                 observer = Observer(self.workspace, self.task_number)
                 last_sig = None
                 turn_repeat = 0
+                last_turn_signature = None
+                repeated_turns = 0
+                no_progress = 0
                 continue
 
             # Activity marking
@@ -877,9 +1771,22 @@ class WorkerAdapter:
                 observer.mark_activity()
 
             if observer.inactive_for() > inactivity_timeout:
-                return {"status": "timeout", "reason": f"inactive {observer.inactive_for():.0f}s"}
+                return self._worker_result(
+                    "timeout", reason=f"inactive {observer.inactive_for():.0f}s"
+                )
 
-        return {"status": "timeout", "reason": f"hard ceiling {hard_ceiling}s"}
+        return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
+
+    def _missing_file_hint(self):
+        names = available_command_names(self.config)
+        if "MAP" in names:
+            locate = "MAP <directory> to list a directory"
+            if not self._find_closed:
+                locate = "FIND <literal> to locate the code, or " + locate
+            return f"Do not guess paths. Use {locate}."
+        if "RUN" in names:
+            return "Do not guess paths. Use RUN ls <directory> to list files."
+        return "Do not guess paths. Use only paths named in the task."
 
     def _write_command(self, path, content):
         if re.search(r"[<>|;&`'\"]", path):
@@ -896,7 +1803,19 @@ class WorkerAdapter:
             raise ValueError(f"permission denied: {err_msg}")
 
         _write(self.workspace, rel, content)
-        return f"wrote {len(content)} bytes to {rel}"
+        abs_path = os.path.join(self.workspace, rel)
+        metadata = _file_metadata(abs_path)
+        return f"wrote {os.path.getsize(abs_path)} bytes to {rel}; {metadata.split(';', 1)[1]}"
+
+    def _purge_read_delivery(self, path):
+        if not self._context_tools_enabled():
+            return
+        safe, _, rel = permissions.check_path_safety(path, self.workspace)
+        if not safe:
+            return
+        self._read_delivery_ledger.difference_update({
+            key for key in self._read_delivery_ledger if key[0] == rel
+        })
 
     def _replace_text(self, path, old_text, new_text):
         if not old_text:
@@ -935,10 +1854,10 @@ class WorkerAdapter:
     def _obs_check_changes(self, path, before):
         pass  # hook for observer; real check via poll_changes in dispatch
 
-    def _run_command(self, command):
+    def _run_command(self, command, remaining=None):
         t0 = time.monotonic()
         try:
-            return self._run_command_inner(command)
+            return self._run_command_inner(command, remaining=remaining)
         finally:
             evidence = self._run_evidence[-1] if self._run_evidence else None
             if evidence is not None and evidence.get("command") == (command or "").strip():
@@ -951,7 +1870,13 @@ class WorkerAdapter:
                     result=evidence.get("result"),
                 )
 
-    def _run_command_inner(self, command):
+    def _run_command_inner(self, command, remaining=None):
+        executor = self.config.get("run_executor")
+        if not self.config.get("allow_host_run", False) and not callable(executor):
+            return self._record_run_evidence(
+                command, "error: RUN disabled; set BID_ALLOW_HOST_RUN=1 only for trusted work",
+                False, 126, "", "",
+            )
         command = (command or "").strip()
         if not command:
             return self._record_run_evidence(command, "error: command required", False, 127, "", "")
@@ -971,16 +1896,24 @@ class WorkerAdapter:
         if error:
             return self._record_run_evidence(command, error, False, 126, "", "", denied_deletion=True)
 
-        timeout = self.config.get("run_timeout", 60)
+        timeout = min(
+            self.config.get("run_timeout", 60),
+            remaining if remaining is not None else float("inf"),
+        )
+        if timeout <= 0:
+            return self._record_run_evidence(command, "error: Worker session deadline exceeded", True, -1, "", "")
         try:
-            completed = subprocess.run(
-                argv,
-                cwd=self.workspace,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-            )
+            if callable(executor):
+                completed = executor(argv, cwd=self.workspace, timeout=timeout)
+            else:
+                completed = subprocess.run(
+                    argv,
+                    cwd=self.workspace,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                )
             result = "success" if completed.returncode == 0 else f"error: exit code {completed.returncode}"
             return self._record_run_evidence(command, result, False, completed.returncode, completed.stdout, completed.stderr)
         except FileNotFoundError as exc:
@@ -1037,6 +1970,19 @@ def _review_path_blocked(rel_path):
     )
 
 
+def _workspace_file(path):
+    """Text of one snapshot entry exactly as _workspace_tree records it; None if missing or unreadable."""
+    try:
+        if os.path.islink(path):
+            return "SYMLINK (target not read): " + os.readlink(path)
+        if stat.S_ISREG(os.lstat(path).st_mode):
+            with open(path, encoding="utf-8", newline="") as file:
+                return file.read()
+        return "SPECIAL FILE (contents not read)"
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def _workspace_tree(root):
     tree = {}
     for dirpath, dirs, files in os.walk(root):
@@ -1045,17 +1991,34 @@ def _workspace_tree(root):
             for directory in dirs
             if directory not in {".bid", ".pytest_cache", "__pycache__"}
         ]
-        for filename in files:
+        links = [directory for directory in dirs if os.path.islink(os.path.join(dirpath, directory))]
+        dirs[:] = [directory for directory in dirs if directory not in links]
+        for filename in files + links:
             path = os.path.join(dirpath, filename)
             rel = os.path.relpath(path, root).replace(os.sep, "/")
             if _review_path_blocked(rel):
                 continue
-            try:
-                with open(path, encoding="utf-8") as file:
-                    tree[rel] = file.read()
-            except (OSError, UnicodeDecodeError):
-                pass
+            text = _workspace_file(path)
+            if text is not None:
+                tree[rel] = text
     return tree
+
+
+def _text_file_metadata(text):
+    trailing = text[len(text.rstrip("\r\n")):]
+    count = len(re.findall(r"\r\n|\r|\n", trailing))
+    ending = (
+        "CRLF" if text.endswith("\r\n") else
+        "LF" if text.endswith("\n") else
+        "CR" if text.endswith("\r") else "none"
+    )
+    return f"bytes={len(text.encode('utf-8'))};end={ending};trailing={count}"
+
+
+def _workspace_changed_paths(base_root, candidate_root):
+    base = _workspace_tree(base_root)
+    cand = _workspace_tree(candidate_root)
+    return [rel for rel in sorted(set(base) | set(cand)) if base.get(rel) != cand.get(rel)]
 
 
 def _workspace_diff(base_root, candidate_root, limit=12000):
@@ -1085,8 +2048,19 @@ def _workspace_diff(base_root, candidate_root, limit=12000):
     if not changes:
         return "(no file changes)"
 
+    def candidate_metadata(rel):
+        if rel not in cand:
+            return "candidate absent"
+        if os.path.islink(os.path.join(candidate_root, rel)):
+            return "symlink; target not read"
+        if not stat.S_ISREG(os.lstat(os.path.join(candidate_root, rel)).st_mode):
+            return "special file; contents not read"
+        text = cand[rel]
+        ending = "CRLF" if text.endswith("\r\n") else "LF" if text.endswith("\n") else "none"
+        return f"bytes={len(text.encode('utf-8'))};end={ending}"
+
     index = "## Changed files\n" + "\n".join(
-        f"- {status} {rel}" for status, rel, _ in changes
+        f"- {status} {rel} [{candidate_metadata(rel)}]" for status, rel, _ in changes
     )
     full = "\n\n".join(
         f"### {status} {rel}" + (f"\n{detail}" if detail else "")
@@ -1117,8 +2091,14 @@ def _workspace_listing(root, limit=12000):
     tree = _workspace_tree(root)
     lines = []
     for rel in sorted(tree):
-        lines.append(f"### {rel}")
-        body = tree[rel].strip()
+        body = tree[rel]
+        if body.startswith(("SYMLINK (", "SPECIAL FILE ")):
+            metadata = "contents unavailable"
+        else:
+            raw = body
+            metadata = _text_file_metadata(raw)
+            body = raw.rstrip("\r\n")
+        lines.append(f"### {rel} [{metadata}]")
         if body:
             lines.append(body[:500])
         lines.append("")
@@ -1129,15 +2109,20 @@ def _workspace_listing(root, limit=12000):
 class TaskReviewAdapter:
     RETRY_LIMIT = 3
 
-    def __init__(self, config, task_number, base_state=None, candidate_state=None):
+    def __init__(self, config, task_number, base_state=None, candidate_state=None,
+                 run_evidence=None, ratified_files=""):
         self.config = config
         self.workspace = config["workspace"]
         self.task_number = task_number
         self.base_state = base_state
         self.candidate_state = candidate_state
+        self.run_evidence = run_evidence
+        self.ratified_files = ratified_files
         self.obs = get_log(self.workspace)
 
     def run(self, backend):
+        if hasattr(backend, "role"):
+            backend.role = "reviewer"
         todo_text = _read(self.workspace, "docs/todo.md")
         tasks = todo_mod.parse_todo(todo_text)
         task = todo_mod.get_task(tasks, self.task_number)
@@ -1145,24 +2130,62 @@ class TaskReviewAdapter:
             return {"verdict": "ERROR", "reason": "task not found", "task_number": self.task_number}
 
         task_md = _read(self.workspace, "docs/task.md")
-        if not self.base_state:
+        if not self.base_state or not re.fullmatch(r"s\d+", self.base_state):
             return {"verdict": "ERROR", "reason": "base state not found", "task_number": self.task_number}
 
         base_root = os.path.join(self.workspace, ".bid", "states", self.base_state)
         if not os.path.isdir(base_root):
             return {"verdict": "ERROR", "reason": f"base state {self.base_state} not found", "task_number": self.task_number}
 
-        diff_text = _workspace_diff(base_root, self.workspace)
-        candidate_id = self.candidate_state or "(unknown)"
+        if not self.candidate_state or not re.fullmatch(r"s\d+", self.candidate_state):
+            return {"verdict": "ERROR", "reason": "candidate state not found", "task_number": self.task_number}
+        candidate_root = os.path.join(self.workspace, ".bid", "states", self.candidate_state)
+        if not os.path.isdir(candidate_root):
+            return {"verdict": "ERROR", "reason": f"candidate state {self.candidate_state} not found", "task_number": self.task_number}
+        diff_text = _workspace_diff(base_root, candidate_root)
+        candidate_listing = _workspace_listing(candidate_root)
+        candidate_id = self.candidate_state
 
+        # A task with no diff (verification only) can only be judged from what the Worker ran.
+        evidence_block = ""
+        if self.run_evidence and diff_text == "(no file changes)":
+            evidence_block = (
+                "Worker RUN evidence (commands the Worker chose; the harness recorded their output "
+                "but ran no check of its own):\n" + format_run_evidence(self.run_evidence) + "\n\n"
+            )
+        ratified_block = ""
+        if self.ratified_files:
+            ratified_block = (
+                "This candidate changes files that already-ratified tasks wrote: " + self.ratified_files
+                + ". Changing them is acceptable only if the CURRENT TASK requires it; otherwise REWORK.\n\n"
+            )
+
+        # HARD SCOPE: Original is background, Current Task is acceptance boundary; later tasks out of scope
+        later_tasks = [t for t in tasks if t["number"] > self.task_number and t["state"] != "done"]
+        out_of_scope_block = ""
+        if later_tasks:
+            out_of_scope_block = (
+                "The following later checklist tasks are explicitly OUT OF SCOPE for this review and MUST NOT cause REWORK:\n"
+                + "\n".join(f"- {t['id']} {t['description']}" for t in later_tasks)
+                + "\n\n"
+            )
         prompt = (
             "# Review Assignment\n\n"
-            f"Original request:\n{task_md}\n\n"
-            f"Task:\n{task['description']}\n\n"
+            "## BACKGROUND ONLY — Original request (context for global constraints, not acceptance):\n"
+            f"{task_md}\n\n"
+            "## CURRENT TASK — Acceptance boundary (sole requirement for ACCEPT/REWORK):\n"
+            f"{task['description']}\n\n"
             f"Fixed base: {self.base_state}\n"
             f"Submitted candidate: {candidate_id}\n\n"
             f"Base -> candidate diff:\n{diff_text}\n\n"
+            f"Candidate final state (bounded snapshot view):\n{candidate_listing}\n\n"
             "No harness-owned verification was executed against this submitted candidate.\n\n"
+            + evidence_block + ratified_block +
+            "CRITICAL SCOPE RULE: ACCEPT or REWORK must be based SOLELY on whether the candidate satisfies the CURRENT TASK above.\n"
+            "Requirements delegated to later checklist tasks are out of scope for this review.\n"
+            "Missing work for later tasks MUST NOT cause REWORK.\n"
+            + out_of_scope_block +
+            "Global constraints that remain binding for the current task (from the original request): no unrelated refactors, and any invariants or limits the original request states.\n\n"
              "Judge only whether the submitted candidate satisfies the stated current task. "
              "Use the original request only as background constraints. "
              "Unfinished later checklist tasks are not grounds for REWORK.\n\n"
@@ -1191,7 +2214,10 @@ class TaskReviewAdapter:
                 retry=attempt,
             )
             try:
-                response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
+                response = _run_backend(
+                    backend, messages, [], self.config.get("max_tokens", 32768),
+                    grammar=protocol.grammar_for(self.config, "reviewer"),
+                )
             except Exception as exc:
                 self.obs.end(req_tok, error=str(exc))
                 return {"verdict": "ERROR", "reason": f"model request failed: {exc}", "task_number": self.task_number}
@@ -1234,39 +2260,50 @@ class TaskReviewAdapter:
 
 RECONCILIATION_SYSTEM = """You are BID Manager performing project reconciliation.
 
-Provisional Worker submissions await your decision. Return ONE batch decision
-using only these sections, in any order, ending with the mandatory project section:
+Choose a decision from the original request, checklist, Reviewer verdict, and
+each candidate's workspace snapshot and diff. Return only the needed sections,
+in this order, ending with the mandatory project section:
 
+- `# Done` on its own line, then `- Tn` for each accepted provisional task.
+- `# Rework` on its own line, then `- Tn — reason` for one rejected task.
+- `# Add` on its own line, then `- distinct task` for an omitted deliverable.
+- `# Replace Remaining Plan` on its own line, then `- [ ] task` for each replacement unchecked task.
+- `# Project` on its own line, then exactly `CONTINUE` or `COMPLETE`.
+
+Example:
 # Done
 - T1
-- T2
-
-# Rework
-- T3 — reason for rework
-
-# Add
-- new task description
-
-# Replace Remaining Plan
-- [ ] T1 — new description
-- [ ] T2 — new description
-
 # Project
-CONTINUE
+COMPLETE
+
+Omit optional sections with no entries. Do not return empty headings.
 
 Rules:
-- Without # Rework, every active provisional task must appear in # Done.
-- With # Rework Tn, every earlier active provisional task must appear in
-  # Done; Tn and every later provisional task are automatically invalidated,
-  and no task at or after Tn may appear in # Done.
-- # Rework contains exactly one task with a non-empty reason.
-- # Done, # Rework and # Add may coexist.
-- # Replace Remaining Plan may coexist with # Done but not with # Rework or
-  # Add; it changes only currently unchecked future tasks, never provisional
-  or DONE tasks.
-- # Project must be exactly CONTINUE or COMPLETE.
-- CONTINUE is valid only when unchecked work remains after application.
-- COMPLETE is valid only when every task is DONE after application.
+- Use only task IDs listed under Provisional submissions; checked [x] checklist
+  tasks are already ratified and must not appear in # Done or # Rework.
+- Put each provisional task in exactly one of # Done or # Rework. Never list a
+  task in both. Without # Rework, every active provisional task must be in
+  # Done. With # Rework Tn, earlier active provisional tasks go in # Done; Tn
+  and later provisional tasks are invalidated and must not be in # Done.
+- If the same task appears in both sections, remove it from one section. Choose
+  which section to keep by comparing the candidate evidence with the request.
+- # Rework contains exactly one task with a concrete unmet requirement.
+- # Add only a distinct deliverable required by the original request but absent
+  from the checklist. Never repeat the request or an existing task in # Add.
+- Use # Replace Remaining Plan only when unchecked future tasks already exist;
+  never use it to restate provisional or DONE tasks. It cannot coexist with
+  # Rework or # Add.
+- A Reviewer verdict is evidence, not an instruction to ignore the candidate
+  snapshot or diff. Resolve any conflict from the artifact evidence.
+- Choose #Project after applying your own sections. Use CONTINUE only if
+  executable unchecked work remains. Use COMPLETE only when every deliverable
+  is satisfied and no unchecked or provisional tasks remain.
+- If no unchecked checklist tasks remain and all provisional tasks are accepted,
+  choose COMPLETE.
+- A task marked ESCALATED was rejected by the Task Reviewer until its retry limit ran
+  out. It is unchecked and must not simply be retried: use # Replace Remaining Plan to
+  split or rewrite it, or # Add a missing prerequisite. Provisional tasks listed beside
+  it are handled with the usual rules.
 
 Return only the sections. No commentary, analysis, or code fences."""
 
@@ -1287,6 +2324,8 @@ class ManagerReconcileAdapter:
 
     def run_once(self, backend, correction=None):
         """One model call + structural parse. Returns (decision, error)."""
+        if hasattr(backend, "role"):
+            backend.role = "manager_reconcile"
         messages = [
             {"role": "system", "content": RECONCILIATION_SYSTEM},
             {"role": "user", "content": self._build_prompt()},
@@ -1297,7 +2336,10 @@ class ManagerReconcileAdapter:
 
         req_tok = self.obs.start("model_request", role="manager_reconcile", retry=0)
         try:
-            response = backend.run(messages, [], max_tokens=self.config.get("max_tokens", 32768))
+            response = _run_backend(
+                backend, messages, [], self.config.get("max_tokens", 32768),
+                grammar=protocol.grammar_for(self.config, "manager_reconcile"),
+            )
         except Exception as exc:
             self.obs.end(req_tok, error=str(exc))
             return None, f"model request failed: {exc}"

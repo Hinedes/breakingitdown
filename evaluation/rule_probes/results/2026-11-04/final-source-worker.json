@@ -1,0 +1,129 @@
+{
+  "worker_one_command": {
+    "rule": "worker.one_command_per_response",
+    "passed": 15,
+    "n": 20,
+    "trials": [
+      {
+        "responses": 24,
+        "single_command": 24,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 12,
+        "single_command": 12,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 15,
+        "single_command": 15,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 25,
+        "single_command": 25,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 13,
+        "single_command": 13,
+        "max_missing_run": 1,
+        "found_target": true
+      },
+      {
+        "responses": 22,
+        "single_command": 22,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 15,
+        "single_command": 15,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 23,
+        "single_command": 21,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 22,
+        "single_command": 20,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 24,
+        "single_command": 22,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 22,
+        "single_command": 22,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 23,
+        "single_command": 23,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 20,
+        "single_command": 20,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 15,
+        "single_command": 15,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 12,
+        "single_command": 12,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 13,
+        "single_command": 13,
+        "max_missing_run": 1,
+        "found_target": true
+      },
+      {
+        "responses": 22,
+        "single_command": 20,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 22,
+        "single_command": 22,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 22,
+        "single_command": 22,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 24,
+        "single_command": 22,
+        "max_missing_run": 2,
+        "found_target": true
+      }
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "identity": "development-smoke-2026-11-02-cli-grammar-product-config",
+  "source_identity": "2026-11-02-working-tree-final-newline-evidence",
+  "source_manifest_sha256": "4ee160a7b9b7af3b5a2d50f8cbff245682c99b8d81aa7a261f8f62a7c99f1cf9",
+  "task": "Create hello.txt containing exactly the single line `hello from BID`, with one final newline. Do not create any other files.",
+  "config": {
+    "BID_MODEL_ENDPOINT": "http://127.0.0.1:8082/v1/chat/completions",
+    "BID_MODEL_NAME": "Llama-3.2-3B-Instruct-Q8_0",
+    "BID_MAX_TOKENS": "2048",
+    "BID_REQUEST_TIMEOUT": "20",
+    "BID_WORKER_TIMEOUT": "45",
+    "BID_INACTIVITY_TIMEOUT": "30",
+    "BID_REPEAT_ACTION_LIMIT": "3",
+    "BID_MAX_TASK_REWORKS": "1",
+    "BID_MAX_MANAGER_REWORKS": "1",
+    "BID_PROVISIONAL_BATCH": "1",
+    "BID_MAX_SEARCHES": "0",
+    "BID_PROTOCOL_GRAMMAR": "1"
+  },
+  "commands": [
+    {
+      "command": "bid init <task>",
+      "returncode": 0,
+      "stdout": "Initializing project with task: Create hello.txt containing exactly the single line `hello from BID`, with one final newline. Do not create any other files.\nProject initialized. Use 'bid run' to start working.\n",
+      "stderr": ""
+    },
+    {
+      "command": "bid run",
+      "returncode": 1,
+      "stdout": "Worker 1...\nWorker 1 submitted T1 (normal, s2).\nRun failed: No valid reconciliation decision was found. task appears in both # Done and # Rework Return only the reconciliation sections.\n",
+      "stderr": ""
+    }
+  ],
+  "roles": {
+    "manager": 1,
+    "worker": 6,
+    "reviewer": 1,
+    "manager_reconcile": 3
+  },
+  "requests": 11,
+  "wall_s": 3.47,
+  "artifact_hex": "68656c6c6f2066726f6d204249440a",
+  "artifact_pass": true,
+  "todo": "- [-] T1 \u2014 Create hello.txt with one line containing `hello from BID` and a final newline.",
+  "vc_log": "\n## 02/11/2026\n\n### s0\nInitial project state\n\n## 02/11/2026\n\n### s1\nManager (init) completed.\nProject initialized\n\nworker raw response:\n  WRITE hello.txt\n  hello from BID\n\n  END WRITE\n\nworker parsed command:\n  WRITE hello.txt\n\nworker result:\n  wrote 15 bytes to hello.txt\n\nworker raw response:\n  READ hello.txt\n\nworker parsed command:\n  READ hello.txt\n\nworker result:\n  hello from BID\n\nworker raw response:\n  REPLACE hello.txt\n  hello from BID\n  ---REPLACE_WITH---\n  hello from BID\n\n  END REPLACE\n\nworker parsed command:\n  REPLACE hello.txt\n\nworker result:\n  replaced text in hello.txt\n\nworker raw response:\n  READ hello.txt\n\nworker parsed command:\n  READ hello.txt\n\nworker result:\n  hello from BID\n\nworker raw response:\n  WRITE hello.txt\n  hello from BID\n\n  END WRITE\n\nworker parsed command:\n  WRITE hello.txt\n\nworker result:\n  wrote 15 bytes to hello.txt\n\nworker raw response:\n  Done\n\nworker parsed command:\n  Done\n\nworker result:\n  done\n\n## 02/11/2026\n\n### s2\nWorker 1 completed.\nT1 candidate base=s1\nprovisional: task=T1 base=s1 candidate=s2 review=ACCEPT",
+  "full_loop": false,
+  "trace_sha256": "0f4ea72964762facbca27cd4bb4e32e7810d58a5d789ea28c5f5085c03b8558a"
+}

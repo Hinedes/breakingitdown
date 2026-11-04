@@ -1,0 +1,50 @@
+{
+  "identity": "development-smoke-2026-11-02-qwen3-4b-hello-no-grammar",
+  "source_identity": "working-tree-2026-11-02-reconcile-format-fix",
+  "source_manifest_sha256": "64ac4081a043b943979dc97d3f3bc9db2f53a2ddf981763b3f50ebf8409a2c38",
+  "task": "Create hello.txt containing exactly the single line `hello from BID`, with one final newline. Do not create any other files.",
+  "scenario": "hello",
+  "config": {
+    "BID_MODEL_ENDPOINT": "http://127.0.0.1:8082/v1/chat/completions",
+    "BID_MODEL_NAME": "Qwen3-4B-Instruct-2507-Q8_0",
+    "BID_MAX_TOKENS": "2048",
+    "BID_REQUEST_TIMEOUT": "20",
+    "BID_WORKER_TIMEOUT": "45",
+    "BID_INACTIVITY_TIMEOUT": "30",
+    "BID_REPEAT_ACTION_LIMIT": "3",
+    "BID_MAX_TASK_REWORKS": "1",
+    "BID_MAX_MANAGER_REWORKS": "1",
+    "BID_PROVISIONAL_BATCH": "1",
+    "BID_MAX_SEARCHES": "0",
+    "BID_PROTOCOL_GRAMMAR": "0"
+  },
+  "commands": [
+    {
+      "command": "bid init <task>",
+      "returncode": 0,
+      "stdout": "Initializing project with task: Create hello.txt containing exactly the single line `hello from BID`, with one final newline. Do not create any other files.\nProject initialized. Use 'bid run' to start working.\n",
+      "stderr": ""
+    },
+    {
+      "command": "bid run",
+      "returncode": 0,
+      "stdout": "Worker 1...\nWorker 1 submitted T1 (normal, s2).\nTask completed!\n",
+      "stderr": ""
+    }
+  ],
+  "roles": {
+    "manager": 1,
+    "worker": 4,
+    "reviewer": 1,
+    "manager_reconcile": 2
+  },
+  "requests": 8,
+  "wall_s": 2.158,
+  "artifact_hex": "68656c6c6f2066726f6d204249440a",
+  "artifact_pass": true,
+  "runnable_check": null,
+  "todo": "- [x] T1 \u2014 create hello.txt with the content `hello from BID` followed by a final newline",
+  "vc_log": "\n## 02/11/2026\n\n### s0\nInitial project state\n\n## 02/11/2026\n\n### s1\nManager (init) completed.\nProject initialized\n\nworker raw response:\n  WRITE hello.txt\n  hello from BID\n  END WRITE\n\nworker parsed command:\n  WRITE hello.txt\n\nworker result:\n  wrote 14 bytes to hello.txt; end=none;trailing=0\n\nworker raw response:\n  WRITE hello.txt\n  hello from BID\n  END WRITE\n\nworker parsed command:\n  WRITE hello.txt\n\nworker result:\n  wrote 14 bytes to hello.txt; end=none;trailing=0\n\nworker raw response:\n  WRITE hello.txt\n  hello from BID\n\n  END WRITE\n\nworker parsed command:\n  WRITE hello.txt\n\nworker result:\n  wrote 15 bytes to hello.txt; end=LF;trailing=1\n\nworker raw response:\n  Done\n\nworker parsed command:\n  Done\n\nworker result:\n  done\n\n## 02/11/2026\n\n### s2\nWorker 1 completed.\nT1 candidate base=s1\nprovisional: task=T1 base=s1 candidate=s2 review=ACCEPT\nratified: task=T1 base=s1 candidate=s2",
+  "full_loop": true,
+  "trace_sha256": "ae4dd55d827d28fd98aa45fece798bdd74821cda651451231958f0e417f4fbf8"
+}

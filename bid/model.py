@@ -1,9 +1,5 @@
-import json
-import re
-
-
 class ModelBackend:
-    def run(self, messages, tools, max_tokens=None):
+    def run(self, messages, tools, max_tokens=None, timeout=None, grammar=None):
         raise NotImplementedError
 
 
@@ -13,142 +9,18 @@ class LlamaCppBackend(ModelBackend):
         endpoint="http://127.0.0.1:8080/v1/chat/completions",
         model="smollm3-3b",
         timeout=120,
-        text_tools=False,
         max_tokens=32768,
+        seed=None,
+        role=None,
     ):
         self.endpoint = endpoint
         self.model = model
         self.timeout = timeout
-        self.text_tools = text_tools
         self.max_tokens = max_tokens
+        self.seed = seed
+        self.role = role
 
-    def _build_text_tool_system_message(self, messages, tools):
-        if not tools:
-            return messages
-
-        signatures = []
-        for tool in tools:
-            function = tool["function"]
-            properties = function.get("parameters", {}).get("properties", {})
-            required = set(function.get("parameters", {}).get("required", []))
-            parameters = []
-            for name, schema in properties.items():
-                suffix = "" if name in required else "?"
-                parameters.append(f"{name}{suffix}:{schema.get('type', 'str')}")
-            signatures.append(f"{function['name']}({','.join(parameters)})")
-
-        extra = (
-            "Tools: " + "; ".join(signatures) + "\n"
-            'Call tools as JSON: {"tool_calls":[{"tool":"read_file","arguments":{"path":"docs/x.md"}}]}\n'
-            "Use only listed tools. When all work is complete, output exactly Done."
-        )
-
-        output = []
-        inserted = False
-        for message in messages:
-            if message["role"] == "system" and not inserted:
-                output.append({"role": "system", "content": message["content"] + "\n" + extra})
-                inserted = True
-            else:
-                output.append(message)
-        if not inserted:
-            output.insert(0, {"role": "system", "content": extra})
-        return output
-
-    KNOWN_TOOLS = {
-        "list_files",
-        "read_file",
-        "write_file",
-        "replace_text",
-        "create_file",
-        "new_file",
-        "save_file",
-    }
-
-    def _parse_one_tool_obj(self, obj):
-        if not isinstance(obj, dict):
-            return None
-        calls = obj.get("tool_calls") or obj.get("toolCalls")
-        if isinstance(calls, list):
-            results = []
-            for call in calls:
-                name = call.get("tool") or call.get("name") or ""
-                arguments = call.get("arguments") or call.get("parameters") or {}
-                if name:
-                    results.append({"name": name, "arguments": json.dumps(arguments)})
-            return results
-        name = obj.get("tool") or obj.get("name") or ""
-        if name and "arguments" in obj:
-            return [{"name": name, "arguments": json.dumps(obj["arguments"])}]
-        for key, value in obj.items():
-            if key in self.KNOWN_TOOLS and isinstance(value, dict):
-                return [{"name": key, "arguments": json.dumps(value)}]
-        return None
-
-    def _parse_text_tool_calls(self, content):
-        if not content:
-            return None
-        raw = content.strip()
-        raw = re.sub(r'^```(?:json)?\s*|\s*```$', "", raw).strip()
-
-        parsed = self._try_parse_json(raw)
-        if parsed is not None:
-            calls = self._extract_tool_calls(parsed)
-            if calls:
-                return self._build_tool_call_list(calls)
-
-        calls = []
-        for line in raw.split("\n"):
-            parsed = self._try_parse_json(line.strip())
-            if parsed is None:
-                continue
-            extracted = self._extract_tool_calls(parsed)
-            if extracted:
-                calls.extend(extracted)
-        return self._build_tool_call_list(calls) if calls else None
-
-    def _try_parse_json(self, text):
-        if not text:
-            return None
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        while "}" in text:
-            end = text.rindex("}")
-            candidate = text[: end + 1]
-            try:
-                return json.loads(candidate)
-            except json.JSONDecodeError:
-                text = text[:end]
-        return None
-
-    def _extract_tool_calls(self, parsed):
-        if isinstance(parsed, list):
-            results = []
-            for item in parsed:
-                calls = self._parse_one_tool_obj(item)
-                if calls:
-                    results.extend(calls)
-            return results
-        if isinstance(parsed, dict):
-            return self._parse_one_tool_obj(parsed)
-        return None
-
-    def _build_tool_call_list(self, calls):
-        return [
-            {
-                "id": f"call_{call['name']}_{index}",
-                "type": "function",
-                "function": {
-                    "name": call["name"],
-                    "arguments": call["arguments"],
-                },
-            }
-            for index, call in enumerate(calls)
-        ]
-
-    def run(self, messages, tools, max_tokens=None):
+    def run(self, messages, tools, max_tokens=None, timeout=None, grammar=None):
         import httpx
 
         payload = {
@@ -163,15 +35,19 @@ class LlamaCppBackend(ModelBackend):
             "repetition_penalty": 1.0,
             "chat_template_kwargs": {"enable_thinking": True},
         }
+        if self.seed is not None:
+            payload["seed"] = self.seed
+        if grammar is not None:
+            payload["grammar"] = grammar
 
-        if tools and self.text_tools:
-            payload["messages"] = self._build_text_tool_system_message(messages, tools)
-        elif tools:
+        if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
 
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(self.endpoint, json=payload)
+        with httpx.Client(timeout=timeout if timeout is not None else self.timeout) as client:
+            headers = {"X-BID-Role": self.role} if self.role else {}
+            response = client.post(self.endpoint, json=payload,
+                                   **({"headers": headers} if headers else {}))
             if response.status_code == 400:
                 import sys
                 body = response.text[:2000]
@@ -185,14 +61,6 @@ class LlamaCppBackend(ModelBackend):
         if "usage" in data:
             message["usage"] = data["usage"]
 
-        if self.text_tools and message.get("content"):
-            tool_calls = self._parse_text_tool_calls(message["content"])
-            if tool_calls:
-                message["tool_calls"] = tool_calls
-                message["finish_reason"] = "tool_calls"
-                message["tool_transport"] = "text"
-        elif not self.text_tools:
-            message["tool_transport"] = "native"
         return message
 
 
@@ -205,12 +73,15 @@ class MockBackend(ModelBackend):
     def add_response(self, response):
         self.responses.append(response)
 
-    def run(self, messages, tools, max_tokens=None):
-        self.call_history.append({
+    def run(self, messages, tools, max_tokens=None, timeout=None, grammar=None):
+        call = {
             "messages": [dict(message) for message in messages],
             "tools": tools,
             "max_tokens": max_tokens,
-        })
+        }
+        if grammar is not None:
+            call["grammar"] = grammar
+        self.call_history.append(call)
         if self.call_index < len(self.responses):
             response = self.responses[self.call_index]
             self.call_index += 1

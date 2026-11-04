@@ -1,0 +1,50 @@
+{
+  "at": "2026-11-03",
+  "mode": "daemon started for accounting, 8 verified images removed, daemon stopped",
+  "daemon": {
+    "started_with": "/home/iclab/bid-benchmarks/swebench-verified20-2026-11-02/runtime/dockerd-rootless-start.sh",
+    "pid": 18,
+    "ready_after_s": 2,
+    "server": "29.9.2",
+    "driver": "overlayfs (containerd snapshotter)",
+    "data_root": "/home/iclab/.local/share/docker",
+    "stopped_with": "/home/iclab/bid-benchmarks/swebench-verified20-2026-11-02/runtime/dockerd-rootless-stop.sh",
+    "processes_after": "none (dockerd/containerd/rootlesskit)"
+  },
+  "docker_report": {
+    "images_before": 23,
+    "images_active_before": 0,
+    "images_size_before": "39.86 GB",
+    "images_reclaimable_before": "30.23 GB (75%)",
+    "containers": 0,
+    "containers_size": "0B",
+    "volumes": 0,
+    "volumes_size": "0B",
+    "build_cache_records": 154,
+    "build_cache_size": "39.86 GB",
+    "build_cache_private": "622.6 kB",
+    "build_cache_reclaimable": "622.6 kB",
+    "build_cache_note": "the 39.86 GB is shared with image layers; builder prune alone would free only ~0.6 MB while images exist"
+  },
+  "physical_before_daemon_start": 69458313216,
+  "physical_after_daemon_start": 66976154292,
+  "startup_gc_bytes": 2482158924,
+  "physical_after_removal": 61511925403,
+  "removal_physical_freed": 5464228889,
+  "totals": {
+    "physical_freed_total_from_original_audit": 7946387813,
+    "guest_used_before": 169661747200,
+    "guest_used_after": 163914027008,
+    "guest_available_after": 91752779776,
+    "host_c_free_after": 5567516672
+  },
+  "shared_vs_unique": {
+    "removed_images_logical_sum_bytes": 34661231686,
+    "physical_freed_bytes": 5464228889,
+    "explanation": "the 8 removed images shared most base layers with the 13 retained task images; Docker/containerd store each layer once, so removing an image frees only its unique layers"
+  },
+  "remaining_images": 15,
+  "remaining_task_images": 13,
+  "max_potential_if_all_pilot_images_removed": "Docker reported 30.23 GB reclaimable of 39.86 GB image size before this removal; deleting ALL images would free at most ~30-40 GB guest-side but would block all remaining grading and cost many hours to rebuild",
+  "actions_not_taken": ["no prune", "no container/volume removal", "no trim/compact", "no WSL stop", "no model/cell/grade"]
+}

@@ -1,0 +1,114 @@
+{
+  "launcher": "/home/iclab/bid-benchmarks/swebench-verified20-2026-11-02/runtime/remainder-2026-11-02/bid_swe_remainder.py",
+  "runtime": "/home/iclab/bid-benchmarks/swebench-verified20-2026-11-02/runtime/remainder-2026-11-02",
+  "started_utc": "2026-11-02T12:56:22Z",
+  "preflight_only": false,
+  "gates": {
+    "runs": 40,
+    "gold_resolved": 20,
+    "base_resolved": "django__django-10097",
+    "sha256": "1c0112cf0746b28b5eedee1c0de754fbbb3f64f9599ea1996fcf18a719372e42"
+  },
+  "checkpoint_snapshot": {
+    "django__django-10097--worker": {
+      "complete_sha256": "07b255bd89f1c93a0d394c64417674cdee9ed64640afe361f460b5ef8f9eefb0",
+      "prediction_sha256": "e524e5acc136bd91850528ea80da69a7e61b045732f2349bfd63bc69d01efe29",
+      "run_id": "verified20-worker-f4999e9656a5-a1-4c0992c00cff"
+    },
+    "django__django-10097--mini": {
+      "complete_sha256": "b78f18b539c6a6762c240296dd719083f8ff3ef31c05501dc1bc19ee82d8354b",
+      "prediction_sha256": "2a091ede010eac69a89e1bd27b996ae7688cef33e64a6158c8aab6481266834f",
+      "run_id": "verified20-mini-f4999e9656a5-a1-ead922bee6fa"
+    },
+    "django__django-10097--bid": {
+      "complete_sha256": "fb04a6c7589602e7cbfc0b67ef213d66626f5d97199ba0107ecafb7b854192dc",
+      "prediction_sha256": "c73910d3def9866a316f7c688520e10c7cd9d8bae1890ce586b846174b984665",
+      "run_id": "verified20-bid-f4999e9656a5-a1-7a2b2a22ea9c"
+    }
+  },
+  "missing_checkpoints": 57,
+  "env": {
+    "PATH": "/usr/local/bin:/usr/bin:/bin",
+    "HOME": "/home/iclab",
+    "PYTHONPATH": "/home/iclab/bid-benchmarks/swebench-verified20-2026-11-02/bid-source-f4999e9656a5",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTHONUTF8": "1",
+    "DOCKER_HOST": "unix:///home/iclab/.run/docker.sock",
+    "XDG_RUNTIME_DIR": "/home/iclab/.run"
+  },
+  "live_state": {
+    "ok": true,
+    "issues": [],
+    "info": {
+      "active_processes": "",
+      "containers": "",
+      "docker_server": "29.9.2",
+      "port_8081": "",
+      "disk_free_gb": 72.26
+    }
+  },
+  "canary_server_stopped": {
+    "sha256": "35c94dc65d4ccd9150af6713a20934125e2f9c57b0abcfa5eb21eb2454f1eb12",
+    "record": {
+      "pid": 18002,
+      "reason": "SIGTERM stopped process",
+      "stopped": true
+    }
+  },
+  "approval": {
+    "approved_utc": "2026-11-02T12:20:53Z",
+    "source": "f4999e9656a553321af77c2111340ac80c6899be1afe84a1e0d708d31a828f23",
+    "manifest": "9e662f1174352ffe349fd9e14ef0957aa8bee4308e3c502fcc56d572c995f0c0",
+    "scope": "first frozen issue all three arms only",
+    "issue": "django__django-10097",
+    "order": [
+      "worker",
+      "mini",
+      "bid"
+    ],
+    "gate": {
+      "gold_pass": 20,
+      "base_fail": 19,
+      "metric_blind": [
+        "django__django-10097"
+      ]
+    },
+    "metric_policy": "preserve raw all20 and separately predeclared19 discriminator subset; no claim of actual bug fix from metric-blind case"
+  },
+  "canary_result_sha256": "45e95dcb5db643f09d46479e2407bfe98d4694c7615fa7396940c262f426eac2",
+  "server": {
+    "pid": 23533,
+    "identity": {
+      "pid": 23533,
+      "starttime_ticks": 8181917
+    },
+    "props": {
+      "model_path": "/home/iclab/bid-models/Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf",
+      "model_alias": "Qwen3-4B-Instruct-2507-Q8_0",
+      "total_slots": 1,
+      "n_ctx": 65536
+    }
+  },
+  "server_stop": {
+    "stopped": true,
+    "pid": 23533,
+    "returncode": 0,
+    "pilot_stop": {
+      "stopped": true,
+      "pid": 23533,
+      "reason": "SIGTERM stopped process"
+    },
+    "wrapper_escalated": false,
+    "alive_after_stop": false,
+    "at": "2026-11-02T12:57:22Z"
+  },
+  "canary_checkpoints_unchanged": true,
+  "checkpoints_present": 4,
+  "ran_cells": 1,
+  "skipped_cells": 3,
+  "paused": "django__django-11133--mini: grader completed_instances=0",
+  "fatal": null,
+  "finished_utc": "2026-11-02T12:57:22Z",
+  "status": "paused",
+  "launcher_returncode": 3
+}

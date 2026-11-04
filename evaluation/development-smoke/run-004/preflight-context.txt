@@ -1,0 +1,1 @@
+Preflight failure preserved in run-003: server log creation made the runner output directory exist before the first invocation.

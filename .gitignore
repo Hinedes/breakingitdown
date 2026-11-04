@@ -1,3 +1,10 @@
 bid/__pycache__/
 __pycache__/
 *.pyc
+
+# raw run artifacts stay local; the reports in evaluation/ summarise them
+evaluation/development-smoke/**/trace.jsonl
+evaluation/development-smoke/**/server.log
+evaluation/development-smoke/**/workspace/
+evaluation/development-smoke/**/workspace-events/
+evaluation/development-smoke/**/source/

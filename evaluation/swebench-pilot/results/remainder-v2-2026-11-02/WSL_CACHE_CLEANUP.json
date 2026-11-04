@@ -1,0 +1,59 @@
+{
+  "at": "2026-11-02 (APT completion 2026-11-03 00:00 local)",
+  "mode": "user-authorized scoped cache deletions; read-only sizing after",
+  "groups": {
+    "apt": {
+      "path": "/var/cache/apt/archives",
+      "bytes_before": 6088473504,
+      "deb_before": 126,
+      "deleted": true,
+      "first_attempt": "blocked: no passwordless sudo; directory root:root 755",
+      "completed_via": "wsl -d Ubuntu-22.04 -u root -- /usr/bin/apt-get clean",
+      "returncode": 0,
+      "deb_after": 0,
+      "bytes_after": 24576,
+      "deleted_bytes": 6088448928,
+      "notes": "root launch verified (uid=0), canonical path, no active apt/dpkg process, locks untouched"
+    },
+    "huggingface_hub": {
+      "path": "/home/iclab/.cache/huggingface/hub",
+      "bytes_before": 5011994420,
+      "deleted_bytes": 5011990323,
+      "repos": [
+        {"path": "models--meta-llama--Llama-3.2-1B", "bytes": 4954732827},
+        {"path": "datasets--nyu-mll--glue", "bytes": 57236976},
+        {"path": "models--EleutherAI--pythia-410m", "bytes": 8232},
+        {"path": ".locks", "bytes": 12288}
+      ],
+      "symlink_safety": "no symlink inside hub resolved outside hub (checked with readlink -f before delete)",
+      "preserved": ["token", "stored_tokens", ".agent_harnesses.json", "datasets/ (118.7 MB)", "xet/ (0.7 MB)", "hub/version.txt"],
+      "bytes_after": 119470626
+    },
+    "installers": {
+      "deleted": [
+        {"path": "/home/iclab/Anaconda3-2023.09-0-Linux-x86_64.sh", "bytes": 1153404010},
+        {"path": "/home/iclab/Miniconda3-latest-Linux-x86_64.sh", "bytes": 162067098}
+      ],
+      "deleted_bytes": 1315471108,
+      "verified": "regular non-symlink .sh files, sizes matched the audit"
+    }
+  },
+  "deleted_total_bytes": 12415910359,
+  "deleted_total_gib": 11.56,
+  "guest_df_before": {"used": 182227968000, "available": 73438838784},
+  "guest_df_after": {"used": 169662173184, "available": 86004633600},
+  "host_c_free_before": 5735329792,
+  "host_c_free_after": 5694988288,
+  "host_vs_guest": "guest freed ~11.56 GiB; host C: still ~5.3 GB because no fstrim/compact was run",
+  "compact_needed": true,
+  "preserved_never_touched": [
+    "/home/iclab/bid-models (GGUF weights)",
+    "/home/iclab/grafting-resume (checkpoints/evidence)",
+    "/home/iclab/bid-studies",
+    "/home/iclab/bid-benchmarks (runs, images, frozen rows, provenance)",
+    "/home/iclab/BreakItDown",
+    "/home/iclab/bid-eval",
+    "venvs, .local/share/uv, .local/lib, docker data/images"
+  ],
+  "actions_not_taken": ["no compact/trim", "no wsl shutdown", "no model/cell/grade", "no package uninstall/autoremove/purge", "no docker prune"]
+}

@@ -1,0 +1,325 @@
+{
+  "budgets": {
+    "context_tokens": 65536,
+    "max_generated_tokens_per_request": 4096,
+    "max_searches_per_worker": 0,
+    "prompt_plus_completion_tokens": 180000,
+    "protocol_grammar": false,
+    "provisional_batch": 1,
+    "wall_seconds": 600
+  },
+  "conditions": [
+    "bid",
+    "worker",
+    "mini"
+  ],
+  "controller": {
+    "agent_container": "no persistent agent container; per-RUN container mounts project only, network none, cap-drop ALL, no-new-privileges",
+    "max_searches_per_worker": 0,
+    "mini": {
+      "cap_drop": "ALL",
+      "cost_tracking": "ignore_errors",
+      "max_tokens": 4096,
+      "network": "none",
+      "no_new_privileges": true,
+      "sampling": "temperature 0.6, top_p 0.95, top_k 20, min_p 0, presence 0, repetition 1",
+      "seed": "per issue",
+      "version": "2.4.6"
+    },
+    "patch_extraction": "container: network none, cap-drop ALL, read-only root, project mount only",
+    "pilot": "pilot.py validates manifest, walks 60-cell order, grades uniquely, checkpoints atomically, monitors disk",
+    "policy_location": "host controller; each RUN is a fresh offline container at /testbed",
+    "protocol_grammar": false,
+    "provisional_batch": 1,
+    "proxy": "apply-template + tokenize preflight, atomic reservation, fail closed on missing usage, fixed sampling/seed, JSONL audit + bounded trace",
+    "repo_checkout": "shallow init/fetch of the public base commit only; origin/refs/logs removed",
+    "task_statement": "exact public problem_statement injected into every Worker prompt",
+    "wall": "proxy writes monotonic deadline at first request; common watchdog kills runner and per-RUN/mini containers at deadline"
+  },
+  "created_at": "2026-11-02T05:55:00Z",
+  "dataset": {
+    "parquet_sha256": "a45b1fe4e2f0c8390b2b2938ac83e92ed5979000856808f3679c07812e9e6dcd",
+    "pool_size": 500,
+    "repo": "princeton-nlp/SWE-bench_Verified",
+    "revision": "c104f840cc67f8b6eec6f759ebc8b2693d585d4a",
+    "split": "test"
+  },
+  "grading": {
+    "enriched_rows": 20,
+    "enriched_rows_sha256": "3e9db0c781c6a163352e4493d39eb23c5176890fcff33ee94c00aeea56bc66b1",
+    "hidden_data_location": "grading/ (mode 0600, controller only)",
+    "p2p_deltas": {
+      "django__django-10097": {
+        "dataset_count": 1432,
+        "dataset_sha256": "d3e3791be332cf7abcd0090e5698f412941b8486f3bbcdf18496bdb288bc83fe",
+        "policy": "grading uses the frozen dataset PASS_TO_PASS",
+        "task_repo_count": 1427,
+        "task_repo_sha256": "c39a3f1af934b7a77a7fb092156f31614e63a304e876faf6354c54fedcc1027b"
+      }
+    },
+    "sanity_instance": "sympy__sympy-20590",
+    "sanity_rows_sha256": "6c0360a623986c9a5847279e5366adf34d5ec284d0469279e999e64c664715fe",
+    "task_repo_commit": "3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d"
+  },
+  "instances": [
+    {
+      "base_commit": "b9cf764be62e77b4777b3a75ec256f6209a57671",
+      "generation_seed": 748370930,
+      "instance_id": "django__django-10097",
+      "order": [
+        "worker",
+        "mini",
+        "bid"
+      ],
+      "problem_statement_sha256": "2288319e7e72693551b8454b5c63f165f23dfb32bc6579ad03602d3cd311bdaa",
+      "repo": "django/django"
+    },
+    {
+      "base_commit": "879cc3da6249e920b8d54518a0ae06de835d7373",
+      "generation_seed": 827633676,
+      "instance_id": "django__django-11133",
+      "order": [
+        "mini",
+        "bid",
+        "worker"
+      ],
+      "problem_statement_sha256": "a7f427b7eb3f746b6985030b467a99099e6e3453319297a41e35effa7c32b8ed",
+      "repo": "django/django"
+    },
+    {
+      "base_commit": "c2678e49759e5c4c329bff0eeca2886267005d21",
+      "generation_seed": 2030776260,
+      "instance_id": "django__django-11820",
+      "order": [
+        "bid",
+        "worker",
+        "mini"
+      ],
+      "problem_statement_sha256": "8037de3210e730f87afe64ed1280846ba8d4d7e23c7720cba65ebe389ce36a7e",
+      "repo": "django/django"
+    },
+    {
+      "base_commit": "29c126bb349526b5f1cd78facbe9f25906f18563",
+      "generation_seed": 869191767,
+      "instance_id": "django__django-12325",
+      "order": [
+        "bid",
+        "mini",
+        "worker"
+      ],
+      "problem_statement_sha256": "8f920ccb5f6169fecd052cc74e6c0149701d063e78802c8f33d585a69bb18c02",
+      "repo": "django/django"
+    },
+    {
+      "base_commit": "f4e93919e4608cfc50849a1f764fd856e0917401",
+      "generation_seed": 1118415884,
+      "instance_id": "django__django-13212",
+      "order": [
+        "worker",
+        "bid",
+        "mini"
+      ],
+      "problem_statement_sha256": "a79d287e01597f81eca52a95eafec22b22872f3dc0e06b8837a711242627b150",
+      "repo": "django/django"
+    },
+    {
+      "base_commit": "d90e34c61b27fba2527834806639eebbcfab9631",
+      "generation_seed": 1612791272,
+      "instance_id": "django__django-15499",
+      "order": [
+        "mini",
+        "worker",
+        "bid"
+      ],
+      "problem_statement_sha256": "5b157eb69d1b4d671f1f1751692541bfd58a51abda2269af5968a299640619ad",
+      "repo": "django/django"
+    },
+    {
+      "base_commit": "b4817d20b9e55df30be0b1b2ca8c8bb6d61aab07",
+      "generation_seed": 1567088311,
+      "instance_id": "django__django-15851",
+      "order": [
+        "worker",
+        "mini",
+        "bid"
+      ],
+      "problem_statement_sha256": "f4d50fcd56c36967abc5518f3cf22d8f7cdec73d9ee380ead21efd6c4e434526",
+      "repo": "django/django"
+    },
+    {
+      "base_commit": "2480554dc4ada4ecf3f6a08e318735a2e50783f3",
+      "generation_seed": 284302893,
+      "instance_id": "django__django-15973",
+      "order": [
+        "mini",
+        "bid",
+        "worker"
+      ],
+      "problem_statement_sha256": "8f96852cd0ac22cf509a263bbe10456db887c640e893fc4c49f453b45e1ed023",
+      "repo": "django/django"
+    },
+    {
+      "base_commit": "0eb3e9bd754e4c9fac8b616b705178727fc8031e",
+      "generation_seed": 1336445906,
+      "instance_id": "django__django-16662",
+      "order": [
+        "bid",
+        "worker",
+        "mini"
+      ],
+      "problem_statement_sha256": "42e240ffdb04350697f828e621ac52538d02097c07e3bd29e2e48e7005968beb",
+      "repo": "django/django"
+    },
+    {
+      "base_commit": "97fc1154992f64cfb2f86321155a7404efeb2d8a",
+      "generation_seed": 388955747,
+      "instance_id": "matplotlib__matplotlib-23314",
+      "order": [
+        "bid",
+        "mini",
+        "worker"
+      ],
+      "problem_statement_sha256": "e724887a3c1acc1c91e3f2fefb8d9e30bafcf58b3d6d1696dc8f57e77fd90cba",
+      "repo": "matplotlib/matplotlib"
+    },
+    {
+      "base_commit": "22623bd8c265b78b161542663ee980738441c307",
+      "generation_seed": 1526740560,
+      "instance_id": "psf__requests-1142",
+      "order": [
+        "worker",
+        "bid",
+        "mini"
+      ],
+      "problem_statement_sha256": "0192533ff2ef0c53a600b3ef02cb9dc20bf0998d56eeaee80ca1a76c46758eec",
+      "repo": "psf/requests"
+    },
+    {
+      "base_commit": "c4e40d991c28be51de9ac560ce895ac7f9b14924",
+      "generation_seed": 1166383126,
+      "instance_id": "pydata__xarray-6938",
+      "order": [
+        "mini",
+        "worker",
+        "bid"
+      ],
+      "problem_statement_sha256": "80200279ed4af4b8b73e3d9bf2ec5a39dbded0c3e337b1b944253fd7b7b04248",
+      "repo": "pydata/xarray"
+    },
+    {
+      "base_commit": "1d1619ef913b99b06647d2030bddff4800abdf63",
+      "generation_seed": 475420442,
+      "instance_id": "pylint-dev__pylint-4661",
+      "order": [
+        "worker",
+        "mini",
+        "bid"
+      ],
+      "problem_statement_sha256": "9888ff5d07c438e865ef06f4e23337fdf555c438756ab3d74e75abea222cb932",
+      "repo": "pylint-dev/pylint"
+    },
+    {
+      "base_commit": "684a1d6aa0a6791e20078bc524f97c8906332390",
+      "generation_seed": 1106559356,
+      "instance_id": "pylint-dev__pylint-7277",
+      "order": [
+        "mini",
+        "bid",
+        "worker"
+      ],
+      "problem_statement_sha256": "dc1d852f34bf1341c1a0ba290aba65e3cd34b15cc2060f5c96e5eaa4fdf946d5",
+      "repo": "pylint-dev/pylint"
+    },
+    {
+      "base_commit": "3c1534944cbd34e8a41bc9e76818018fadefc9a1",
+      "generation_seed": 1035235025,
+      "instance_id": "pytest-dev__pytest-10356",
+      "order": [
+        "bid",
+        "worker",
+        "mini"
+      ],
+      "problem_statement_sha256": "04324b4ba13d4d4a7c28e790561dc0927851fc39eb3d245b2e688bb6a0de3174",
+      "repo": "pytest-dev/pytest"
+    },
+    {
+      "base_commit": "aca3f825f2e4a8817190f3c885a242a285aa0dba",
+      "generation_seed": 1925271962,
+      "instance_id": "sphinx-doc__sphinx-7454",
+      "order": [
+        "bid",
+        "mini",
+        "worker"
+      ],
+      "problem_statement_sha256": "a93b807ebfda03f2b54e0acea6736e85b625421a0f992d4330a5fa283e127438",
+      "repo": "sphinx-doc/sphinx"
+    },
+    {
+      "base_commit": "212fd67b9f0b4fae6a7c3501fdf1a9a5b2801329",
+      "generation_seed": 618753329,
+      "instance_id": "sphinx-doc__sphinx-7757",
+      "order": [
+        "worker",
+        "bid",
+        "mini"
+      ],
+      "problem_statement_sha256": "3f43b5effb6183c93b07ad0706394845cec8f7306b6fad5d9b60b531bad2328d",
+      "repo": "sphinx-doc/sphinx"
+    },
+    {
+      "base_commit": "aa9780761ad8c3c0f68beeef3a0ce5caac9e100b",
+      "generation_seed": 911299906,
+      "instance_id": "sympy__sympy-12489",
+      "order": [
+        "mini",
+        "worker",
+        "bid"
+      ],
+      "problem_statement_sha256": "33f4a1134633597866883bbd4ac04b3642fda8ae680822b1c44d5a5e82b8ce28",
+      "repo": "sympy/sympy"
+    },
+    {
+      "base_commit": "82298df6a51491bfaad0c6d1980e7e3ca808ae93",
+      "generation_seed": 668182964,
+      "instance_id": "sympy__sympy-20916",
+      "order": [
+        "worker",
+        "mini",
+        "bid"
+      ],
+      "problem_statement_sha256": "728c710a38f30dcfc83a99f11302f2ff4f69c34b26b6d1daf40f27e289fe550c",
+      "repo": "sympy/sympy"
+    },
+    {
+      "base_commit": "e8c22f6eac7314be8d92590bfff92ced79ee03e2",
+      "generation_seed": 1237652508,
+      "instance_id": "sympy__sympy-24213",
+      "order": [
+        "mini",
+        "bid",
+        "worker"
+      ],
+      "problem_statement_sha256": "643ce391df54dc5676bb5ccb2bc1f1a1963be8b0f54cee9bc816a1fe1ca2310b",
+      "repo": "sympy/sympy"
+    }
+  ],
+  "manifest_sha256": "b2fca9aff781565bc615b866e7f2157432a1c6b88ca11c8694dddfdc57ae48ea",
+  "pins": {
+    "bid_source_manifest": "SOURCE_FINGERPRINTS.sha256",
+    "bid_source_sha256": "74416f0b2f290b99f0af1f9b9110cf6878dcc59a57d91c7aa245e2131fb20c94",
+    "evaluator_swebench": "02e7a74ffd0b707aab73d203fe87bdc7c76afc8e",
+    "llama_cpp": "8642541b255bfb5dc39cd351a178be09013a55d6",
+    "mini_swe_agent": "04d809ceab9df28f9adaed044884180159172930",
+    "model_sha256": "260b5b5b6ad73e44df81a43ea1f5c11c37007b6bac18eb3cd2016e8667c19662",
+    "source_policy": "bid/, prompts/, pyproject.toml, evaluation/swebench-pilot/*.py",
+    "task_repo": "3d07b464b7b311a0cbfb5ed5b2d8a3b96f84a33d"
+  },
+  "sample": {
+    "algorithm": "sorted IDs; random.Random(seed).sample(ids, 20); output sorted by ID",
+    "count": 20,
+    "ids_sha256": "5aa9838900afdf9e43b9759975275b6ec5517ff942735364dc6a562c05ac9eed",
+    "seed": 20261102
+  },
+  "schema": 1,
+  "task_inputs_sha256": "f6f4b1c473cbbc48f05fb363e170f9587ab04449128a669ba771628d3aaa9286"
+}

@@ -1,0 +1,45 @@
+{
+  "at": "2026-11-03",
+  "authorization": "user: remove verified unused images; primary: 7 completed issues + sanity if unused",
+  "removed": [
+    {"tag": "swebench/sweb.eval.x86_64.django_1776_django-10097:latest", "id": "sha256:f65dd477b2f529e03edd29476dea1c0472e654dbc79537aff58f6b3c17b24555", "logical_size": 4507065808},
+    {"tag": "swebench/sweb.eval.x86_64.django_1776_django-11133:latest", "id": "sha256:779b228bb47f6541826c8aa5c748a2ab1c6a80a90358b3808817f17e5d2731c7", "logical_size": 4268943267},
+    {"tag": "swebench/sweb.eval.x86_64.django_1776_django-11820:latest", "id": "sha256:510db3a5b9dd3f0af4044f0f93d6a387c59e1d68b893830ca8877d4aa08afe0d", "logical_size": 4273656567},
+    {"tag": "swebench/sweb.eval.x86_64.django_1776_django-12325:latest", "id": "sha256:9b7e5414f870bcb0796cc22a0bbc8d8d0c48f2844de245d4a87592cbfa45f61a", "logical_size": 4276761038},
+    {"tag": "swebench/sweb.eval.x86_64.django_1776_django-13212:latest", "id": "sha256:a200f61d88b343c8cd5aa6e6cc1142c95712d350af3e92edea0f629250c2664f", "logical_size": 4287901276},
+    {"tag": "swebench/sweb.eval.x86_64.django_1776_django-15499:latest", "id": "sha256:5136f88d8f06d466dbac2a741b4b9cfa5bd18f0a0231afd2feba24b55a328336", "logical_size": 4486459544},
+    {"tag": "swebench/sweb.eval.x86_64.django_1776_django-15851:latest", "id": "sha256:c4be812f4cc694f518df8f16945a072d4f9d1da03b8cc067a2deb5905589fc68", "logical_size": 4490125334},
+    {"tag": "swebench/sweb.eval.x86_64.sympy_1776_sympy-20590:latest + sweb.eval.x86_64.sympy__sympy-20590:latest (same image, both tags removed)", "id": "sha256:4c4197857db24f7739a2344270b60744a375c10b2a847731f7dcab2db669250f", "logical_size": 4070320852}
+  ],
+  "retained_task_images": [
+    {"tag": "swebench/sweb.eval.x86_64.django_1776_django-15973:latest", "id": "sha256:cf7cde0e6b8329d6ded22234e09c3ea16adcb4d7f5e0ae60e658639dfc317f0d", "reason": "worker arm unfinished"},
+    {"tag": "swebench/sweb.eval.x86_64.django_1776_django-16662:latest", "id": "sha256:1c897d2d75d5e2913c0aeecfbc2133e4316c46b7bd6c63ba27d23447069b93f2", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.matplotlib_1776_matplotlib-23314:latest", "id": "sha256:4d5bf24fd30e95fd3083ff7220c8c581beacb66ec2de1f2b264d04870794ebd1", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.psf_1776_requests-1142:latest", "id": "sha256:c883d93bf8789629954c4fd6ce5f00a0cadcf131b364f467f9db2f6aff50b786", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.pydata_1776_xarray-6938:latest", "id": "sha256:3538e045f342a3a8800ab0d55871d02f01f4819b902c948477b8e833a02020b0", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.pylint-dev_1776_pylint-4661:latest", "id": "sha256:93bb03bd72607a90d138d9c1b84f44318e6ed24aaaaa784306efb09692981492", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.pylint-dev_1776_pylint-7277:latest", "id": "sha256:6a1215d4135e5f1d461fe04680f30165d29b9958632cd5ff33785be4d78e697d", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.pytest-dev_1776_pytest-10356:latest", "id": "sha256:8acb59b01699ce7f864699bb6c6151793fe23f0f0581f49f724d6f05d9607ffc", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-7454:latest", "id": "sha256:8342cd3dcf4facfcf710c14194fec128ebf8cd64262bd90e16058bbbeff98607", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.sphinx-doc_1776_sphinx-7757:latest", "id": "sha256:d194d83af773ffaef46209244eb0eb454f205d4c1b3d2da206ef1511041521a6", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.sympy_1776_sympy-12489:latest", "id": "sha256:f12492f15c1e9ee68246c34b469fb3a6eb172f014dc5ee92fc922d3eb0e8373b", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.sympy_1776_sympy-20916:latest", "id": "sha256:a041be29142763505cb5956103fbc3a4e8a025c5f6a644902ddcb8c505533797", "reason": "not started"},
+    {"tag": "swebench/sweb.eval.x86_64.sympy_1776_sympy-24213:latest", "id": "sha256:e0c14ce9947d4d096c3ae972a81862727fb9b8cc6f35a4bc31db8e239f3339f0", "reason": "not started"}
+  ],
+  "retained_non_task": ["alpine:3.20", "bid-buildtest:latest (not pilot scope; untouched)"],
+  "removed_count": 8,
+  "logical_removed_bytes": 34661231686,
+  "physical_freed_bytes": 5464228889,
+  "physical_note": "shared base layers remain for the 13 retained task images; actual freed is far below the 34.66 GB logical sum",
+  "before_after": {
+    "du_before": 66976154292,
+    "du_after": 61511925403,
+    "guest_used_before": 169661747200,
+    "guest_used_after": 163914027008,
+    "guest_available_after": 91752779776,
+    "host_c_free_after": 5567516672
+  },
+  "rebuild": "images are recreatable from the pinned Dockerfiles/task defs; expected rebuild cost is hours",
+  "no_force_used": true,
+  "conflicts": "none"
+}

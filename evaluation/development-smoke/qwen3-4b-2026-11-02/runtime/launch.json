@@ -1,0 +1,27 @@
+{
+  "treatment": "development-smoke-2026-11-02-qwen3-4b-instruct-2507-q8_0",
+  "command": [
+    "/home/iclab/bid-llama-runtime/src/llama.cpp/build/bin/llama-server",
+    "--model", "/home/iclab/bid-models/Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf",
+    "--host", "127.0.0.1", "--port", "8081",
+    "--alias", "Qwen3-4B-Instruct-2507-Q8_0",
+    "--ctx-size", "65536", "--kv-unified-per-slot", "65536",
+    "--parallel", "1", "--n-gpu-layers", "99",
+    "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",
+    "--no-context-shift", "--n-predict", "8192", "--jinja", "--seed", "20261124",
+    "--verbosity", "4"
+  ],
+  "model_sha256": "260b5b5b6ad73e44df81a43ea1f5c11c37007b6bac18eb3cd2016e8667c19662",
+  "repository": "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
+  "revision": "ae44f08e1392f39c0e474af10c3ff8355c8b6688",
+  "filename": "Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf",
+  "size_bytes": 4280405216,
+  "base_model": "Qwen/Qwen3-4B-Instruct-2507",
+  "license": "Apache-2.0",
+  "quantization": "Q8_0 weights; Q8_0 K/V cache",
+  "context_requested": 65536,
+  "slots": 1,
+  "gpu_layers_requested": 99,
+  "llama_cpp_commit": "8642541b255bfb5dc39cd351a178be09013a55d6",
+  "endpoint": "http://127.0.0.1:8081"
+}

@@ -1,0 +1,236 @@
+{
+  "manager_names_target_file": {
+    "rule": "manager.names_target_file",
+    "passed": 19,
+    "n": 20,
+    "trials": [
+      {
+        "items": 0,
+        "first_attempt": false,
+        "names_file": false
+      },
+      {
+        "items": 3,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 4,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 8,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 3,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 5,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      },
+      {
+        "items": 1,
+        "first_attempt": true,
+        "names_file": true
+      }
+    ]
+  },
+  "worker_one_command": {
+    "rule": "worker.one_command_per_response",
+    "passed": 17,
+    "n": 20,
+    "trials": [
+      {
+        "responses": 279,
+        "single_command": 279,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 12,
+        "single_command": 12,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 12,
+        "single_command": 12,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 22,
+        "single_command": 22,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 15,
+        "single_command": 15,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 24,
+        "single_command": 24,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 15,
+        "single_command": 15,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 279,
+        "single_command": 279,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 192,
+        "single_command": 120,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 192,
+        "single_command": 120,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 279,
+        "single_command": 279,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 25,
+        "single_command": 25,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 20,
+        "single_command": 20,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 13,
+        "single_command": 13,
+        "max_missing_run": 1,
+        "found_target": true
+      },
+      {
+        "responses": 12,
+        "single_command": 12,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 12,
+        "single_command": 12,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 37,
+        "single_command": 37,
+        "max_missing_run": 1,
+        "found_target": false
+      },
+      {
+        "responses": 12,
+        "single_command": 12,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 205,
+        "single_command": 129,
+        "max_missing_run": 2,
+        "found_target": true
+      },
+      {
+        "responses": 279,
+        "single_command": 279,
+        "max_missing_run": 2,
+        "found_target": true
+      }
+    ]
+  }
+}

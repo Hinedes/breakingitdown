@@ -281,37 +281,3 @@ def execute_search(workspace, task_number, query, cache, provider, max_results=5
     rel_path = _write_search_result(workspace, task_number, query, results, provider.provider_name)
     cache.put(query, results, rel_path, provider.provider_name)
     return rel_path, len(results), None, False
-
-
-# ── Citation enforcement ─────────────────────────────────────────────
-
-_EVIDENCE_PATH_RE = re.compile(r"docs/research/T\d+/search-\d+\.md")
-_EVIDENCE_URL_RE = re.compile(r"https?://[^\s\)\"']+")
-
-
-def has_citations(artifact_text, research_dir):
-    """Check if artifact text references a stored evidence path or URL from research."""
-    if not artifact_text:
-        return False
-    # Check for evidence file paths
-    if _EVIDENCE_PATH_RE.search(artifact_text):
-        return True
-    # Check for URLs found in this task's research files
-    if not os.path.isdir(research_dir):
-        return False
-    known_urls = set()
-    for fname in os.listdir(research_dir):
-        fpath = os.path.join(research_dir, fname)
-        if not os.path.isfile(fpath):
-            continue
-        try:
-            with open(fpath, encoding="utf-8") as f:
-                content = f.read()
-            for m in _EVIDENCE_URL_RE.finditer(content):
-                known_urls.add(m.group(0))
-        except OSError:
-            pass
-    for m in _EVIDENCE_URL_RE.finditer(artifact_text):
-        if m.group(0) in known_urls:
-            return True
-    return False

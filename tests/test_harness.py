@@ -1,10 +1,13 @@
 import json
+import errno
 import os
 import sys
 import tempfile
 import types
+import pytest
+from tests import open_utf8 as open
 
-from bid import adapter, harness, model, todo, vc
+from bid import __version__, adapter, harness, model, todo, vc
 
 
 def text_response(text):
@@ -25,6 +28,7 @@ def config(workspace, **overrides):
         "worker_timeout": 30,
         "repeat_action_limit": 3,
         "max_searches_per_worker": 5,
+        "allow_host_run": True,
     }
     values.update(overrides)
     return values
@@ -33,6 +37,13 @@ def config(workspace, **overrides):
 def todo_item(number, desc, checked=False):
     mark = "x" if checked else " "
     return f"- [{mark}] T{number} — {desc}\n"
+
+
+def test_manager_todo_rejects_placeholder_descriptions():
+    tasks = todo.parse_todo("- [ ] T1 — Description\n")
+    valid, reason = adapter.validate_todo_tasks(tasks)
+    assert not valid
+    assert reason == "T1 has a placeholder description"
 
 
 def manager_response(done=None, rework=None, add=None, replace=None, project="COMPLETE"):
@@ -103,7 +114,14 @@ def make_existing_project(workspace):
         with open(path, "wb") as file:
             file.write(content)
     os.chmod(os.path.join(workspace, "script"), 0o755)
-    os.symlink("argus/solve.py", os.path.join(workspace, "solve-link"))
+    try:
+        os.symlink("argus/solve.py", os.path.join(workspace, "solve-link"))
+    except NotImplementedError as exc:
+        pytest.skip(f"symlink support unavailable: {exc}")
+    except OSError as exc:
+        if exc.errno == errno.ENOSYS or getattr(exc, "winerror", None) == 1314:
+            pytest.skip(f"symlink support unavailable: {exc}")
+        raise
     return files
 
 
@@ -118,6 +136,24 @@ def assert_existing_project(workspace, files):
 
 
 class TestInitProject:
+    def test_existing_backup_is_preserved_and_init_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "project")
+            os.mkdir(workspace)
+            sentinel = os.path.join(tmp, ".bid_backup")
+            os.mkdir(sentinel)
+            payload = os.path.join(sentinel, "user-data.txt")
+            with open(payload, "w", encoding="utf-8") as file:
+                file.write("keep")
+
+            result = harness.init_project(
+                "Task", config(workspace), backend=model.MockBackend()
+            )
+
+            assert result["status"] == "error"
+            assert os.path.isfile(payload)
+            assert os.path.isdir(workspace)
+
     def test_existing_project_is_preserved_and_snapshotted(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = os.path.join(tmp, "project")
@@ -408,6 +444,48 @@ def test_run_timeout_invalid_env_fails():
             del os.environ["BID_RUN_TIMEOUT"]
 
 
+def test_host_run_requires_exact_opt_in(monkeypatch):
+    monkeypatch.delenv("BID_ALLOW_HOST_RUN", raising=False)
+    assert harness.get_config()["allow_host_run"] is False
+    monkeypatch.setenv("BID_ALLOW_HOST_RUN", "1")
+    assert harness.get_config()["allow_host_run"] is True
+    monkeypatch.setenv("BID_ALLOW_HOST_RUN", "true")
+    assert harness.get_config()["allow_host_run"] is False
+
+
+def test_protocol_grammar_requires_exact_opt_in(monkeypatch):
+    monkeypatch.delenv("BID_PROTOCOL_GRAMMAR", raising=False)
+    assert harness.get_config()["protocol_grammar"] is False
+    monkeypatch.setenv("BID_PROTOCOL_GRAMMAR", "1")
+    assert harness.get_config()["protocol_grammar"] is True
+    monkeypatch.setenv("BID_PROTOCOL_GRAMMAR", "true")
+    assert harness.get_config()["protocol_grammar"] is False
+
+
+def test_worker_grammar_only_enables_available_commands():
+    from bid import protocol
+
+    grammar = protocol.grammar_for(
+        {
+            "protocol_grammar": True,
+            "max_searches_per_worker": 0,
+            "allow_host_run": False,
+        },
+        "worker",
+    )
+
+    assert 'command ::= read | write | replace | "Done"' in grammar
+    assert 'command ::= read | search | run | write' not in grammar
+
+
+def test_runtime_version_matches_normalized_project_version():
+    import tomllib
+
+    with open(os.path.join(os.path.dirname(__file__), "..", "pyproject.toml"), "rb") as file:
+        project_version = tomllib.load(file)["project"]["version"]
+    assert __version__ == project_version == "0.2.0rc1"
+
+
 # ── Implicit write evidence counting (integration-level) ───────────
 
 def test_implicit_write_tagged_in_parser():
@@ -475,12 +553,21 @@ class TestReviewerContracts:
             with open(os.path.join(tmp, "docs", "manager.md"), encoding="utf-8") as file:
                 system = file.read()
             assert backend.call_history[0]["messages"][0]["content"] == system
-            assert "- [ ] Description" in system
+            assert "- [ ] ` followed by a concrete file-producing task" in system
             assert "numbered checklist" not in system
             assert "T1" not in system
             assert "T2" not in system
-            assert "- [ ] Description" in backend.call_history[0]["messages"][1]["content"]
+            assert "exact prefix `- [ ] ` for each line" in backend.call_history[0]["messages"][1]["content"]
             assert "T1" not in backend.call_history[0]["messages"][1]["content"]
+            user_prompt = backend.call_history[0]["messages"][1]["content"]
+            assert user_prompt.count("# Task") == 1
+            assert "If a step is a deliberate no-op, that is fine." not in system + user_prompt
+            assert "Do not add no-op items" in " ".join(system.split())
+            assert "Do not add a separate task to verify" in " ".join(system.split())
+            assert "final newline as formatting, not as escaped characters" in " ".join(system.split())
+            assert "target file or files" in user_prompt
+            assert "copy all required text verbatim" in user_prompt
+            assert "If all requirements concern one standalone file, use exactly one task" in " ".join(user_prompt.split())
 
     def test_manager_preserved_unlabelled_responses_get_harness_ids(self):
         for response in PRESERVED_MANAGER_RESPONSES:
@@ -514,10 +601,13 @@ class TestReviewerContracts:
             with open(os.path.join(tmp, "docs", "manager.md"), "w", encoding="utf-8") as file:
                 file.write("Create only a numbered checklist.")
 
-            result = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s0").run(backend)
+            result = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s0", candidate_state="s0").run(backend)
 
             assert result["verdict"] == "ACCEPT"
             assert "numbered checklist" not in backend.call_history[0]["messages"][0]["content"]
+            assert "workspace snapshot" in backend.call_history[0]["messages"][0]["content"]
+            assert "if the reason identifies a missing" in backend.call_history[0]["messages"][0]["content"]
+            assert "Candidate final state (bounded snapshot view):" in backend.call_history[0]["messages"][1]["content"]
             assert backend.call_history[1]["messages"][-1]["content"] == correction
 
     def test_manager_reconcile_retries_with_reconciliation_contract(self):
@@ -546,6 +636,35 @@ class TestReviewerContracts:
 
 
 class TestWorkerSession:
+    def test_write_result_reports_exact_trailing_newline_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Write hello.txt"))
+            backend = model.MockBackend([
+                text_response("WRITE hello.txt\nhello\n\nEND WRITE"),
+                text_response("Done"),
+            ])
+
+            result = harness.run_worker_session(1, config(tmp), backend=backend)
+
+            assert result["status"] == "submitted"
+            write_result = backend.call_history[1]["messages"][-1]["content"]
+            assert "wrote " in write_result and "bytes to hello.txt; end=" in write_result
+            assert "trailing=1" in write_result
+
+    def test_read_result_reports_exact_trailing_newline_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Read file metadata"))
+            with open(os.path.join(tmp, "hello.txt"), "w", encoding="utf-8", newline="") as file:
+                file.write("hello\n\n")
+            backend = model.MockBackend([text_response("READ hello.txt"), text_response("Done")])
+
+            result = harness.run_worker_session(1, config(tmp), backend=backend)
+
+            assert result["status"] == "submitted"
+            read_result = backend.call_history[1]["messages"][-1]["content"]
+            assert "File metadata: bytes=7;end=LF;trailing=2" in read_result
+            assert "File contents:\nhello\n\n" in read_result
+
     def test_worker_can_finish_without_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
             prepare_workspace(tmp, todo_item(1, "No-op task"))
@@ -557,7 +676,7 @@ class TestWorkerSession:
             assert vc.VersionControl(tmp).get_current() == "s1"
 
     def test_analysis_only_response_gets_command_only_retry(self):
-        correction = "No executable BID command was found. Respond only with actual READ, WRITE, RUN, or Done commands. Do not explain or describe the commands."
+        correction = "No executable BID command was found. Respond only with actual READ, SEARCH, WRITE, REPLACE, RUN, Done commands. Do not explain or describe the commands."
         backend = model.MockBackend([
             text_response("I would inspect README.md first."),
             text_response("READ README.md"),
@@ -573,7 +692,31 @@ class TestWorkerSession:
 
             assert result["status"] == "submitted"
             assert backend.call_history[1]["messages"][-1]["content"] == correction
-            assert backend.call_history[2]["messages"][-1]["content"] == "project notes\n"
+            read_result = backend.call_history[2]["messages"][-1]["content"]
+            assert "File metadata:" in read_result and "trailing=1" in read_result
+            assert "File contents:\nproject notes\n" in read_result
+
+    def test_disabled_commands_are_not_advertised_or_executed(self, monkeypatch):
+        def fail_search(*args, **kwargs):
+            raise AssertionError("disabled SEARCH reached provider")
+
+        monkeypatch.setattr(adapter.search_mod, "execute_search", fail_search)
+        backend = model.MockBackend([
+            text_response("SEARCH local notes"),
+            text_response("Done"),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Inspect local notes"))
+            result = harness.run_worker_session(
+                1, config(tmp, allow_host_run=False, max_searches_per_worker=0),
+                backend=backend,
+            )
+            assert result["status"] == "submitted"
+            policy = backend.call_history[0]["messages"][0]["content"]
+            assert "RUN <program>" not in policy
+            assert "SEARCH <query>" not in policy
+            assert "No optional commands are enabled" in policy
+            assert backend.call_history[1]["messages"][-1]["content"] == "error: SEARCH disabled for this session"
 
     def test_qwen_thinking_payload_preserves_reasoning(self, monkeypatch):
         captured = {}
@@ -604,16 +747,21 @@ class TestWorkerSession:
                 return Response()
 
         monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(Client=Client))
-        response = model.LlamaCppBackend("http://model", "qwen", max_tokens=32768).run([], [])
+        backend = model.LlamaCppBackend("http://model", "qwen", max_tokens=32768, seed=90210)
+        response = backend.run([], [], grammar='root ::= "Done"')
 
         assert response["content"] == "Done"
         assert response["reasoning"] == "private reasoning"
         assert captured["payload"]["max_tokens"] == 32768
         assert "options" not in captured["payload"]
         assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": True}
+        assert captured["payload"]["seed"] == 90210
+        assert captured["payload"]["grammar"] == 'root ::= "Done"'
         assert {key: captured["payload"][key] for key in ("temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty")} == {
             "temperature": 0.6, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repetition_penalty": 1.0,
         }
+        backend.run([], [])
+        assert "grammar" not in captured["payload"]
 
     def test_run_command_maps_python_to_interpreter(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmp:
@@ -650,6 +798,127 @@ class TestWorkerSession:
             assert "stderr:\nstderr-" in result
             assert "b'" not in result
 
+    def test_run_is_denied_by_default_without_calling_subprocess(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = adapter.WorkerAdapter(config(tmp, allow_host_run=False), 1)
+
+            def fail_if_run(*args, **kwargs):
+                raise AssertionError("disabled RUN reached subprocess")
+
+            monkeypatch.setattr(adapter.subprocess, "run", fail_if_run)
+            result = runner._run_command("python -c 'print(1)'")
+            assert "RUN disabled" in result
+            assert runner._run_evidence[-1]["exit_code"] == 126
+
+    def test_isolated_executor_does_not_opt_into_host_execution(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = []
+
+            def isolated(argv, *, cwd, timeout):
+                calls.append((argv, cwd, timeout))
+                return adapter.subprocess.CompletedProcess(argv, 0, "isolated\n", "")
+
+            def host_execution_forbidden(*args, **kwargs):
+                raise AssertionError("isolated executor fell through to host subprocess")
+
+            monkeypatch.setattr(adapter.subprocess, "run", host_execution_forbidden)
+            cfg = config(tmp, allow_host_run=False, run_executor=isolated)
+            runner = adapter.WorkerAdapter(cfg, 1)
+            result = runner._run_command("python -c pass", remaining=2)
+            assert "result: success" in result and "isolated" in result
+            assert len(calls) == 1 and calls[0][1:] == (tmp, 2)
+            assert "RUN" in adapter.available_command_names(cfg)
+            assert "RUN <program>" in adapter.render_worker_policy("{{OPTIONAL_COMMANDS}}", cfg)
+
+            denied = runner._run_command("rm -rf .bid")
+            assert "deletion denied" in denied and len(calls) == 1
+
+    def test_run_timeout_is_capped_by_remaining_worker_deadline(self, monkeypatch):
+        captured = {}
+
+        def fake_run(argv, **kwargs):
+            captured.update(kwargs)
+            return adapter.subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = adapter.WorkerAdapter(config(tmp, run_timeout=90), 1)
+            runner._run_command("python -c pass", remaining=2.5)
+            assert captured["timeout"] == 2.5
+
+    def test_model_request_timeout_is_capped_by_remaining_session(self):
+        class TimeoutBackend(model.MockBackend):
+            def run(self, messages, tools, max_tokens=None, timeout=None):
+                self.timeout = timeout
+                return text_response("Done")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "No-op"))
+            backend = TimeoutBackend()
+            result = adapter.WorkerAdapter(
+                config(tmp, worker_timeout=2, request_timeout=100), 1
+            ).run(backend)
+            assert result["status"] == "done"
+            assert 0 < backend.timeout <= 2
+
+    def test_slow_model_response_cannot_finish_after_deadline(self, monkeypatch):
+        clock = {"now": 0.0}
+        monkeypatch.setattr(adapter.time, "monotonic", lambda: clock["now"])
+
+        class SlowBackend:
+            def run(self, *args, **kwargs):
+                clock["now"] = 3
+                return text_response("Done")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "No-op"))
+            result = adapter.WorkerAdapter(
+                config(tmp, worker_timeout=2), 1
+            ).run(SlowBackend())
+            assert result["status"] == "timeout"
+
+    def test_done_then_slow_command_cannot_finish_after_deadline(self, monkeypatch):
+        clock = {"now": 0.0}
+        monkeypatch.setattr(adapter.time, "monotonic", lambda: clock["now"])
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "No-op"))
+            runner = adapter.WorkerAdapter(config(tmp, worker_timeout=2), 1)
+
+            class Backend:
+                def run(self, *args, **kwargs):
+                    return text_response("Done\nRUN echo slow")
+
+            def slow_run(command, remaining=None):
+                clock["now"] = 3
+                return "success"
+
+            monkeypatch.setattr(runner, "_run_command", slow_run)
+            assert runner.run(Backend())["status"] == "timeout"
+
+    def test_run_preflight_recomputes_deadline_after_snapshot(self, monkeypatch):
+        clock = {"now": 0.0}
+        monkeypatch.setattr(adapter.time, "monotonic", lambda: clock["now"])
+        original_snapshot = adapter._snapshot_control_state
+
+        def slow_snapshot(workspace):
+            snapshot = original_snapshot(workspace)
+            clock["now"] = 2
+            return snapshot
+
+        monkeypatch.setattr(adapter, "_snapshot_control_state", slow_snapshot)
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "No-op"))
+            runner = adapter.WorkerAdapter(config(tmp, worker_timeout=2), 1)
+            called = []
+            monkeypatch.setattr(runner, "_run_command", lambda *a, **k: called.append(True))
+
+            class Backend:
+                def run(self, *args, **kwargs):
+                    return text_response("RUN echo too-late")
+
+            assert runner.run(Backend())["status"] == "timeout"
+            assert not called
+
     def test_direct_deletions_cannot_remove_workspace_or_control_state(self, monkeypatch):
         with tempfile.TemporaryDirectory() as tmp:
             prepare_workspace(tmp, todo_item(1, "Deletion guard"))
@@ -674,24 +943,25 @@ class TestWorkerSession:
                 assert "exit_code: 126" in result
                 assert runner._run_evidence[-1]["denied_deletion"]
 
-    def test_direct_deletions_allow_ordinary_project_paths(self):
+    @pytest.mark.parametrize("argv", [
+        ["rm", "-rf", "build"],
+        ["rmdir", "build"],
+        ["unlink", "output.txt"],
+    ])
+    def test_direct_deletions_allow_ordinary_project_paths(self, monkeypatch, argv):
         with tempfile.TemporaryDirectory() as tmp:
             prepare_workspace(tmp, todo_item(1, "Deletion guard"))
             runner = adapter.WorkerAdapter(config(tmp), 1)
+            captured = {}
 
-            os.makedirs(os.path.join(tmp, "build", "nested"))
-            assert "result: success" in runner._run_command("rm -rf build")
-            assert not os.path.exists(os.path.join(tmp, "build"))
+            def fake_run(actual_argv, **kwargs):
+                captured["argv"] = actual_argv
+                return adapter.subprocess.CompletedProcess(actual_argv, 0, "", "")
 
-            os.mkdir(os.path.join(tmp, "empty"))
-            assert "result: success" in runner._run_command("rmdir empty")
-            assert not os.path.exists(os.path.join(tmp, "empty"))
-
-            output = os.path.join(tmp, "output.txt")
-            with open(output, "w", encoding="utf-8") as file:
-                file.write("temporary\n")
-            assert "result: success" in runner._run_command("unlink output.txt")
-            assert not os.path.exists(output)
+            monkeypatch.setattr(adapter.subprocess, "run", fake_run)
+            assert "result: success" in runner._run_command(" ".join(argv))
+            assert captured["argv"] == argv
+            assert not runner._run_evidence[-1]["denied_deletion"]
 
     def test_worker_reads_project_file_after_initial_prompt(self):
         class PromptBackend(model.MockBackend):
@@ -752,6 +1022,23 @@ class TestWorkerSession:
             listing = adapter._workspace_listing(tmp)
             assert "ok.txt" in listing
             assert "bad.pyc" not in listing
+
+    def test_workspace_listing_preserves_final_newline_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "hello.txt")
+            with open(path, "w", encoding="utf-8", newline="") as file:
+                file.write("hello\n")
+
+            listing = adapter._workspace_listing(tmp)
+            assert "bytes=6;end=LF;trailing=1" in listing
+
+            with open(path, "w", encoding="utf-8", newline="") as file:
+                file.write("hello\n\n")
+            assert "bytes=7;end=LF;trailing=2" in adapter._workspace_listing(tmp)
+
+            with open(path, "w", encoding="utf-8", newline="") as file:
+                file.write("hello")
+            assert "bytes=5;end=none;trailing=0" in adapter._workspace_listing(tmp)
 
 
 class TestRunProject:
@@ -827,6 +1114,60 @@ class TestRunProject:
 
 
 class TestResumeBehavior:
+    @pytest.mark.parametrize("interrupt_replay", [False, True])
+    def test_manager_rework_reason_reaches_resumed_worker(self, monkeypatch, interrupt_replay):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(tmp)
+            prepare_workspace(tmp, todo_item(1, "Apply the requested fix"))
+            store = vc.VersionControl(tmp)
+            candidate = store.save_state("candidate", "T1 candidate")
+            store.append_log(f"provisional: task=T1 base=s0 candidate={candidate} review=ACCEPT")
+            todo_text = harness.read_file_content(os.path.join(tmp, "docs", "todo.md"))
+            decision = {
+                "done": [], "rework": {"task": 1, "reason": " Manager said:\n  fix this "},
+                "add": [], "replace": None, "project": "CONTINUE",
+            }
+            active = {1: {"base": "s0", "candidate": candidate}}
+            original_replay = harness._replay_reconcile_intent
+            if interrupt_replay:
+                def interrupt(*args, **kwargs):
+                    raise RuntimeError("simulated stop")
+
+                monkeypatch.setattr(harness, "_replay_reconcile_intent", interrupt)
+                with pytest.raises(RuntimeError, match="simulated stop"):
+                    harness._apply_reconcile_decision(
+                        store, tmp, todo_text, todo.parse_todo(todo_text), active,
+                        decision, {}, manager_rework_count=1,
+                    )
+                monkeypatch.setattr(harness, "_replay_reconcile_intent", original_replay)
+            else:
+                harness._apply_reconcile_decision(
+                    store, tmp, todo_text, todo.parse_todo(todo_text), active,
+                    decision, {}, manager_rework_count=1,
+                )
+
+            store.append_log(
+                f"rework_reason: task=T2 base=s0 candidate={candidate} reason=Other task only"
+            )
+
+            class ResumeBackend(model.MockBackend):
+                def run(self, messages, tools, max_tokens=None):
+                    self.call_history.append({"messages": [dict(m) for m in messages], "tools": tools})
+                    prompt = messages[1]["content"] if len(messages) > 1 else ""
+                    if prompt.lstrip().startswith("Task T1:"):
+                        assert "Previous reviewer feedback:\nManager said: fix this" in prompt
+                        assert "Other task only" not in prompt
+                        return text_response("Done")
+                    if prompt.startswith("# Review Assignment"):
+                        return text_response("ACCEPT\nReason: Corrected.")
+                    if prompt.startswith("# Manager Reconciliation"):
+                        return manager_response(done=[1])
+                    raise AssertionError(f"unexpected prompt: {prompt[:80]}")
+
+            backend = ResumeBackend([])
+            result = harness.run_project(cfg, backend=backend)
+            assert result["status"] == "done"
+
     def test_interrupt_resume_preserves_task_base(self):
         init_backend = model.MockBackend([text_response(todo_item(1, "Update notes"))])
         first_worker_backend = model.MockBackend([text_response("WRITE notes.txt\ndraft\nEND WRITE\nDone")])
@@ -848,7 +1189,10 @@ class TestResumeBehavior:
             assert worker_result["status"] == "submitted"
             assert worker_result["base_state"] == base_state
 
-            review_result = adapter.TaskReviewAdapter(cfg, 1, base_state=worker_result["base_state"]).run(first_review_backend)
+            review_result = adapter.TaskReviewAdapter(
+                cfg, 1, base_state=worker_result["base_state"],
+                candidate_state=worker_result["state"],
+            ).run(first_review_backend)
             assert review_result["verdict"] == "REWORK"
 
             result = harness.run_project(cfg, backend=resume_backend)
@@ -1059,7 +1403,17 @@ class TestResumeBehavior:
             assert "Output" not in worker_prompt
             assert "Inputs" not in worker_prompt
             assert "Accept" not in worker_prompt
-            assert "SEARCH" not in worker_prompt
+            assert "SEARCH <query>" in worker_prompt
+            normalized_worker_prompt = " ".join(worker_prompt.split())
+            assert "Every response must contain exactly one actual executable BID command" in normalized_worker_prompt
+            assert "do not write an `end read` line" in " ".join(worker_prompt.lower().split())
+            assert "Do not invent placeholder old text" in normalized_worker_prompt
+            assert "After the requested changes are complete, submit `Done`" in normalized_worker_prompt
+            assert "not the two literal characters backslash and `n`" in normalized_worker_prompt
+            assert "two consecutive line breaks follow the last text line" in normalized_worker_prompt
+            assert "For a new file whose complete content is specified, use WRITE directly" in normalized_worker_prompt
+            assert "result also reports the exact trailing newline count" in normalized_worker_prompt
+            assert "submit `Done` in your next response" in normalized_worker_prompt
 
             run_results = [
                 message["content"]
@@ -1227,7 +1581,7 @@ class TestResumeBehavior:
             with open(os.path.join(tmp, ".bid", "log.md"), encoding="utf-8") as file:
                 log_text = file.read()
             assert "rework_reason: task=T1 base=s0 candidate=s1 reason=Need evidence." in log_text
-            assert vc.VersionControl(tmp).get_current() == "s1"
+            assert vc.VersionControl(tmp).get_current() == "s2"
 
     def test_malformed_write_is_rejected_and_logged(self):
         init_backend = model.MockBackend([text_response(todo_item(1, "Verify malformed write rejection"))])
@@ -1302,10 +1656,10 @@ class TestResumeBehavior:
 
         original_run = adapter.WorkerAdapter._run_command
 
-        def raise_before_recording(self, command):
+        def raise_before_recording(self, command, remaining=None):
             if command == "explode":
                 raise RuntimeError("boom")
-            return original_run(self, command)
+            return original_run(self, command, remaining=remaining)
 
         monkeypatch.setattr(adapter.WorkerAdapter, "_run_command", raise_before_recording)
 
@@ -1649,7 +2003,19 @@ class TestContextBoundary:
                 f.write("s1\n")
             with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
                 f.write("")
+            os.makedirs(os.path.join(tmp, ".bid", "states", "s2"), exist_ok=True)
+            with open(os.path.join(tmp, ".bid", "states", "s2", "solution.py"), "w") as f:
+                f.write("ready\n")
 
+            os.makedirs(os.path.join(tmp, ".bid", "states", "s2", "docs"))
+            with open(os.path.join(tmp, ".bid", "states", "s2", "docs", "todo.md"), "w") as file:
+                file.write("- [ ] T1 — Test\n")
+            with open(os.path.join(tmp, ".bid", "states", "s2", "docs", "task.md"), "w") as file:
+                file.write("# Task\n\nTest.\n")
+            with open(os.path.join(tmp, ".bid", "states", "s2", "candidate.txt"), "w") as file:
+                file.write("candidate snapshot bytes\n")
+            with open(os.path.join(tmp, "live-only.txt"), "w") as file:
+                file.write("intervening live edit\n")
             review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1", candidate_state="s2")
             captured = {}
             class CheckBackend:
@@ -1665,7 +2031,53 @@ class TestContextBoundary:
             assert "satisfies the stated current task" in prompt
             assert "Unfinished later checklist tasks are not grounds for REWORK" in prompt
             assert "not require production-source modifications" in prompt
+            assert "Candidate final state (bounded snapshot view):" in prompt
+            assert "### solution.py" in prompt
             assert "RUN evidence:" not in prompt
+            assert "candidate snapshot bytes" in prompt
+            assert "intervening live edit" not in prompt
+
+    @pytest.mark.parametrize("base,candidate", [
+        ("../s0", "s1"), ("missing", "s1"), ("s0", "../s1"), ("s0", "s99"),
+    ])
+    def test_reviewer_rejects_invalid_or_missing_state_before_backend(self, base, candidate):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Review states"))
+            class Backend:
+                called = False
+                def run(self, *args, **kwargs):
+                    self.called = True
+                    raise AssertionError("invalid state reached backend")
+
+            backend = Backend()
+            result = adapter.TaskReviewAdapter(
+                config(tmp), 1, base_state=base, candidate_state=candidate
+            ).run(backend)
+            assert result["verdict"] == "ERROR"
+            assert not backend.called
+
+    def test_reviewer_uses_inherited_candidate_state_when_diff_is_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Verify the ready solution"))
+            with open(os.path.join(tmp, "solution.py"), "w", encoding="utf-8") as file:
+                file.write("ready\n")
+
+            vc_system = vc.VersionControl(tmp)
+            base_state = vc_system.save_state("seed", "ready solution")
+            candidate_state = vc_system.save_state("worker", "no changes needed")
+            with open(os.path.join(tmp, "solution.py"), "w", encoding="utf-8") as file:
+                file.write("live workspace must not be reviewed\n")
+
+            backend = model.MockBackend([text_response("ACCEPT\nReason: The inherited solution satisfies the task.")])
+            result = adapter.TaskReviewAdapter(
+                config(tmp), 1, base_state=base_state, candidate_state=candidate_state
+            ).run(backend)
+
+            assert result["verdict"] == "ACCEPT"
+            prompt = backend.call_history[0]["messages"][1]["content"]
+            assert "(no file changes)" in prompt
+            assert "ready" in prompt
+            assert "live workspace must not be reviewed" not in prompt
 
     def test_worker_receives_only_normalized_feedback(self):
         """REWORK Worker sees only the reviewer reason, not provenance."""
@@ -1727,7 +2139,7 @@ class TestContextBoundary:
             with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
                 f.write("")
 
-            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1", candidate_state="s1")
             seen = {}
             class CheckBackend:
                 def run(self, messages, tools, max_tokens=None):
@@ -1736,7 +2148,7 @@ class TestContextBoundary:
                     return {"role": "assistant", "content": "ACCEPT\nReason: Solver changed.", "finish_reason": "stop"}
             review.run(CheckBackend())
             prompt = seen.get("prompt", "")
-            assert "Task:\nChange solver" in prompt, f"prompt should describe T1 task: {prompt[:200]}"
+            assert "Change solver" in prompt and "CURRENT TASK" in prompt, f"prompt should describe T1 as current task: {prompt[:400]}"
 
     def test_manager_reconciliation_no_attempt_history(self):
         """Manager reconciliation does not receive Worker attempt transcripts."""
@@ -1829,7 +2241,7 @@ class TestAcceptanceContract:
             with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
                 f.write("")
 
-            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1", candidate_state="s1")
             captured = {}
             class CheckBackend:
                 def run(self, messages, tools, max_tokens=None):
@@ -1863,7 +2275,7 @@ class TestAcceptanceContract:
                 f.write("import numpy as np\nfrom argus.solve import solve_point\n\ndef test_returns_ndarray():\n    result = solve_point(np.array([0.001, 0.0011, 0.0012, 0.0013]))\n    assert isinstance(result, np.ndarray)\n")
 
             # Run Reviewer — should not reject for missing production changes
-            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1", candidate_state="s1")
             captured = {}
             class DummyBackend:
                 def run(self, messages, tools, max_tokens=None):
@@ -1890,7 +2302,7 @@ class TestAcceptanceContract:
             with open(os.path.join(tmp, ".bid", "states", "s1", ".bid"), "w") as f:
                 f.write("")
 
-            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1")
+            review = adapter.TaskReviewAdapter(config(tmp), 1, base_state="s1", candidate_state="s1")
             class RejectBackend:
                 def run(self, messages, tools, max_tokens=None):
                     return {"role": "assistant", "content": "REWORK\nReason: The added test file imports a module that does not exist in the workspace (src.fake). A test that cannot be collected is not a valid completion.", "finish_reason": "stop"}
@@ -1900,6 +2312,80 @@ class TestAcceptanceContract:
 
 class TestRespawnRollback:
     """Stalled/timeout Worker attempts are aborted transactions: workspace restored."""
+
+    def test_worker_can_revert_a_write_then_submit(self):
+        class RevertingWrites(model.MockBackend):
+            def __init__(self):
+                super().__init__([
+                    text_response("WRITE f.txt\ntemporary\n\nEND WRITE"),
+                    text_response("WRITE f.txt\noriginal\n\nEND WRITE"),
+                    text_response("Done"),
+                ])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Try and revert an edit"))
+            with open(os.path.join(tmp, "f.txt"), "w", encoding="utf-8") as file:
+                file.write("original\n")
+            backend = RevertingWrites()
+
+            result = harness.run_worker_session(
+                1, config(tmp, repeat_action_limit=2), backend=backend
+            )
+
+            assert result["status"] == "submitted"
+            with open(os.path.join(tmp, "f.txt"), encoding="utf-8") as file:
+                assert file.read() == "original\n"
+            assert len(backend.call_history) == 3
+
+    def test_worker_state_cycle_stalls_and_rolls_back(self, monkeypatch):
+        class AlternatingWrites:
+            def __init__(self):
+                self.calls = 0
+
+            def run(self, messages, tools, max_tokens=None):
+                self.calls += 1
+                body = "hello" if self.calls % 2 else ""
+                return text_response(f"WRITE f.txt\n{body}\nEND WRITE")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Write f.txt"))
+            monkeypatch.setattr(
+                adapter, "_workspace_tree",
+                lambda *_: pytest.fail("cycle detection must reuse Observer's snapshot"),
+            )
+            backend = AlternatingWrites()
+            result = harness.run_worker_session(
+                1, config(tmp, repeat_action_limit=2), backend=backend
+            )
+
+            assert result["status"] == "stalled"
+            assert "repeatedly returned" in result["reason"]
+            assert 3 <= backend.calls <= 16
+            assert not os.path.exists(os.path.join(tmp, "f.txt"))
+
+    def test_repeated_multicommand_turn_stalls_and_rolls_back(self):
+        class RepeatingTurn(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.calls = 0
+
+            def run(self, messages, tools, max_tokens=None):
+                self.calls += 1
+                if self.calls > 16:
+                    raise AssertionError("repeated turn was not bounded")
+                return text_response(
+                    "READ f.txt\nWRITE f.txt\nhello\nEND WRITE\nEND READ"
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Write f.txt"))
+            backend = RepeatingTurn()
+            result = harness.run_worker_session(
+                1, config(tmp, repeat_action_limit=2), backend=backend
+            )
+            assert result["status"] == "stalled"
+            assert backend.calls <= 16
+            assert not os.path.exists(os.path.join(tmp, "f.txt"))
 
     def test_stalled_modifications_removed(self):
         """File written by a stalled Worker is removed by rollback."""
@@ -2700,6 +3186,22 @@ class TestReplaceProtocol:
 
 
 class TestReviewDiffCoverage:
+    @pytest.mark.parametrize(("content", "size", "ending"), [
+        ("COVE", 4, "none"), ("COVE\n", 5, "LF"), ("COVE\r\n", 6, "CRLF"),
+    ])
+    def test_diff_preserves_exact_candidate_newline_metadata(self, content, size, ending):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.join(tmp, "base")
+            candidate = os.path.join(tmp, "candidate")
+            os.makedirs(base)
+            os.makedirs(candidate)
+            with open(os.path.join(base, "marker.txt"), "w", newline="") as file:
+                file.write("COVE\n\n")
+            with open(os.path.join(candidate, "marker.txt"), "w", newline="") as file:
+                file.write(content)
+            diff = adapter._workspace_diff(base, candidate)
+            assert f"bytes={size};end={ending}" in diff
+
     def test_large_early_diff_keeps_later_file_details(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = os.path.join(tmp, "base")
@@ -2773,9 +3275,12 @@ class TestReviewDiffCoverage:
             }.items():
                 with open(os.path.join(tmp, rel), "w", encoding="utf-8") as file:
                     file.write(content)
+            candidate_state = vc.VersionControl(tmp).save_state("candidate", "review candidate")
 
             backend = model.MockBackend([text_response("REWORK\nReason: Continue.")])
-            result = adapter.TaskReviewAdapter(config(tmp), 1, base_state=base_state).run(backend)
+            result = adapter.TaskReviewAdapter(
+                config(tmp), 1, base_state=base_state, candidate_state=candidate_state
+            ).run(backend)
             prompt = backend.call_history[0]["messages"][1]["content"]
 
             assert result["verdict"] == "REWORK"
@@ -2788,6 +3293,31 @@ class TestReviewDiffCoverage:
 
 class TestProvisionalReconciliation:
     """Manager-owned reconciliation: ACCEPT creates [-], only Manager makes [x]."""
+
+    def test_invalid_manager_sections_retry_without_forcing_task_disposition(self):
+        backend = model.MockBackend([
+            text_response("Done"),
+            text_response("ACCEPT\nReason: Candidate reviewed."),
+            manager_response(
+                done=[1], rework=(1, "reason"), add=["repeat task"],
+                replace=["replacement"], project="COMPLETE",
+            ),
+            manager_response(done=[1], project="CONTINUE"),
+            manager_response(done=[1], project="COMPLETE"),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "First"))
+
+            result = harness.run_project(config(tmp), backend=backend)
+
+            assert result["status"] == "done"
+            conflict = backend.call_history[3]["messages"][-1]["content"]
+            assert "task T1 appears in both # Done and # Rework" in conflict
+            assert "Use the candidate evidence to choose the disposition" in conflict
+            assert "T1 cannot be in both sections" in conflict
+            project_correction = backend.call_history[4]["messages"][-1]["content"]
+            assert "0 unchecked and 0 provisional tasks" in project_correction
+            assert "use COMPLETE" in project_correction
 
     def test_reviewer_accept_produces_provisional_never_done(self):
         backend = model.MockBackend([
@@ -2836,6 +3366,111 @@ class TestProvisionalReconciliation:
             assert "[-] T1" in todo_text
             assert 1 in active
             assert active[1]["candidate"] == candidate
+
+    def test_interrupted_ratification_replays_todo_and_log_once(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "First"))
+            store = vc.VersionControl(tmp)
+            candidate = store.save_state("Worker", "candidate")
+            active = {1: {"base": "s0", "candidate": candidate}}
+            tasks = todo.parse_todo(todo_item(1, "First"))
+            original_atomic_write = harness._atomic_write
+            interrupted = False
+
+            def stop_before_todo(path, content):
+                nonlocal interrupted
+                if path.endswith(os.path.join("docs", "todo.md")) and not interrupted:
+                    interrupted = True
+                    raise OSError("simulated interruption")
+                return original_atomic_write(path, content)
+
+            monkeypatch.setattr(harness, "_atomic_write", stop_before_todo)
+            with pytest.raises(OSError, match="simulated interruption"):
+                harness._apply_reconcile_decision(
+                    store, tmp, todo_item(1, "First"), tasks, active,
+                    {"done": [1], "rework": None, "add": [], "replace": None,
+                     "project": "COMPLETE"}, {},
+                )
+            monkeypatch.setattr(harness, "_atomic_write", original_atomic_write)
+
+            _, project, error = harness._resume_reconcile_intent(store, tmp)
+            log = store.get_log()
+            assert error is None and project == "COMPLETE"
+            assert "[x] T1" in open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8").read()
+            assert log.count(f"ratified: task=T1 base=s0 candidate={candidate}") == 1
+            assert not os.path.exists(os.path.join(tmp, ".bid", "reconcile.json"))
+
+    def test_interrupted_manager_rework_replays_restore_and_suffix_records(self, monkeypatch):
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, "- [-] T1 — First\n")
+            store = vc.VersionControl(tmp)
+            with open(os.path.join(tmp, "candidate.txt"), "w", encoding="utf-8") as file:
+                file.write("candidate")
+            candidate = store.save_state("Worker", "candidate")
+            active = {1: {"base": "s0", "candidate": candidate}}
+            tasks = todo.parse_todo("- [-] T1 — First\n")
+            original_append = store.append_log
+
+            def stop_on_invalidation(text):
+                if text.startswith("invalidate:"):
+                    raise OSError("simulated interruption")
+                return original_append(text)
+
+            monkeypatch.setattr(store, "append_log", stop_on_invalidation)
+            with pytest.raises(OSError, match="simulated interruption"):
+                harness._apply_reconcile_decision(
+                    store, tmp, "- [-] T1 — First\n", tasks, active,
+                    {"done": [], "rework": {"task": 1, "reason": "redo"},
+                     "add": [], "replace": None, "project": "CONTINUE"}, {},
+                    manager_rework_count=1, manager_rework_limit=2,
+                )
+            monkeypatch.setattr(store, "append_log", original_append)
+
+            _, project, error = harness._resume_reconcile_intent(store, tmp)
+            log = store.get_log()
+            assert error is None and project == "CONTINUE"
+            assert store.get_current() == "s0"
+            assert "[ ] T1" in open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8").read()
+            assert log.count(f"invalidate: task=T1 base=s0 candidate={candidate} reason=rework-suffix") == 1
+            assert log.count("manager_rework: task=T1 count=1 limit=2") == 1
+
+    @pytest.mark.parametrize(
+        ("decision", "expected"),
+        [
+            ({"done": [], "rework": None, "add": ["Second"], "replace": None,
+              "project": "CONTINUE"}, "- [ ] T2 — Second"),
+            ({"done": [], "rework": None, "add": [], "replace": ["Replacement"],
+              "project": "CONTINUE"}, "- [ ] T1 — Replacement"),
+        ],
+    )
+    def test_interrupted_manager_state_commit_replays_todo_once(
+        self, monkeypatch, decision, expected
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            todo_text = todo_item(1, "First")
+            prepare_workspace(tmp, todo_text)
+            store = vc.VersionControl(tmp)
+            original_save = store.save_state
+
+            def commit_then_interrupt(*args, **kwargs):
+                state = original_save(*args, **kwargs)
+                raise OSError("simulated post-commit interruption")
+
+            monkeypatch.setattr(store, "save_state", commit_then_interrupt)
+            with pytest.raises(OSError, match="post-commit interruption"):
+                harness._apply_reconcile_decision(
+                    store, tmp, todo_text, todo.parse_todo(todo_text), {}, decision, {},
+                )
+            monkeypatch.setattr(store, "save_state", original_save)
+
+            _, project, error = harness._resume_reconcile_intent(store, tmp)
+            updated_todo = open(os.path.join(tmp, "docs", "todo.md"), encoding="utf-8").read()
+
+            assert error is None and project == "CONTINUE"
+            assert updated_todo.count(expected) == 1
+            assert store.get_current() == "s1"
+            assert store.get_log().count("reconcile_commit:") == 1
+            assert not os.path.exists(os.path.join(tmp, ".bid", "reconcile.json"))
 
     def test_provisional_marker_without_record_fails_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -3128,12 +3763,71 @@ class TestProvisionalReconciliation:
             assert "[-]" not in todo_text
             assert open(os.path.join(tmp, "notes.txt")).read() == "final"
 
+    def test_init_to_manager_ratified_artifact(self):
+        backend = model.MockBackend([
+            text_response("- [ ] Create notes.txt containing `final`."),
+            text_response("WRITE notes.txt\nfinal\nEND WRITE\nDone"),
+            text_response("ACCEPT\nReason: The requested file contains the required text."),
+            manager_response(done=[1]),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = config(
+                os.path.join(tmp, "workspace"), provisional_batch=1,
+                protocol_grammar=True,
+            )
+            initial = harness.init_project("Create notes.txt containing final.", cfg, backend)
+            assert initial["status"] == "success"
+
+            result = harness.run_project(cfg, backend)
+
+            workspace = cfg["workspace"]
+            todo_text = open(os.path.join(workspace, "docs", "todo.md")).read()
+            log_text = open(os.path.join(workspace, ".bid", "log.md")).read()
+            assert result["status"] == "done"
+            assert "[x] T1" in todo_text
+            assert open(os.path.join(workspace, "notes.txt")).read() == "final"
+            assert "provisional: task=T1" in log_text
+            assert "ratified: task=T1" in log_text
+            assert len(backend.call_history) == 4
+            from bid import protocol
+            assert [call["grammar"] for call in backend.call_history] == [
+                protocol.PLAN_GRAMMAR,
+                protocol.WORKER_GRAMMAR,
+                protocol.REVIEW_GRAMMAR,
+                protocol.RECONCILIATION_GRAMMAR,
+            ]
+            reviewer_prompt = backend.call_history[2]["messages"][-1]["content"]
+            reconciliation_system = backend.call_history[3]["messages"][0]["content"]
+            reconciliation_prompt = backend.call_history[3]["messages"][-1]["content"]
+            assert "Candidate final state (bounded snapshot view):" in reviewer_prompt
+            assert "notes.txt" in reviewer_prompt and "final" in reviewer_prompt
+            assert "Candidate workspace snapshot:" in reconciliation_prompt
+            assert "notes.txt" in reconciliation_prompt and "final" in reconciliation_prompt
+            assert "exactly one of # Done or # Rework" in reconciliation_system
+            assert "Omit optional sections with no entries" in reconciliation_system
 
 class TestReworkLimit:
     """Harness-owned bound on Task Reviewer REWORK retries per task."""
 
+    def test_legacy_terminal_rework_record_stays_terminal(self):
+        class UnexpectedBackend(model.MockBackend):
+            def run(self, messages, tools, max_tokens=None):
+                raise AssertionError("terminal task should not dispatch a model call")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Attempt"))
+            vc.VersionControl(tmp).append_log(
+                "rework_limit: task=T1 count=4 limit=3 candidate=s1 reason=old"
+            )
+
+            result = harness.run_project(
+                config(tmp, max_task_reworks=10), backend=UnexpectedBackend()
+            )
+
+            assert "persisted Task Reviewer REWORK limit record" in result["reason"]
+
     def test_rework_limit_terminates_after_nth_rework(self):
-        """After max_task_reworks REWORKs on the same task, BID stops with error."""
+        """With no Manager escalations allowed, max_task_reworks REWORKs on one task stop BID with an error."""
         class ReworkLoopBackend(model.MockBackend):
             def __init__(self):
                 super().__init__([])
@@ -3152,7 +3846,9 @@ class TestReworkLimit:
 
         with tempfile.TemporaryDirectory() as tmp:
             prepare_workspace(tmp, todo_item(1, "Attempt"))
-            result = harness.run_project(config(tmp, max_task_reworks=3), backend=ReworkLoopBackend())
+            backend = ReworkLoopBackend()
+            cfg = config(tmp, max_task_reworks=3, max_manager_reworks=0)
+            result = harness.run_project(cfg, backend=backend)
             assert result["status"] == "error"
             assert "exceeded Task Reviewer REWORK limit" in result["reason"]
             assert result["detail"]["rework_count"] == 4
@@ -3164,6 +3860,44 @@ class TestReworkLimit:
             todo_text = open(os.path.join(tmp, "docs", "todo.md")).read()
             assert "[x]" not in todo_text
             assert "[-]" not in todo_text
+            calls = len(backend.call_history)
+            resumed = harness.run_project(cfg, backend=backend)
+            assert "persisted Task Reviewer REWORK limit record" in resumed["reason"]
+            assert len(backend.call_history) == calls
+
+    def test_manager_rework_has_a_separate_persistent_limit(self):
+        class ManagerLoop(model.MockBackend):
+            def __init__(self):
+                super().__init__([])
+                self.workers = self.reviews = self.managers = 0
+
+            def run(self, messages, tools, max_tokens=None):
+                prompt = messages[1]["content"]
+                if prompt.lstrip().startswith("Task T1:"):
+                    self.workers += 1
+                    return text_response("Done")
+                if prompt.startswith("# Review Assignment"):
+                    self.reviews += 1
+                    return text_response("ACCEPT\nReason: accepted")
+                if prompt.startswith("# Manager Reconciliation"):
+                    self.managers += 1
+                    return manager_response(rework=(1, "redo"), project="CONTINUE")
+                raise AssertionError(prompt[:80])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            prepare_workspace(tmp, todo_item(1, "Attempt"))
+            backend = ManagerLoop()
+            cfg = config(tmp, provisional_batch=1, max_manager_reworks=1)
+            result = harness.run_project(cfg, backend=backend)
+            assert result["status"] == "error"
+            assert "Manager REWORK limit (2 > 1)" in result["reason"]
+            assert (backend.workers, backend.reviews, backend.managers) == (2, 2, 2)
+            calls = len(backend.call_history)
+
+            resumed = harness.run_project(cfg, backend=backend)
+
+            assert "Manager REWORK limit already exhausted" in resumed["reason"]
+            assert len(backend.call_history) == calls
 
     def test_rework_below_limit_continues_and_completes(self):
         """REWORKs up to the limit do not abort; a later ACCEPT proceeds."""

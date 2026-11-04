@@ -9,7 +9,7 @@ def main():
     config = harness.get_config()
 
     if len(sys.argv) < 2:
-        print("Usage: bid.py <command> [args]")
+        print("Usage: bid <command> [args]")
         print("Commands:")
         print("  init \"USER TASK\"    Initialize a new BID project")
         print("  run                  Run or continue the project")
@@ -23,29 +23,31 @@ def main():
 
     if cmd == "init":
         if len(sys.argv) < 3:
-            print("Usage: bid.py init \"USER TASK\"")
+            print("Usage: bid init \"USER TASK\"")
             sys.exit(1)
         task = " ".join(sys.argv[2:])
         print(f"Initializing project with task: {task}")
         result = harness.init_project(task, config)
         if result["status"] == "success":
-            print("Project initialized. Use 'bid.py run' to start working.")
+            print("Project initialized. Use 'bid run' to start working.")
         else:
             print(f"Init failed: {result.get('reason', 'unknown')}")
             sys.exit(1)
 
     elif cmd == "run" or cmd == "resume":
+        if config["allow_host_run"]:
+            print("WARNING: RUN executes code with this user's host privileges; BID does not sandbox it.")
         ws = config["workspace"]
         bid_dir = os.path.join(ws, ".bid")
         if not os.path.exists(bid_dir):
-            print("No BID project found. Use 'bid.py init' first.")
+            print("No BID project found. Use 'bid init' first.")
             sys.exit(1)
         try:
             result = harness.run_project(config)
             if result["status"] == "done":
                 print("Task completed!")
             elif result["status"] == "paused":
-                print("Project paused. Use 'bid.py run' to continue.")
+                print("Project paused. Use 'bid run' to continue.")
             else:
                 print(f"Run failed: {result.get('reason', 'unknown')}")
                 sys.exit(1)
@@ -57,7 +59,7 @@ def main():
 
     elif cmd == "vc":
         if len(sys.argv) < 3:
-            print("Usage: bid.py vc <log|rollback> [args]")
+            print("Usage: bid vc <log|rollback> [args]")
             sys.exit(1)
         sub = sys.argv[2]
         vc_sys = vc_mod.VersionControl(config["workspace"])
@@ -65,9 +67,10 @@ def main():
             print(vc_sys.get_log())
         elif sub == "rollback":
             if len(sys.argv) < 4:
-                print("Usage: bid.py vc rollback <state>")
+                print("Usage: bid vc rollback <state>")
                 sys.exit(1)
             state = sys.argv[3]
+            print("WARNING: manual rollback prunes later snapshots and truncates VC history.")
             vc_sys.restore(state)
             print(f"Rolled back to {state}.")
         else:

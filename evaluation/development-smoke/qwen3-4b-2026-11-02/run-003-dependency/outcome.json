@@ -1,0 +1,50 @@
+{
+  "identity": "development-smoke-2026-11-02-qwen3-4b-dependency-no-grammar",
+  "source_identity": "working-tree-2026-11-02-reconcile-format-fix",
+  "source_manifest_sha256": "64ac4081a043b943979dc97d3f3bc9db2f53a2ddf981763b3f50ebf8409a2c38",
+  "task": "Create greeting.py defining greeting(name), which returns `Hello, {name}!`, and main.py importing greeting and printing greeting('BID') when run. Create only those two files.",
+  "scenario": "dependency",
+  "config": {
+    "BID_MODEL_ENDPOINT": "http://127.0.0.1:8082/v1/chat/completions",
+    "BID_MODEL_NAME": "Qwen3-4B-Instruct-2507-Q8_0",
+    "BID_MAX_TOKENS": "2048",
+    "BID_REQUEST_TIMEOUT": "20",
+    "BID_WORKER_TIMEOUT": "45",
+    "BID_INACTIVITY_TIMEOUT": "30",
+    "BID_REPEAT_ACTION_LIMIT": "3",
+    "BID_MAX_TASK_REWORKS": "1",
+    "BID_MAX_MANAGER_REWORKS": "1",
+    "BID_PROVISIONAL_BATCH": "1",
+    "BID_MAX_SEARCHES": "0",
+    "BID_PROTOCOL_GRAMMAR": "0"
+  },
+  "commands": [
+    {
+      "command": "bid init <task>",
+      "returncode": 0,
+      "stdout": "Initializing project with task: Create greeting.py defining greeting(name), which returns `Hello, {name}!`, and main.py importing greeting and printing greeting('BID') when run. Create only those two files.\nProject initialized. Use 'bid run' to start working.\n",
+      "stderr": ""
+    },
+    {
+      "command": "bid run",
+      "returncode": 1,
+      "stdout": "Worker 1...\nWorker 1 submitted T1 (normal, s2).\nWorker 2...\nWorker 2 submitted T2 (normal, s4).\nWorker 2 rework 1: The task requires creating main.py that imports greeting and prints greeting('BID') when run. The candidate's main.py defines the greeting function itself but does not import it. Importing is a required part of the task, and the current implementation fails to satisfy this requirement.\nWorker 2...\nWorker 2 submitted T2 (normal, s5).\nRun failed: Invalid decision: DONE applied to a non-provisional task. Correct this validation error. Each provisional task must appear in exactly one of # Done or # Rework. Omit # Add unless a distinct required deliverable is missing from the checklist. Omit # Replace Remaining Plan unless unchecked tasks already exist. Use the candidate evidence to choose the disposition; return only needed sections.\n",
+      "stderr": ""
+    }
+  ],
+  "roles": {
+    "manager": 1,
+    "worker": 7,
+    "reviewer": 3,
+    "manager_reconcile": 4
+  },
+  "requests": 15,
+  "wall_s": 4.311,
+  "artifact_hex": null,
+  "artifact_pass": false,
+  "runnable_check": null,
+  "todo": "- [x] T1 \u2014 create greeting.py with function greeting(name) that returns `Hello, {name}!`\n- [-] T2 \u2014 create main.py that imports greeting and prints greeting('BID') when run",
+  "vc_log": "\n## 02/11/2026\n\n### s0\nInitial project state\n\n## 02/11/2026\n\n### s1\nManager (init) completed.\nProject initialized\n\nworker raw response:\n  WRITE greeting.py\n  def greeting(name):\n      return f\"Hello, {name}!\"\n  END WRITE\n\nworker parsed command:\n  WRITE greeting.py\n\nworker result:\n  wrote 48 bytes to greeting.py; end=none;trailing=0\n\nworker raw response:\n  Done\n\nworker parsed command:\n  Done\n\nworker result:\n  done\n\n## 02/11/2026\n\n### s2\nWorker 1 completed.\nT1 candidate base=s1\nprovisional: task=T1 base=s1 candidate=s2 review=ACCEPT\nratified: task=T1 base=s1 candidate=s2\n\n## 02/11/2026\n\n### s3\nManager (reconcile) completed.\nproject reconciliation\nreconcile_commit: 8add88e6daf545d29d6cd942075d1f45\n\nworker raw response:\n  WRITE main.py\n  def greeting(name):\n      return f\"Hello, {name}!\"\n\n  print(greeting('BID'))\n  END WRITE\n\nworker parsed command:\n  WRITE main.py\n\nworker result:\n  wrote 72 bytes to main.py; end=none;trailing=0\n\nworker raw response:\n  Done\n\nworker parsed command:\n  Done\n\nworker result:\n  done\n\n## 02/11/2026\n\n### s4\nWorker 2 completed.\nT2 candidate base=s3\ntask_rework: task=T2 count=1 limit=1 candidate=s4\n\n## 02/11/2026\n\n### s3\nrework_reason: task=T2 base=s3 candidate=s4 reason=The task requires creating main.py that imports greeting and prints greeting('BID') when run. The candidate's main.py defines the greeting function itself but does not import it. Importing is a required part of the task, and the current implementation fails to satisfy this requirement.\n\nworker raw response:\n  REPLACE main.py\n  def greeting(name):\n      return f\"Hello, {name}!\"\n\n  print(greeting('BID'))\n  ---REPLACE_WITH---\n  import greeting\n\n  print(greeting('BID'))\n  END REPLACE\n\nworker parsed command:\n  REPLACE main.py\n\nworker result:\n  file not found: main.py\n\nworker raw response:\n  WRITE main.py\n  import greeting\n\n  print(greeting('BID'))\n  END WRITE\n\nworker parsed command:\n  WRITE main.py\n\nworker result:\n  wrote 39 bytes to main.py; end=none;trailing=0\n\nworker raw response:\n  Done\n\nworker parsed command:\n  Done\n\nworker result:\n  done\n\n## 02/11/2026\n\n### s5\nWorker 2 completed.\nT2 candidate base=s3\nprovisional: task=T2 base=s3 candidate=s5 review=ACCEPT",
+  "full_loop": false,
+  "trace_sha256": "88906276d1227a2b0eca09576d730d2ccecc5f1097b57d213469d9cf6e55f5ef"
+}

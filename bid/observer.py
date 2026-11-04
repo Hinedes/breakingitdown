@@ -1,5 +1,6 @@
 import hashlib
 import os
+import stat
 import time
 
 
@@ -13,12 +14,18 @@ class Observer:
     def _tree_state(self):
         state = {}
         for root, dirs, files in os.walk(self.workspace):
-            dirs[:] = [directory for directory in dirs if directory != ".bid"]
-            for filename in files:
+            links = [directory for directory in dirs if directory != ".bid" and os.path.islink(os.path.join(root, directory))]
+            dirs[:] = [directory for directory in dirs if directory != ".bid" and directory not in links]
+            for filename in files + links:
                 path = os.path.join(root, filename)
                 try:
-                    with open(path, "rb") as file:
-                        digest = hashlib.sha256(file.read()).hexdigest()
+                    if os.path.islink(path):
+                        digest = "symlink:" + os.readlink(path)
+                    elif stat.S_ISREG(os.lstat(path).st_mode):
+                        with open(path, "rb") as file:
+                            digest = hashlib.sha256(file.read()).hexdigest()
+                    else:
+                        continue
                 except OSError:
                     continue
                 relative = os.path.relpath(path, self.workspace).replace(os.sep, "/")

@@ -1,0 +1,6 @@
+0.00.347.494 I common_memory_breakdown_print: |   - CUDA0 (RTX 5070 Ti) | 16302 = 15009 + (9328 =  4076 +    4896 +     356) +       -8034 |
+0.01.074.179 I llama_context: n_ctx_seq (65536) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.01.134.750 I llama_kv_cache:      CUDA0 KV buffer size =  4896.00 MiB
+0.01.134.764 I llama_kv_cache: size = 4896.00 MiB ( 65536 cells,  36 layers,  1/1 seqs), K (q8_0): 2448.00 MiB, V (q8_0): 2448.00 MiB
+0.01.276.316 I srv  server_run_i: model loaded
+0.01.276.322 I srv  server_on_li: listening on http://127.0.0.1:8081
