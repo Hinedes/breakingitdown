@@ -1,0 +1,65 @@
+{
+  "at": "2026-11-03",
+  "mode": "read-only filesystem audit; Docker daemon is OFF, no CLI data, nothing deleted",
+  "daemon": {
+    "socket": "unix:///home/iclab/.run/docker.sock",
+    "state": "not running",
+    "cli_result": "Cannot connect to the Docker daemon at unix:///home/iclab/.run/docker.sock",
+    "action": "not started (needs primary approval)"
+  },
+  "root": "/home/iclab/.local/share/docker",
+  "total_bytes": 69458313216,
+  "total_gib": 64.69,
+  "storage_driver": "containerd snapshotter (overlayfs), not classic overlay2",
+  "breakdown_bytes": {
+    "containerd/daemon/io.containerd.snapshotter.v1.overlayfs": 59137794048,
+    "containerd/daemon/io.containerd.content.v1.content": 10314960896,
+    "containerd/daemon/io.containerd.metadata.v1.bolt": 4194304,
+    "buildkit": 1110016,
+    "buildkit/containerd-overlayfs": 610304,
+    "image": 53248,
+    "volumes": 28672,
+    "network": 69632,
+    "plugins": 12288,
+    "tmp": 8192,
+    "containers": 4096,
+    "rootfs": 8192,
+    "runtimes": 4096,
+    "swarm": 4096
+  },
+  "counts": {
+    "snapshot_dirs": 284,
+    "images_expected": 21,
+    "images_expected_note": "20 frozen issues + 1 sanity (sympy-20590)",
+    "containers": 0,
+    "container_logs": 0,
+    "volumes": 1,
+    "build_cache_bytes": 1110016
+  },
+  "largest_snapshot_dirs_bytes": {
+    "snapshots/283": 4066250752,
+    "snapshots/206": 4066332672,
+    "snapshots/343": 3677503488,
+    "snapshots/205": 3677560832,
+    "snapshots/225": 1992028160,
+    "snapshots/285": 1991421952,
+    "snapshots/169": 1622560768
+  },
+  "why_images": "each SWE-bench task ships a pinned Dockerfile with historical apt/conda/pip dependencies and the repo at its base commit; official grading needs that exact environment. A blank Python env cannot reproduce the pinned dependency graph. Shared base layers are stored once by the containerd snapshotter, so 64.7 GiB is far less than the sum of the 21 logical image sizes.",
+  "logical_vs_physical": "content store (9.61 GiB) holds compressed layer blobs; the overlayfs snapshots (55.07 GiB) hold unpacked layers. Both are needed by the image store; shared digests are stored once.",
+  "reclaimable_estimate": {
+    "build_cache": 1110016,
+    "containers_logs": 0,
+    "volumes": 28672,
+    "dangling_or_unreferenced": "unknown while the daemon is off; cannot be counted from the filesystem reliably",
+    "per_image": "not quantifiable without the daemon; shared base layers mean deleting an image frees far less than its logical size",
+    "completed_issue_images_candidates": ["django__django-10097", "django__django-11133", "django__django-11820", "django__django-12325", "django__django-13212", "django__django-15499", "django__django-15851"],
+    "completed_issue_note": "7 issues have all 3 arms checkpointed; their images are no longer needed for inference, but they are still useful for grade reproducibility and rebuild cost is high. Do not delete without a dedicated decision"
+  },
+  "recommendation": [
+    "no prune now: build cache is ~1 MB and there are no containers/logs",
+    "do not delete images while the daemon is off (cannot verify tags/layers)",
+    "if host space becomes critical later: start the trusted rootless daemon with approval, run `docker system df -v` and `docker images`, then consider removing only the per-issue images of the 7 fully-complete issues, keeping shared base layers and never `-a` prune"
+  ],
+  "protected": ["all 21 SWE-bench images", "pinned Dockerfiles/build defs", "frozen rows", "pilot logs/runs", "model GGUF outside Docker"]
+}

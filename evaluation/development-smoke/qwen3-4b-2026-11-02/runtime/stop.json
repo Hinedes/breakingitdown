@@ -1,0 +1,6 @@
+{
+  "pid": 30129,
+  "signal": "SIGTERM",
+  "port_8081_closed": true,
+  "stopped_after_treatment": "development-smoke-2026-11-02-qwen3-4b-instruct-2507-q8_0"
+}

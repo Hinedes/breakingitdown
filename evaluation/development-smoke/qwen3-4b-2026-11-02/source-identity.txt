@@ -1,0 +1,2 @@
+source_manifest_sha256=a06696dfb6fedc41c25038573e2c9f0a2d82cac07eeb76e8498cf7c0e17a11ba
+source_identity=working-tree-2026-11-02

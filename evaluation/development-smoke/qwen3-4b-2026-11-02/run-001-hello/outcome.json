@@ -1,0 +1,50 @@
+{
+  "identity": "development-smoke-2026-11-02-qwen3-4b-hello-no-grammar",
+  "source_identity": "working-tree-2026-11-02",
+  "source_manifest_sha256": "a06696dfb6fedc41c25038573e2c9f0a2d82cac07eeb76e8498cf7c0e17a11ba",
+  "task": "Create hello.txt containing exactly the single line `hello from BID`, with one final newline. Do not create any other files.",
+  "scenario": "hello",
+  "config": {
+    "BID_MODEL_ENDPOINT": "http://127.0.0.1:8082/v1/chat/completions",
+    "BID_MODEL_NAME": "Qwen3-4B-Instruct-2507-Q8_0",
+    "BID_MAX_TOKENS": "2048",
+    "BID_REQUEST_TIMEOUT": "20",
+    "BID_WORKER_TIMEOUT": "45",
+    "BID_INACTIVITY_TIMEOUT": "30",
+    "BID_REPEAT_ACTION_LIMIT": "3",
+    "BID_MAX_TASK_REWORKS": "1",
+    "BID_MAX_MANAGER_REWORKS": "1",
+    "BID_PROVISIONAL_BATCH": "1",
+    "BID_MAX_SEARCHES": "0",
+    "BID_PROTOCOL_GRAMMAR": "0"
+  },
+  "commands": [
+    {
+      "command": "bid init <task>",
+      "returncode": 0,
+      "stdout": "Initializing project with task: Create hello.txt containing exactly the single line `hello from BID`, with one final newline. Do not create any other files.\nProject initialized. Use 'bid run' to start working.\n",
+      "stderr": ""
+    },
+    {
+      "command": "bid run",
+      "returncode": 1,
+      "stdout": "Worker 1...\nWorker 1 submitted T1 (normal, s2).\nRun failed: Invalid decision: unrecognized section: # Done: - T1. Correct this validation error. Each provisional task must appear in exactly one of # Done or # Rework. Omit # Add unless a distinct required deliverable is missing from the checklist. Omit # Replace Remaining Plan unless unchecked tasks already exist. Use the candidate evidence to choose the disposition; return only needed sections.\n",
+      "stderr": ""
+    }
+  ],
+  "roles": {
+    "manager": 1,
+    "worker": 3,
+    "reviewer": 1,
+    "manager_reconcile": 3
+  },
+  "requests": 8,
+  "wall_s": 2.217,
+  "artifact_hex": "68656c6c6f2066726f6d204249440a",
+  "artifact_pass": true,
+  "runnable_check": null,
+  "todo": "- [-] T1 \u2014 create hello.txt with the exact content `hello from BID` followed by a final newline",
+  "vc_log": "\n## 02/11/2026\n\n### s0\nInitial project state\n\n## 02/11/2026\n\n### s1\nManager (init) completed.\nProject initialized\n\nworker raw response:\n  WRITE hello.txt\n  hello from BID\n  END WRITE\n\nworker parsed command:\n  WRITE hello.txt\n\nworker result:\n  wrote 14 bytes to hello.txt; end=none;trailing=0\n\nworker raw response:\n  WRITE hello.txt\n  hello from BID\n\n  END WRITE\n\nworker parsed command:\n  WRITE hello.txt\n\nworker result:\n  wrote 15 bytes to hello.txt; end=LF;trailing=1\n\nworker raw response:\n  Done\n\nworker parsed command:\n  Done\n\nworker result:\n  done\n\n## 02/11/2026\n\n### s2\nWorker 1 completed.\nT1 candidate base=s1\nprovisional: task=T1 base=s1 candidate=s2 review=ACCEPT",
+  "full_loop": false,
+  "trace_sha256": "a668f6715bd7735d6d00dec6ea3adcce3bd9657acf88b1af23a306c700301dee"
+}

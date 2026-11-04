@@ -1,0 +1,37 @@
+{
+  "calibration": "epoch-10",
+  "task_sha256": "c65c9629c51ed3d4ebf1d11f98520d240a07b0e7c215c0b948f5c63a27755bb3",
+  "source_manifest_sha256": "0cd58a88900036dad98e0bc61417b6809ab9e0b847a9293ddda51d4881ee0c20",
+  "generation_seed": 20261102,
+  "seed_application": "LlamaCppBackend payload on every generation and input-token preflight",
+  "model_sha256": "1f33ad43d2b85b908ff06fe7002b69806a57359b9b2617ca27d7bdea428ae146",
+  "init": {
+    "status": "success",
+    "state": "s1"
+  },
+  "result": {
+    "status": "error",
+    "reason": "Worker 1 failed",
+    "detail": {
+      "status": "error",
+      "reason": "model request failed: token_cap_prompt",
+      "termination": "error"
+    }
+  },
+  "roles": {
+    "manager": 2,
+    "worker": 35
+  },
+  "reviewer_verdicts": 0,
+  "manager_decisions": 0,
+  "worker_sessions": 1,
+  "tokens": 29564,
+  "missing_usage_requests": 0,
+  "request_count": 37,
+  "wall_s": 5.695,
+  "task_files": {},
+  "hidden_check": {
+    "pass": false
+  },
+  "trace_sha256": "7b4fb709be41b425347c8446e7c93c2de5986710035c29aea7f3f014c786bd57"
+}

@@ -1,0 +1,112 @@
+{
+  "at": "2026-11-02T13:39:04Z",
+  "artifact_scoring": "v2-prefix-reuse",
+  "source": "c63701b9c9c623053ed387f816738b411071ef74a6a7685f1cb3ab39058817da",
+  "manifest": "b0cf7f6d2b3dfddbd9e769762d00d6569b88b31a9d0a420b87685d424d33b03d",
+  "inference_source": "f4999e9656a553321af77c2111340ac80c6899be1afe84a1e0d708d31a828f23",
+  "inference_manifest": "9e662f1174352ffe349fd9e14ef0957aa8bee4308e3c502fcc56d572c995f0c0",
+  "cells": [
+    {
+      "key": "django__django-10097--worker",
+      "run_id": "verified20-worker-c63701b9c9c6-a1-0c12f35a68ae",
+      "original_official": {
+        "completed_instances": 1,
+        "empty_patch_instances": 0,
+        "error_instances": 0,
+        "infra_failure_instances": 0,
+        "resolved_instances": 1,
+        "unresolved_instances": 0
+      },
+      "corrected_official": {
+        "resolved_instances": 1,
+        "unresolved_instances": 0,
+        "infra_failure_instances": 0,
+        "error_instances": 0,
+        "empty_patch_instances": 0,
+        "completed_instances": 1
+      },
+      "patch_empty": true,
+      "recovered_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "prediction_sha256": "e524e5acc136bd91850528ea80da69a7e61b045732f2349bfd63bc69d01efe29",
+      "grade_returncode": 0,
+      "grade_seconds": 198.07
+    },
+    {
+      "key": "django__django-10097--mini",
+      "run_id": "verified20-mini-c63701b9c9c6-a1-511cea73c8c2",
+      "original_official": {
+        "completed_instances": 1,
+        "empty_patch_instances": 0,
+        "error_instances": 0,
+        "infra_failure_instances": 0,
+        "resolved_instances": 1,
+        "unresolved_instances": 0
+      },
+      "corrected_official": {
+        "resolved_instances": 1,
+        "unresolved_instances": 0,
+        "infra_failure_instances": 0,
+        "error_instances": 0,
+        "empty_patch_instances": 0,
+        "completed_instances": 1
+      },
+      "patch_empty": true,
+      "recovered_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "prediction_sha256": "2a091ede010eac69a89e1bd27b996ae7688cef33e64a6158c8aab6481266834f",
+      "grade_returncode": 0,
+      "grade_seconds": 195.88
+    },
+    {
+      "key": "django__django-10097--bid",
+      "run_id": "verified20-bid-c63701b9c9c6-a1-616e5f5a8eca",
+      "original_official": {
+        "completed_instances": 1,
+        "empty_patch_instances": 0,
+        "error_instances": 0,
+        "infra_failure_instances": 0,
+        "resolved_instances": 1,
+        "unresolved_instances": 0
+      },
+      "corrected_official": {
+        "resolved_instances": 1,
+        "unresolved_instances": 0,
+        "infra_failure_instances": 0,
+        "error_instances": 0,
+        "empty_patch_instances": 0,
+        "completed_instances": 1
+      },
+      "patch_empty": true,
+      "recovered_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "prediction_sha256": "c73910d3def9866a316f7c688520e10c7cd9d8bae1890ce586b846174b984665",
+      "grade_returncode": 0,
+      "grade_seconds": 196.12
+    },
+    {
+      "key": "django__django-11133--mini",
+      "run_id": "verified20-mini-c63701b9c9c6-a1-685ee1a253e5",
+      "original_official": {
+        "completed_instances": 0,
+        "empty_patch_instances": 0,
+        "error_instances": 1,
+        "infra_failure_instances": 0,
+        "resolved_instances": 0,
+        "unresolved_instances": 0
+      },
+      "corrected_official": {
+        "resolved_instances": 0,
+        "unresolved_instances": 1,
+        "infra_failure_instances": 0,
+        "error_instances": 0,
+        "empty_patch_instances": 0,
+        "completed_instances": 1
+      },
+      "patch_empty": false,
+      "recovered_patch_sha256": "24815c45afee152e1df2b0fa9c83a32841a249bf7c39e0e349f394ff65a6766a",
+      "prediction_sha256": "5ae3e3022d37b2326e01ad81333109e65b34ca501b9f87c0b9c42227330984cb",
+      "grade_returncode": 0,
+      "grade_seconds": 21.67
+    }
+  ],
+  "note": "original f499 checkpoints/official outcomes are separate and unchanged",
+  "launcher_returncode": 0
+}

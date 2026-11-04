@@ -1,0 +1,136 @@
+{"ts_utc": "2026-11-01T17:35:10.093Z", "elapsed_s": 0.0, "event": "model_request", "phase": "start", "role": "manager", "retry": 0}
+{"ts_utc": "2026-11-01T17:35:10.698Z", "elapsed_s": 0.605, "event": "model_request", "phase": "end", "duration_s": 0.605, "role": "manager", "retry": 0, "finish_reason": "stop", "prompt_tokens": 322, "completion_tokens": 65, "total_tokens": 387}
+{"ts_utc": "2026-11-01T17:35:10.699Z", "elapsed_s": 0.606, "event": "run_project", "phase": "start"}
+{"ts_utc": "2026-11-01T17:35:10.699Z", "elapsed_s": 0.607, "event": "worker_session", "phase": "start", "task": "T1", "base_state": "s1", "has_feedback": false}
+{"ts_utc": "2026-11-01T17:35:10.700Z", "elapsed_s": 0.607, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:11.009Z", "elapsed_s": 0.917, "event": "model_request", "phase": "end", "duration_s": 0.31, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 307, "completion_tokens": 47, "total_tokens": 354}
+{"ts_utc": "2026-11-01T17:35:11.010Z", "elapsed_s": 0.917, "event": "command", "phase": "start", "task": "T1", "type": "WRITE"}
+{"ts_utc": "2026-11-01T17:35:11.010Z", "elapsed_s": 0.917, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "WRITE"}
+{"ts_utc": "2026-11-01T17:35:11.010Z", "elapsed_s": 0.917, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:11.061Z", "elapsed_s": 0.968, "event": "model_request", "phase": "end", "duration_s": 0.051, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 373, "completion_tokens": 6, "total_tokens": 379}
+{"ts_utc": "2026-11-01T17:35:11.061Z", "elapsed_s": 0.968, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:11.061Z", "elapsed_s": 0.969, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:11.061Z", "elapsed_s": 0.969, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:11.349Z", "elapsed_s": 1.256, "event": "model_request", "phase": "end", "duration_s": 0.288, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 426, "completion_tokens": 48, "total_tokens": 474}
+{"ts_utc": "2026-11-01T17:35:11.349Z", "elapsed_s": 1.256, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE_UNTERMINATED"}
+{"ts_utc": "2026-11-01T17:35:11.349Z", "elapsed_s": 1.256, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE_UNTERMINATED"}
+{"ts_utc": "2026-11-01T17:35:11.349Z", "elapsed_s": 1.256, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:11.670Z", "elapsed_s": 1.578, "event": "model_request", "phase": "end", "duration_s": 0.321, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 500, "completion_tokens": 53, "total_tokens": 553}
+{"ts_utc": "2026-11-01T17:35:11.670Z", "elapsed_s": 1.578, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:11.670Z", "elapsed_s": 1.578, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:11.670Z", "elapsed_s": 1.578, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:11.988Z", "elapsed_s": 1.895, "event": "model_request", "phase": "end", "duration_s": 0.317, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 567, "completion_tokens": 53, "total_tokens": 620}
+{"ts_utc": "2026-11-01T17:35:11.988Z", "elapsed_s": 1.895, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:11.988Z", "elapsed_s": 1.895, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:11.988Z", "elapsed_s": 1.895, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:12.303Z", "elapsed_s": 2.21, "event": "model_request", "phase": "end", "duration_s": 0.315, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 634, "completion_tokens": 53, "total_tokens": 687}
+{"ts_utc": "2026-11-01T17:35:12.303Z", "elapsed_s": 2.21, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:12.303Z", "elapsed_s": 2.21, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:12.303Z", "elapsed_s": 2.21, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:12.859Z", "elapsed_s": 2.767, "event": "model_request", "phase": "end", "duration_s": 0.557, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 701, "completion_tokens": 95, "total_tokens": 796}
+{"ts_utc": "2026-11-01T17:35:12.860Z", "elapsed_s": 2.767, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:12.860Z", "elapsed_s": 2.767, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:12.860Z", "elapsed_s": 2.767, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:13.416Z", "elapsed_s": 3.324, "event": "model_request", "phase": "end", "duration_s": 0.557, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 810, "completion_tokens": 95, "total_tokens": 905}
+{"ts_utc": "2026-11-01T17:35:13.416Z", "elapsed_s": 3.324, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:13.417Z", "elapsed_s": 3.324, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:13.417Z", "elapsed_s": 3.324, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:13.983Z", "elapsed_s": 3.89, "event": "model_request", "phase": "end", "duration_s": 0.566, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 919, "completion_tokens": 97, "total_tokens": 1016}
+{"ts_utc": "2026-11-01T17:35:13.983Z", "elapsed_s": 3.89, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:13.983Z", "elapsed_s": 3.89, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:13.983Z", "elapsed_s": 3.891, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:14.075Z", "elapsed_s": 3.983, "event": "model_request", "phase": "end", "duration_s": 0.092, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 329, "completion_tokens": 6, "total_tokens": 335}
+{"ts_utc": "2026-11-01T17:35:14.075Z", "elapsed_s": 3.983, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:14.076Z", "elapsed_s": 3.983, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:14.076Z", "elapsed_s": 3.983, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:14.200Z", "elapsed_s": 4.107, "event": "model_request", "phase": "end", "duration_s": 0.124, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 382, "completion_tokens": 19, "total_tokens": 401}
+{"ts_utc": "2026-11-01T17:35:14.200Z", "elapsed_s": 4.108, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE_UNTERMINATED"}
+{"ts_utc": "2026-11-01T17:35:14.200Z", "elapsed_s": 4.108, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE_UNTERMINATED"}
+{"ts_utc": "2026-11-01T17:35:14.200Z", "elapsed_s": 4.108, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:14.526Z", "elapsed_s": 4.434, "event": "model_request", "phase": "end", "duration_s": 0.326, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 427, "completion_tokens": 56, "total_tokens": 483}
+{"ts_utc": "2026-11-01T17:35:14.526Z", "elapsed_s": 4.434, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:14.527Z", "elapsed_s": 4.434, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:14.527Z", "elapsed_s": 4.434, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:14.577Z", "elapsed_s": 4.484, "event": "model_request", "phase": "end", "duration_s": 0.05, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 520, "completion_tokens": 6, "total_tokens": 526}
+{"ts_utc": "2026-11-01T17:35:14.577Z", "elapsed_s": 4.484, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:14.577Z", "elapsed_s": 4.484, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:14.577Z", "elapsed_s": 4.484, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:14.759Z", "elapsed_s": 4.667, "event": "model_request", "phase": "end", "duration_s": 0.182, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 573, "completion_tokens": 29, "total_tokens": 602}
+{"ts_utc": "2026-11-01T17:35:14.759Z", "elapsed_s": 4.667, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:14.760Z", "elapsed_s": 4.667, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:14.760Z", "elapsed_s": 4.667, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:14.811Z", "elapsed_s": 4.719, "event": "model_request", "phase": "end", "duration_s": 0.052, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 639, "completion_tokens": 6, "total_tokens": 645}
+{"ts_utc": "2026-11-01T17:35:14.811Z", "elapsed_s": 4.719, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:14.812Z", "elapsed_s": 4.719, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:14.812Z", "elapsed_s": 4.719, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:14.999Z", "elapsed_s": 4.907, "event": "model_request", "phase": "end", "duration_s": 0.188, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 692, "completion_tokens": 29, "total_tokens": 721}
+{"ts_utc": "2026-11-01T17:35:15.000Z", "elapsed_s": 4.907, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:15.000Z", "elapsed_s": 4.907, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:15.000Z", "elapsed_s": 4.907, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:15.051Z", "elapsed_s": 4.958, "event": "model_request", "phase": "end", "duration_s": 0.051, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 758, "completion_tokens": 6, "total_tokens": 764}
+{"ts_utc": "2026-11-01T17:35:15.051Z", "elapsed_s": 4.959, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:15.051Z", "elapsed_s": 4.959, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:15.051Z", "elapsed_s": 4.959, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:15.234Z", "elapsed_s": 5.141, "event": "model_request", "phase": "end", "duration_s": 0.182, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 811, "completion_tokens": 29, "total_tokens": 840}
+{"ts_utc": "2026-11-01T17:35:15.234Z", "elapsed_s": 5.141, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:15.234Z", "elapsed_s": 5.141, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:15.234Z", "elapsed_s": 5.141, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:15.286Z", "elapsed_s": 5.193, "event": "model_request", "phase": "end", "duration_s": 0.052, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 877, "completion_tokens": 6, "total_tokens": 883}
+{"ts_utc": "2026-11-01T17:35:15.286Z", "elapsed_s": 5.193, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:15.286Z", "elapsed_s": 5.194, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:15.286Z", "elapsed_s": 5.194, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:15.469Z", "elapsed_s": 5.377, "event": "model_request", "phase": "end", "duration_s": 0.183, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 930, "completion_tokens": 29, "total_tokens": 959}
+{"ts_utc": "2026-11-01T17:35:15.469Z", "elapsed_s": 5.377, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:15.469Z", "elapsed_s": 5.377, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:15.469Z", "elapsed_s": 5.377, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:15.522Z", "elapsed_s": 5.429, "event": "model_request", "phase": "end", "duration_s": 0.052, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 996, "completion_tokens": 6, "total_tokens": 1002}
+{"ts_utc": "2026-11-01T17:35:15.522Z", "elapsed_s": 5.429, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:15.522Z", "elapsed_s": 5.429, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:15.522Z", "elapsed_s": 5.429, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:15.705Z", "elapsed_s": 5.613, "event": "model_request", "phase": "end", "duration_s": 0.183, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1049, "completion_tokens": 29, "total_tokens": 1078}
+{"ts_utc": "2026-11-01T17:35:15.706Z", "elapsed_s": 5.613, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:15.706Z", "elapsed_s": 5.613, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:15.706Z", "elapsed_s": 5.613, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:15.759Z", "elapsed_s": 5.667, "event": "model_request", "phase": "end", "duration_s": 0.054, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1115, "completion_tokens": 6, "total_tokens": 1121}
+{"ts_utc": "2026-11-01T17:35:15.760Z", "elapsed_s": 5.667, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:15.760Z", "elapsed_s": 5.667, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:15.760Z", "elapsed_s": 5.667, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:15.948Z", "elapsed_s": 5.856, "event": "model_request", "phase": "end", "duration_s": 0.188, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1168, "completion_tokens": 29, "total_tokens": 1197}
+{"ts_utc": "2026-11-01T17:35:15.948Z", "elapsed_s": 5.856, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:15.948Z", "elapsed_s": 5.856, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:15.948Z", "elapsed_s": 5.856, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:16.002Z", "elapsed_s": 5.91, "event": "model_request", "phase": "end", "duration_s": 0.054, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1234, "completion_tokens": 6, "total_tokens": 1240}
+{"ts_utc": "2026-11-01T17:35:16.002Z", "elapsed_s": 5.91, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:16.002Z", "elapsed_s": 5.91, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:16.002Z", "elapsed_s": 5.91, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:16.190Z", "elapsed_s": 6.097, "event": "model_request", "phase": "end", "duration_s": 0.188, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1287, "completion_tokens": 29, "total_tokens": 1316}
+{"ts_utc": "2026-11-01T17:35:16.190Z", "elapsed_s": 6.097, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:16.190Z", "elapsed_s": 6.098, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:16.190Z", "elapsed_s": 6.098, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:16.246Z", "elapsed_s": 6.153, "event": "model_request", "phase": "end", "duration_s": 0.055, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1353, "completion_tokens": 6, "total_tokens": 1359}
+{"ts_utc": "2026-11-01T17:35:16.246Z", "elapsed_s": 6.153, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:16.246Z", "elapsed_s": 6.153, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:16.246Z", "elapsed_s": 6.153, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:16.440Z", "elapsed_s": 6.348, "event": "model_request", "phase": "end", "duration_s": 0.194, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1406, "completion_tokens": 29, "total_tokens": 1435}
+{"ts_utc": "2026-11-01T17:35:16.441Z", "elapsed_s": 6.348, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:16.441Z", "elapsed_s": 6.348, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:16.441Z", "elapsed_s": 6.348, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:16.496Z", "elapsed_s": 6.403, "event": "model_request", "phase": "end", "duration_s": 0.055, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1472, "completion_tokens": 6, "total_tokens": 1478}
+{"ts_utc": "2026-11-01T17:35:16.496Z", "elapsed_s": 6.404, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:16.496Z", "elapsed_s": 6.404, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:16.496Z", "elapsed_s": 6.404, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:16.689Z", "elapsed_s": 6.596, "event": "model_request", "phase": "end", "duration_s": 0.193, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1525, "completion_tokens": 29, "total_tokens": 1554}
+{"ts_utc": "2026-11-01T17:35:16.689Z", "elapsed_s": 6.596, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:16.689Z", "elapsed_s": 6.597, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:16.689Z", "elapsed_s": 6.597, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:16.745Z", "elapsed_s": 6.653, "event": "model_request", "phase": "end", "duration_s": 0.056, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1591, "completion_tokens": 6, "total_tokens": 1597}
+{"ts_utc": "2026-11-01T17:35:16.746Z", "elapsed_s": 6.653, "event": "command", "phase": "start", "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:16.746Z", "elapsed_s": 6.653, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "READ"}
+{"ts_utc": "2026-11-01T17:35:16.746Z", "elapsed_s": 6.653, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:16.937Z", "elapsed_s": 6.844, "event": "model_request", "phase": "end", "duration_s": 0.191, "role": "worker", "task": "T1", "attempt": 1, "finish_reason": "stop", "prompt_tokens": 1644, "completion_tokens": 29, "total_tokens": 1673}
+{"ts_utc": "2026-11-01T17:35:16.937Z", "elapsed_s": 6.844, "event": "command", "phase": "start", "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:16.937Z", "elapsed_s": 6.844, "event": "command", "phase": "end", "duration_s": 0.0, "task": "T1", "type": "REPLACE"}
+{"ts_utc": "2026-11-01T17:35:16.937Z", "elapsed_s": 6.844, "event": "model_request", "phase": "start", "role": "worker", "task": "T1", "attempt": 1}
+{"ts_utc": "2026-11-01T17:35:16.941Z", "elapsed_s": 6.848, "event": "model_request", "phase": "end", "duration_s": 0.004, "role": "worker", "task": "T1", "attempt": 1, "error": "token_cap_prompt"}
+{"ts_utc": "2026-11-01T17:35:16.942Z", "elapsed_s": 6.849, "event": "worker_session", "phase": "end", "duration_s": 6.243, "task": "T1", "base_state": "s1", "has_feedback": false, "status": "error", "reason": "model request failed: token_cap_prompt"}
+{"ts_utc": "2026-11-01T17:35:16.942Z", "elapsed_s": 6.849, "event": "run_project", "phase": "end", "duration_s": 6.243}

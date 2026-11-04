@@ -516,3 +516,42 @@ architecture claim.
 Full config and artifacts are in
 `evaluation/development-smoke/primary-verification-2026-11-02/`; prior Llama
 and Qwen run records remain unchanged.
+
+## v1 SWE-bench Verified pilot and rule-following probes (2026-11-03/04)
+
+The 60-cell paired pilot (BID, Worker-only, mini-SWE-agent; 20 instances; Qwen3-4B-Instruct-2507 Q8_0;
+frozen source `7112ff6f3c57…`) completed with no infrastructure failures. Each arm resolved 1 of 20
+instances, the same already-passing `django__django-10097` in all three, so the pilot sits at the floor
+and does not rank the arms. BID's runner ended in `error` on all 20 cells: 11 token-budget exhaustions
+after unbounded `file not found` loops, 6 Manager plans rejected by the strict plan parser (a fenced code
+snippet under an item), and 3 reconciliation decisions rejected after a task escalation. The pilot BID
+config had left repository navigation (`MAP`/`FIND`) off, so the BID and Worker-only arms could only guess
+paths: 43% and 41% of their Worker requests followed a `file not found`. Their comparison with each other
+and with mini is therefore not a fair architecture measure. Per-cell data, cause table and the full
+analysis: `evaluation/swebench-pilot/results/v1-2026-11-03/{RESULTS.md,cells.json}`.
+
+Fixes were made in the source and each has a regression test that fails without it: repository navigation
+on in the pilot config, a plan parser that folds fenced code into its task, a missing-file hint with a
+bounded stall, reading `# Rework` on an escalated task as a rewrite, and a bound on consecutive turns that
+change nothing and learn nothing. The fixed source was **not** re-run through the 60-cell pilot.
+
+`bid/rules.py` now lists each Manager/Worker rule with its enforcement level, and
+`evaluation/rule_probes/` measures the prompt-only rules on the real 4B model (same server recipe as the
+pilot, fixed per-trial seeds; graders proven on known-good and known-bad samples in `test_probes.py`).
+Raw results: `evaluation/rule_probes/results/2026-11-04/`.
+
+| Probe (rule) | Result |
+|---|---|
+| `manager_names_target_file`, 20 real SWE-bench issue statements | 19/20 plans name a target file for every item; 19/20 valid on the first attempt |
+| `worker_one_command`, 20 trials on a small fixture repo (before the no-progress bound) | 17/20 trials fully single-command; 1,716 of 1,936 responses (88.6%); target file read in 15/20; no trial had more than 2 missing files in a row; 7 trials ran 192–279 responses |
+| `worker_one_command`, same trials on the final source | 15/20 trials fully single-command; 380 of 390 responses (97.4%); target file read in 14/20; every trial ended within 12–25 responses |
+
+The one long trial read in detail (trial 7, 279 responses) was a cycle of three different errors (`REPLACE`
+without a delimiter, `REPLACE` with empty old text, `READ … END READ`), which the previous-turn stall check
+cannot see; the other six were not read. Their response counts repeated across reruns, so they look
+deterministic per seed, and all seven are gone under the no-progress bound.
+Limits: one small synthetic repository, one model, one run per seed, 20 trials per probe; trial-level
+"single-command" counts a trial as failed if any response held more than one command. Prompt-only
+"exactly one command" is violated in about 1 response in 40 and remains a candidate for harness
+enforcement. Six of the 20 final-source trials did not read the target file; the probe does not yet say
+why. These are rule-adherence measurements, not a capability or end-to-end reliability result.

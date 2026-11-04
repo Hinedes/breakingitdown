@@ -1,0 +1,73 @@
+{
+  "at": "2026-11-02",
+  "mode": "read-only inventory; nothing deleted",
+  "guest": {"distro": "Ubuntu-22.04", "kernel": "6.6.87.2-microsoft-standard-WSL2", "df_root_avail": "69G"},
+  "host_vs_guest": "guest deletions do not return host C: bytes until a separately approved fstrim/compact",
+  "top_level_bytes": {
+    "/home/iclab/grafting-resume": 13646015858,
+    "/home/iclab/bid-models": 10181903968,
+    "/home/iclab/ARGUS": 7695736945,
+    "/home/iclab/zeroball": 5127891416,
+    "/home/iclab/bid-benchmarks": 5059079656,
+    "/home/iclab/arw": 3169129008,
+    "/home/iclab/opt": 2260348114,
+    "/home/iclab/Proteus": 1447148428,
+    "/home/iclab/Anaconda3-2023.09-0-Linux-x86_64.sh": 1153404010,
+    "/home/iclab/bid-eval": 974140860,
+    "/home/iclab/bid-llama-runtime": 889561931,
+    "/home/iclab/TALOS": 288506970,
+    "/home/iclab/bid-studies": 259100044,
+    "/home/iclab/Miniconda3-latest-Linux-x86_64.sh": 162067098,
+    "/home/iclab/BreakItDown": 5816241
+  },
+  "caches_bytes": {
+    "/var/cache/apt/archives": 6088473504,
+    "/home/iclab/.cache": 5428869494,
+    "/home/iclab/.cache/huggingface": 5131460949,
+    "/home/iclab/.cache/pip": 289508768,
+    "/home/iclab/.local/share/docker": 66976600776,
+    "/home/iclab/.local/lib": 8457467005,
+    "/home/iclab/.venvs": 7419927095,
+    "/home/iclab/.rustup": 1375635679,
+    "/home/iclab/.local/share/opencode": 519642380,
+    "/home/iclab/.local/share/uv": 485151189,
+    "/home/iclab/.vscode-server": 399510651,
+    "/home/iclab/.vscode-remote-containers": 249880734,
+    "/home/iclab/.opencode": 240422322,
+    "/home/iclab/.triton": 160455974,
+    "/home/iclab/.nv": 103938419,
+    "/home/iclab/.npm": 89357481,
+    "/home/iclab/.cargo": 20904754
+  },
+  "models": [
+    {"path": "/home/iclab/bid-models/Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf", "bytes": 4280405216, "status": "NEEDED for the pilot (expected sha256 260b5b5b…662)", "duplicate": false},
+    {"path": "/home/iclab/bid-models/Llama-3.2-1B-Instruct-f16.gguf", "bytes": 2479595360, "status": "other study model, not used by the current pilot", "duplicate": false},
+    {"path": "/home/iclab/bid-models/Llama-3.2-3B-Instruct-Q8_0.gguf", "bytes": 3421899296, "status": "other study model, not used by the current pilot", "duplicate": false}
+  ],
+  "gguf_duplicate_check": "exactly one Qwen3-4B file; no duplicate copy found under /home/iclab (maxdepth 5)",
+  "checkpoint_like_files": {
+    "found_in": "/home/iclab/grafting-resume/gate-repro/evidence/*.pt",
+    "approx_each_bytes": 22625185,
+    "count_seen": 23,
+    "status": "unique research evidence artifacts; do not delete without user review",
+    "total_dir_bytes": 13646015858
+  },
+  "candidates_no_deletion": [
+    {"rank": 1, "path": "/var/cache/apt/archives", "bytes": 6088473504, "kind": "apt package cache, recreatable", "risk": "low", "needs": "sudo + user approval"},
+    {"rank": 2, "path": "/home/iclab/.cache/huggingface", "bytes": 5131460949, "kind": "HF download cache, re-downloadable", "risk": "low-medium (network/provenance)", "needs": "user approval"},
+    {"rank": 3, "path": "/home/iclab/Anaconda3-2023.09-0-Linux-x86_64.sh + Miniconda3-latest-Linux-x86_64.sh", "bytes": 1315471108, "kind": "installer archives, re-downloadable", "risk": "low", "needs": "user approval"},
+    {"rank": 4, "path": "/home/iclab/.cache/pip + /home/iclab/.local/share/uv + /home/iclab/.npm", "bytes": 864017438, "kind": "package caches, recreatable", "risk": "low", "needs": "user approval"},
+    {"rank": 5, "path": "/home/iclab/bid-llama-runtime (build objects)", "bytes": 889561931, "kind": "build tree; binary needed, objects rebuildable", "risk": "medium (rebuild needed)", "needs": "user approval"},
+    {"rank": 6, "path": "/home/iclab/.local/share/docker", "bytes": 66976600776, "kind": "docker data incl. 21 SWE-bench images required by the pilot", "risk": "high if pruned blindly", "needs": "explicit approval, unused-only prune"}
+  ],
+  "protected_never_delete": [
+    "/home/iclab/BreakItDown",
+    "/home/iclab/bid-eval",
+    "/home/iclab/bid-studies",
+    "/home/iclab/bid-benchmarks (runs, logs, frozen rows)",
+    "/home/iclab/grafting-resume checkpoints/evidence (unique artifacts)",
+    "the Qwen3-4B model file"
+  ],
+  "potential_guest_recovery_bytes": 13949099449,
+  "potential_guest_recovery_note": "sum of ranks 1-5 (apt cache, HF cache, installers, package caches, build objects); excludes Docker and all study data; nothing deleted"
+}

@@ -1,0 +1,38 @@
+{
+  "run-002-hello": {
+    "artifact_pass": true,
+    "full_loop": true,
+    "all_tasks_checked": true,
+    "ratified_events": 1,
+    "roles": {
+      "manager": 1,
+      "worker": 4,
+      "reviewer": 1,
+      "manager_reconcile": 2
+    },
+    "trace_sha256": "ae4dd55d827d28fd98aa45fece798bdd74821cda651451231958f0e417f4fbf8"
+  },
+  "run-004-dependency": {
+    "artifact_pass": true,
+    "full_loop": true,
+    "all_tasks_checked": true,
+    "ratified_events": 2,
+    "roles": {
+      "manager": 1,
+      "worker": 4,
+      "reviewer": 2,
+      "manager_reconcile": 3
+    },
+    "trace_sha256": "6e7ae8eb1dfafcf67c5ac9bf2eca87b07e81dca9094bf4d3acf2474eaaa38277"
+  },
+  "independent_dependency_execution": {
+    "command": [
+      "/home/iclab/bid-studies/2026-11-01-llama1b/test-venv-epoch-10/bin/python",
+      "main.py"
+    ],
+    "returncode": 0,
+    "stdout": "Hello, BID!\n",
+    "stderr": "",
+    "pass": true
+  }
+}

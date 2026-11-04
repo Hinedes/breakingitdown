@@ -1,0 +1,4 @@
+Preflight attempt on 2026-11-02 stopped before making a model request. The
+smoke runner used exist_ok=False while the run directory already contained the
+verified llama-server PID and log. The runner now permits a pre-created run
+directory. No workspace, trace, or model output was created by this attempt.

@@ -1,0 +1,13 @@
+{
+  "source_workspace": "/home/iclab/bid-eval/evidence/longhorizon/runs/bid-ws",
+  "source_manifest": "/home/iclab/bid-eval/evidence/longhorizon/runs/SHA256SUMS",
+  "source_workspace_sha256": "c57a45337384e33055f1061a71478da53e1a6aa80f7302864cdbb99cca1d1410",
+  "evaluator_sha256": "7721f816d395c89f54dd28471c58b60f87fccd82943665482c8b76201d81d564",
+  "result": {
+    "returncode": 1,
+    "timed_out": false,
+    "wall_s": 0.115,
+    "stdout": "PASS: schema.py imports cleanly\nPASS: loader.py imports cleanly\nPASS: filters.py imports cleanly\nPASS: report.py imports cleanly\nPASS: pipeline.py imports cleanly\nFAIL: schema checks raised AttributeError: module 'schema' has no attribute 'Record'\nFAIL: load raised AttributeError: module 'loader' has no attribute 'load'\nFAIL: filters raised AttributeError: module 'loader' has no attribute 'load'\nFAIL: report raised AttributeError: module 'loader' has no attribute 'load'\nFAIL: sample_data.csv >=6 rows, >=3 categories, has comment (got 0 rows, 0 cats)\nFAIL: pipeline.run raised FileNotFoundError: [Errno 2] No such file or directory: 'sample_data.csv'\n",
+    "stderr": ""
+  }
+}

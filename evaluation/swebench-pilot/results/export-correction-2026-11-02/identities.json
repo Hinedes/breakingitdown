@@ -1,0 +1,43 @@
+{
+  "old": {
+    "source": "f4999e9656a553321af77c2111340ac80c6899be1afe84a1e0d708d31a828f23",
+    "manifest": "9e662f1174352ffe349fd9e14ef0957aa8bee4308e3c502fcc56d572c995f0c0",
+    "product": "e33c1cc781bab0d6f47ac2e251ff4a0617a2f820ae90568aa33a55ea4767b2b2"
+  },
+  "new": {
+    "source": "c63701b9c9c623053ed387f816738b411071ef74a6a7685f1cb3ab39058817da",
+    "manifest": "b0cf7f6d2b3dfddbd9e769762d00d6569b88b31a9d0a420b87685d424d33b03d",
+    "product": "e33c1cc781bab0d6f47ac2e251ff4a0617a2f820ae90568aa33a55ea4767b2b2"
+  },
+  "changed_pilot_files": [
+    "runner.py",
+    "test_extract_patch_ignored.py"
+  ],
+  "old_pilot_files": {
+    "freeze.py": "b3843c3f857e3afad97fc0a0a9b9eefc3a5ba82e5fb7c932feffd7fcfdb19e1a",
+    "pilot.py": "c2266f205b2a67a06924146999c27a36501ce78609e290a6450ff40dc677793c",
+    "protocol.py": "aa281b7339276a46d7b335d84deb48f3d3217a6f273e2c665f4de73ddccefd5b",
+    "proxy.py": "98abc599dcbd1a45560fb1b5c48e7744fcc52920708919b8731b09fcb0b45dad",
+    "runner.py": "aca218b73034c5d4fafbd15c0dabc6e96e8d0b818b270996e9eb2bd65bf1aa83",
+    "test_grading_coverage.py": "863adbfdf501e0253706b7658b65b358a9a5557c8daa9f8a17544cd04af9fa23",
+    "test_manifest.py": "6acb3b6dba2c7609f8e6d5d78c378bd045d15dbf7e105aa8fdf3260738852d54",
+    "test_pilot.py": "c8383436e3bf1c229cce037473d0356e4e1031a5f45b5b457dec7726c1c1cb0e",
+    "test_protocol.py": "d4c861fe0e87c8792994a20fbfa7694bbd54cf673fb3be6e905e09dcd69bffb3",
+    "test_proxy.py": "6e752829047a30060f6699a5b6ed82674eca61eb5719500d6f179df9505c8173",
+    "test_runner.py": "5b53e4ab4ccaf5943ba00886e923ad4314d2b365bdfdc82884e4e8de10bfaf23"
+  },
+  "new_pilot_files": {
+    "freeze.py": "b3843c3f857e3afad97fc0a0a9b9eefc3a5ba82e5fb7c932feffd7fcfdb19e1a",
+    "pilot.py": "c2266f205b2a67a06924146999c27a36501ce78609e290a6450ff40dc677793c",
+    "protocol.py": "aa281b7339276a46d7b335d84deb48f3d3217a6f273e2c665f4de73ddccefd5b",
+    "proxy.py": "98abc599dcbd1a45560fb1b5c48e7744fcc52920708919b8731b09fcb0b45dad",
+    "runner.py": "3486c013a58477afe30ff828889f3d0a56b0453cab970da48d51b5048778197e",
+    "test_extract_patch_ignored.py": "7377ea36e71f3bf5e3d9a71e2e3598eb7bc6055acfd794d4a59698d01df20c5c",
+    "test_grading_coverage.py": "863adbfdf501e0253706b7658b65b358a9a5557c8daa9f8a17544cd04af9fa23",
+    "test_manifest.py": "6acb3b6dba2c7609f8e6d5d78c378bd045d15dbf7e105aa8fdf3260738852d54",
+    "test_pilot.py": "c8383436e3bf1c229cce037473d0356e4e1031a5f45b5b457dec7726c1c1cb0e",
+    "test_protocol.py": "d4c861fe0e87c8792994a20fbfa7694bbd54cf673fb3be6e905e09dcd69bffb3",
+    "test_proxy.py": "6e752829047a30060f6699a5b6ed82674eca61eb5719500d6f179df9505c8173",
+    "test_runner.py": "5b53e4ab4ccaf5943ba00886e923ad4314d2b365bdfdc82884e4e8de10bfaf23"
+  }
+}

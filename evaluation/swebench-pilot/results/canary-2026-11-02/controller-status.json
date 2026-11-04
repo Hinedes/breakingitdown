@@ -1,0 +1,246 @@
+{
+  "cells": {
+    "worker": {
+      "complete.json": {
+        "cell_error": "runner exit=1 timed_out=False",
+        "cell_status": "error",
+        "completed": true,
+        "condition": "worker",
+        "disk_free_gb": 72.54,
+        "elapsed_seconds": 350.01,
+        "generation_seed": 748370930,
+        "grade": {
+          "completed_instances": 1,
+          "empty_patch_instances": 0,
+          "error_instances": 0,
+          "infra_failure_instances": 0,
+          "resolved_instances": 1,
+          "unresolved_instances": 0
+        },
+        "grade_returncode": 0,
+        "grade_timed_out": false,
+        "instance_id": "django__django-10097",
+        "key": "django__django-10097--worker",
+        "manifest_sha256": "9e662f1174352ffe349fd9e14ef0957aa8bee4308e3c502fcc56d572c995f0c0",
+        "prediction": "/home/iclab/bid-benchmarks/swebench-verified20-2026-11-02/runs/django__django-10097--worker/controller/prediction.jsonl",
+        "queue_index": 1,
+        "run_id": "verified20-worker-f4999e9656a5-a1-4c0992c00cff",
+        "source_sha256": "f4999e9656a553321af77c2111340ac80c6899be1afe84a1e0d708d31a828f23",
+        "total": 3
+      },
+      "controller/status.json": {
+        "anchor_monotonic": 79696.33846204,
+        "arm": "worker",
+        "deadline_monotonic": 80296.33846204,
+        "error": "runner exit=1 timed_out=False",
+        "executor": "per-RUN offline container, project only at /testbed",
+        "patch_empty": true,
+        "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runner_returncode": 1,
+        "runner_timed_out": false,
+        "setup_seconds": 4.314743052003905,
+        "terminal_status": "error",
+        "timestamp": 1793622208.5571344
+      },
+      "controller/deadline.json": {
+        "cell": "worker-117fc9fa20",
+        "deadline_monotonic": 80296.33846204,
+        "role": "worker",
+        "seconds": 600,
+        "started_monotonic": 79696.33846204,
+        "ts": 1793622062.4223921
+      },
+      "controller/prediction.status.json": {
+        "error": "worker failed: {'status': 'timeout', 'reason': 'inactive 146s'}",
+        "patch_empty": true,
+        "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "terminal_status": "error",
+        "timestamp": 1793622208.0741117
+      },
+      "grade_summary": [
+        "Total instances: 1",
+        "Instances submitted: 1",
+        "Instances completed: 1",
+        "Instances incomplete: 0",
+        "Instances resolved: 1",
+        "Instances unresolved: 0",
+        "Instances with likely infrastructure failures: 0",
+        "Instances with ambiguous failures: 0",
+        "Instances with empty patches: 0",
+        "Instances with errors: 0",
+        "Report written to logs/evaluation/verified20-worker-f4999e9656a5-a1-4c0992c00cff/results.json"
+      ]
+    },
+    "mini": {
+      "complete.json": {
+        "cell_error": "",
+        "cell_status": "ok",
+        "completed": true,
+        "condition": "mini",
+        "disk_free_gb": 72.47,
+        "elapsed_seconds": 231.04,
+        "generation_seed": 748370930,
+        "grade": {
+          "completed_instances": 1,
+          "empty_patch_instances": 0,
+          "error_instances": 0,
+          "infra_failure_instances": 0,
+          "resolved_instances": 1,
+          "unresolved_instances": 0
+        },
+        "grade_returncode": 0,
+        "grade_timed_out": false,
+        "instance_id": "django__django-10097",
+        "key": "django__django-10097--mini",
+        "manifest_sha256": "9e662f1174352ffe349fd9e14ef0957aa8bee4308e3c502fcc56d572c995f0c0",
+        "prediction": "/home/iclab/bid-benchmarks/swebench-verified20-2026-11-02/runs/django__django-10097--mini/controller/prediction.jsonl",
+        "queue_index": 2,
+        "run_id": "verified20-mini-f4999e9656a5-a1-ead922bee6fa",
+        "source_sha256": "f4999e9656a553321af77c2111340ac80c6899be1afe84a1e0d708d31a828f23",
+        "total": 3
+      },
+      "controller/status.json": {
+        "anchor_monotonic": 80048.067233575,
+        "arm": "mini",
+        "deadline_monotonic": 80648.067233575,
+        "error": "",
+        "patch_empty": true,
+        "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "returncode": 0,
+        "setup_seconds": 6.030701515992405,
+        "terminal_status": "ok",
+        "timed_out": false,
+        "timestamp": 1793622441.8473122
+      },
+      "controller/deadline.json": {
+        "cell": "mini-e694bca1da",
+        "deadline_monotonic": 80648.067233575,
+        "role": "mini",
+        "seconds": 600,
+        "started_monotonic": 80048.067233575,
+        "ts": 1793622414.1511638
+      },
+      "grade_summary": [
+        "Total instances: 1",
+        "Instances submitted: 1",
+        "Instances completed: 1",
+        "Instances incomplete: 0",
+        "Instances resolved: 1",
+        "Instances unresolved: 0",
+        "Instances with likely infrastructure failures: 0",
+        "Instances with ambiguous failures: 0",
+        "Instances with empty patches: 0",
+        "Instances with errors: 0",
+        "Report written to logs/evaluation/verified20-mini-f4999e9656a5-a1-ead922bee6fa/results.json"
+      ]
+    },
+    "bid": {
+      "complete.json": {
+        "cell_error": "runner exit=1 timed_out=False",
+        "cell_status": "error",
+        "completed": true,
+        "condition": "bid",
+        "disk_free_gb": 72.26,
+        "elapsed_seconds": 643.24,
+        "generation_seed": 748370930,
+        "grade": {
+          "completed_instances": 1,
+          "empty_patch_instances": 0,
+          "error_instances": 0,
+          "infra_failure_instances": 0,
+          "resolved_instances": 1,
+          "unresolved_instances": 0
+        },
+        "grade_returncode": 0,
+        "grade_timed_out": false,
+        "instance_id": "django__django-10097",
+        "key": "django__django-10097--bid",
+        "manifest_sha256": "9e662f1174352ffe349fd9e14ef0957aa8bee4308e3c502fcc56d572c995f0c0",
+        "prediction": "/home/iclab/bid-benchmarks/swebench-verified20-2026-11-02/runs/django__django-10097--bid/controller/prediction.jsonl",
+        "queue_index": 3,
+        "run_id": "verified20-bid-f4999e9656a5-a1-7a2b2a22ea9c",
+        "source_sha256": "f4999e9656a553321af77c2111340ac80c6899be1afe84a1e0d708d31a828f23",
+        "total": 3
+      },
+      "controller/status.json": {
+        "anchor_monotonic": 80277.539112803,
+        "arm": "bid",
+        "deadline_monotonic": 80877.539112803,
+        "error": "runner exit=1 timed_out=False",
+        "executor": "per-RUN offline container, project only at /testbed",
+        "patch_empty": true,
+        "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "runner_returncode": 1,
+        "runner_timed_out": false,
+        "setup_seconds": 4.459511494002072,
+        "terminal_status": "error",
+        "timestamp": 1793623086.1410131
+      },
+      "controller/deadline.json": {
+        "cell": "bid-70413be97f",
+        "deadline_monotonic": 80877.539112803,
+        "role": "bid",
+        "seconds": 600,
+        "started_monotonic": 80277.539112803,
+        "ts": 1793622643.6230433
+      },
+      "controller/prediction.status.json": {
+        "error": "BID run failed: {'status': 'error', 'reason': 'Worker 1 failed', 'detail': {'status': 'error', 'reason': \"model request failed: Client error '429 Too Many Requests' for url 'http://127.0.0.1:49161/v1/chat/completions'\\nFor more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/429\", 'termination': 'error'}}",
+        "patch_empty": true,
+        "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "terminal_status": "error",
+        "timestamp": 1793623085.6415477
+      },
+      "grade_summary": [
+        "Total instances: 1",
+        "Instances submitted: 1",
+        "Instances completed: 1",
+        "Instances incomplete: 0",
+        "Instances resolved: 1",
+        "Instances unresolved: 0",
+        "Instances with likely infrastructure failures: 0",
+        "Instances with ambiguous failures: 0",
+        "Instances with empty patches: 0",
+        "Instances with errors: 0",
+        "Report written to logs/evaluation/verified20-bid-f4999e9656a5-a1-7a2b2a22ea9c/results.json"
+      ]
+    }
+  },
+  "server_stopped": {
+    "pid": 18002,
+    "reason": "SIGTERM stopped process",
+    "stopped": true
+  },
+  "runtime": {
+    "result_server_stop": {
+      "stopped": false,
+      "reason": "executable mismatch"
+    },
+    "server_identity": {
+      "pid": 18002,
+      "starttime_ticks": 7969035
+    },
+    "server_pid": "18002",
+    "pilot_pid": "18031",
+    "approval": {
+      "approved_utc": "2026-11-02T12:20:53Z",
+      "source": "f4999e9656a553321af77c2111340ac80c6899be1afe84a1e0d708d31a828f23",
+      "manifest": "9e662f1174352ffe349fd9e14ef0957aa8bee4308e3c502fcc56d572c995f0c0",
+      "scope": "first frozen issue all three arms only",
+      "issue": "django__django-10097",
+      "order": [
+        "worker",
+        "mini",
+        "bid"
+      ],
+      "gate": {
+        "gold_pass": 20,
+        "base_fail": 19,
+        "metric_blind": [
+          "django__django-10097"
+        ]
+      },
+      "metric_policy": "preserve raw all20 and separately predeclared19 discriminator subset; no claim of actual bug fix from metric-blind case"
+    }
+  }
+}

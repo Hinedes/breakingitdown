@@ -1,0 +1,57 @@
+{
+  "at": "2026-11-02",
+  "method": "du -x -B1 --max-depth=1, allocated bytes, symlinks not followed; GiB = bytes/2^30",
+  "guest_df_after": {"size": 269427478528, "used": 169662173184, "available": 86004633600},
+  "host_c_free_after": 5694988288,
+  "root_depth1": {
+    "/home": 142811942912,
+    "/usr": 17796538368,
+    "/var": 537518080,
+    "/opt": 2172547072,
+    "/tmp": 1357959168,
+    "/lost+found": 16384,
+    "total": 164854391904
+  },
+  "home_iclab_depth1": {
+    ".local": 79163289600,
+    "grafting-resume": 13764595712,
+    "bid-models": 10181922816,
+    ".venvs": 7504400384,
+    "arw": 6114459648,
+    "bid-benchmarks": 6077665280,
+    "zeroball": 5140770816,
+    "ARGUS": 5008805888,
+    "opt": 2260434944,
+    ".rustup": 1583906816,
+    "Proteus": 1447591936,
+    "bid-eval": 1097674752,
+    "bid-llama-runtime": 944226304,
+    ".cache": 419889152,
+    ".vscode-server": 407371776,
+    "bid-studies": 296787968,
+    "TALOS": 291012608,
+    ".vscode-remote-containers": 249995264,
+    ".opencode": 249819136,
+    ".triton": 164458496,
+    "Grafting-OCFDA": 106172416,
+    ".nv": 104288256,
+    ".npm": 89718784,
+    ".config": 65380352,
+    "btop": 24211456,
+    ".cargo": 20910080,
+    "BreakItDown": 7860224
+  },
+  "drilldowns": {
+    ".local": {".local/share": 70506631168, ".local/lib": 8540647424, ".local/bin": 81797120, ".local/usr": 34091008, ".local/state": 118784},
+    ".local/share": {".local/share/docker": 69458313216, ".local/share/uv": 522244096, ".local/share/opencode": 519786496, ".local/share/opentui": 5345280, ".local/share/fish": 909312},
+    "bid-benchmarks/swebench-verified20-2026-11-02": {"runs-export-v2": 4021346304, "mini-venv": 732921856, "runs": 512045056, "venv": 472956928, "source": 178200576, "logs": 134455296, "data": 20549632, "bid-source-c63701b9c9c6": 487424, "bid-source-f4999e9656a5": 475136, "frozen": 499712, "runtime": 1298432, "bid-source": 1994752, "pilot": 229376},
+    "grafting-resume": {".venv312": 7652175872, "gate-repro": 2217525248, "retention-2026-10-09": 1892171776, "interaction-retention-2026-10-10": 1676390400, "resume-stage": 182935552, "base-screen-2026-10-09": 52297728, "stage4-mnli-2026-10-28": 48095232},
+    "bid-studies": {"2026-11-01-llama1b": 280174592, "2026-11-02-qwen3-4b-development": 16609280}
+  },
+  "notes": [
+    "nested rows are not additive",
+    "du -x excludes other mounts and /proc virtual disks",
+    "docker data holds the 21 SWE-bench images used by the pilot; not pruned",
+    "/var reflects the completed apt-get clean (6.09 GB removed); other rows unchanged from the pre-APT snapshot"
+  ]
+}

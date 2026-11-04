@@ -1,0 +1,57 @@
+{
+  "at": "2026-11-02",
+  "scope": "controlled restart of Ubuntu-22.04 only; no host reboot, no global WSL shutdown, no repair",
+  "preconditions": {
+    "c_free_bytes_before": 5797543936,
+    "c_free_gib_before": 5.4,
+    "distro_state_before": "Running",
+    "other_distros": "none",
+    "authorization": "user explicit: restart only Ubuntu-22.04, journal replay risk accepted"
+  },
+  "terminate": {
+    "command": "wsl --terminate Ubuntu-22.04",
+    "result": "The operation completed successfully.",
+    "returncode": 0,
+    "state_after": "Stopped"
+  },
+  "start": {
+    "command": "wsl -d Ubuntu-22.04 -u iclab -- /bin/df -hT / /mnt/c",
+    "result": "The distribution failed to start. Error code: 6, failure step: 2 / Wsl/Service/CreateInstance/E_FAIL",
+    "returncode": 1,
+    "guest_online": false,
+    "retries": 0
+  },
+  "kernel_tail": {
+    "command": "wsl --system -- /bin/dmesg --level=err,warn --notime",
+    "result": "The distribution failed to start. Error code: 6, failure step: 2 / Wsl/Service/CreateInstance/E_FAIL",
+    "note": "system distro/utility VM also cannot start now; last readable kernel evidence remains wsl-kernel-io-error.txt"
+  },
+  "post_state": {
+    "distro_state": "Stopped",
+    "c_free_bytes": 5796823040,
+    "c_total_bytes": 999127248896,
+    "guest_processes": "none (VM down; rootless dockerd/containerd no longer running)",
+    "llm_proxy_pilot": "none"
+  },
+  "fs_health": {
+    "mount_rw_proven": false,
+    "journal_replay": "attempted by WSL start; distro failed to start afterwards - outcome not healthy",
+    "conclusion": "filesystem remains unstartable; no cell/checkpoint counts can be read"
+  },
+  "counts": {
+    "prefix_derived_preserved": 4,
+    "new_cells_completed": null,
+    "new_cells_graded": null,
+    "remaining": "unknown - cannot read runs-export-v2",
+    "note": "no inference/regrade was run"
+  },
+  "actions_not_taken": [
+    "no host reboot",
+    "no wsl --shutdown",
+    "no fsck / e2fsck",
+    "no remount / compact / resize / prune",
+    "no file deletion (outside the earlier authorized TEMP cleanup)",
+    "no model or cell launch",
+    "no guest cleanup"
+  ]
+}

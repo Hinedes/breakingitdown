@@ -1,0 +1,101 @@
+{
+  "paused": "django__django-11133--mini: grader completed_instances=0",
+  "diagnosed_utc": "2026-11-02",
+  "classification": {
+    "root_cause": "controller patch-export flaw: forced inclusion of gitignored runtime bytecode",
+    "not": [
+      "image or dependency fault",
+      "cache contamination",
+      "test-patch conflict",
+      "benchmark test modification",
+      "candidate source fix that failed to apply"
+    ],
+    "harness_pause_is_correct_given_grader_output": true,
+    "rescore_or_filter_now": false
+  },
+  "cell": {
+    "key": "django__django-11133--mini",
+    "run_id": "verified20-mini-f4999e9656a5-a1-bf5a26115265",
+    "checkpoint": "/home/iclab/bid-benchmarks/swebench-verified20-2026-11-02/runs/django__django-11133--mini/complete.json",
+    "checkpoint_present": true,
+    "checkpoint_completed": true,
+    "grade_returncode": 0,
+    "grade_timed_out": false,
+    "official": {
+      "total_instances": 1,
+      "submitted_instances": 1,
+      "completed_instances": 0,
+      "resolved_instances": 0,
+      "unresolved_instances": 0,
+      "infra_failure_instances": 0,
+      "error_instances": 1,
+      "empty_patch_instances": 0,
+      "error_ids": ["django__django-11133"]
+    },
+    "official_error": "swebench.harness.utils.EvaluationError: Error in evaluation for django__django-11133: >>>>> Patch Apply Failed",
+    "agent_exit": {
+      "source": "mini trajectory info.exit_status",
+      "label": "RepeatedFormatError",
+      "is_submitted": false,
+      "submission_chars": 0,
+      "api_calls": 16
+    },
+    "patch": {
+      "agent_patch_empty": false,
+      "agent_patch_sha256": "1304f4ef034f683bbce90abf2a6d528bd100179c93a165b66a313f429a664b44",
+      "prediction_file_sha256": "b4c2cfb82282b4b420b18b5a77f66ae475efbce39e7a6300a178d50194df495b",
+      "prediction_chars": 812291,
+      "diff_headers": 146,
+      "pycache_headers": 145,
+      "non_pycache_headers": 1,
+      "non_pycache_paths": ["test_memoryview.py"],
+      "touches_benchmark_tests": false
+    },
+    "usage": {
+      "requests": 16,
+      "accepted": 16,
+      "rejected": 0,
+      "prompt_tokens": 63630,
+      "completion_tokens": 3314,
+      "cached_tokens": 59046,
+      "logical_tokens": 66944,
+      "max_prompt_tokens": 5821,
+      "max_completion_tokens": 348,
+      "max_tokens_requested": [4096],
+      "usage_complete": true
+    },
+    "timing": {
+      "setup_s": 7.08,
+      "agent_s": 29.69,
+      "total_s": 55.3,
+      "grade_plus_remaining_s": 18.53,
+      "wall_budget_s": 600
+    }
+  },
+  "chain": [
+    "The mini agent ran Python inside the cell container, which mounts the host workspace at /testbed; that created 145 django/**/__pycache__/*.pyc files (cpython-36) plus one scratch file test_memoryview.py.",
+    "runner.extract_patch_in_container (frozen f4999) runs: git add -N -f -- . ':!<control paths>' then git diff --binary <base>. The -f force-adds ignored paths, so the 145 .pyc files entered the diff (filter_patch only drops BID control paths).",
+    "The official grader applies the patch inside the image's /testbed, which already contains those same .pyc files from image build (/testbed/django/__pycache__/__init__.cpython-36.pyc exists).",
+    "git apply prints 'would create ... which already exists! Skipping patch.' for each .pyc and exits non-zero; run_evaluation logs '>>>>> Patch Apply Failed' and raises EvaluationError.",
+    "results.json records submitted 1, completed 0, error 1, resolved 0, unresolved 0 - so the wrapper's completed_instances==1 requirement paused the cohort."
+  ],
+  "evidence": {
+    "workspace_git_status": "145 'A django/**/__pycache__/*.pyc' entries; .gitignore contains __pycache__, which only -f can override",
+    "frozen_extractor": "bid-source-f4999e9656a5/evaluation/swebench-pilot/runner.py:315-343 (add -N -f), protocol.py:183 filter_patch",
+    "grader_log": "logs/evaluation/verified20-mini-f4999e9656a5-a1-bf5a26115265/bid-pilot-mini/django__django-11133/run_instance.log",
+    "grade_summary": "logs/evaluation/verified20-mini-f4999e9656a5-a1-bf5a26115265/results.json",
+    "apply_attempts": ["git apply --verbose", "git apply --verbose --3way", "git apply --verbose --reject", "patch --batch --forward --fuzz=5 -p1"]
+  },
+  "remediation_options_for_primary_review": [
+    "Versioned source correction only (runner.py/protocol.py are in the f4999 fingerprint scope): stop force-adding ignored paths (git add -N without -f; explicit allow-list for anything that must bypass ignores), or have filter_patch/extraction drop __pycache__/, *.pyc, *.pyo.",
+    "Requires a new source identity + manifest pin, and a fresh pre-model gate check; no patch filtering or rescoring of this checkpoint.",
+    "No model retry for this cell. Keep the checkpoint, prediction, grade log and results.json byte-identical."
+  ],
+  "runtime": {
+    "server_stop_record": {"stopped": true, "pid": 23533, "returncode": 0,
+                            "pilot_stop": {"stopped": true, "pid": 23533, "reason": "SIGTERM stopped process"},
+                            "wrapper_escalated": false, "alive_after_stop": false},
+    "note": "state is the launcher's stop record; primary's fresh check reported no LLM/proxy/pilot/containers"
+  },
+  "checkpoint_visibility": "final.json: ran_cells 1, skipped_cells 3, checkpoints_present 4, canary hashes unchanged"
+}

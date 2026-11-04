@@ -1,0 +1,39 @@
+{
+  "treatment": "development-smoke-2026-11-02-qwen3-4b-instruct-2507-q8_0",
+  "classification": "bounded product-development CLI validation; not a benchmark or architecture comparison",
+  "source": {
+    "repository": "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF",
+    "revision": "ae44f08e1392f39c0e474af10c3ff8355c8b6688",
+    "filename": "Qwen_Qwen3-4B-Instruct-2507-Q8_0.gguf",
+    "size_bytes": 4280405216,
+    "downloaded_file_sha256": "260b5b5b6ad73e44df81a43ea1f5c11c37007b6bac18eb3cd2016e8667c19662",
+    "base_model": "Qwen/Qwen3-4B-Instruct-2507",
+    "base_model_license": "Apache-2.0",
+    "quantization": "Q8_0"
+  },
+  "runtime": {
+    "server": "/home/iclab/bid-llama-runtime/src/llama.cpp/build/bin/llama-server",
+    "llama_cpp_commit": "8642541b255bfb5dc39cd351a178be09013a55d6",
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "endpoint": "http://127.0.0.1:8081",
+    "slots": 1,
+    "context_requested_and_allocated": 65536,
+    "kv_cache": "Q8_0 K and V",
+    "gpu_layers_requested": 99,
+    "seed": 20261124,
+    "actual_settings_file": "runtime/actual-settings.txt",
+    "gpu_after_load_csv": "runtime/gpu-after-load.csv",
+    "gpu_after_runs_csv": "runtime/gpu-after-runs.csv",
+    "gpu_memory_used_after_runs_mib_reported_by_nvidia_smi": 9986
+  },
+  "cli": {
+    "optional_protocol_grammar": false,
+    "host_RUN": false,
+    "max_searches_per_worker": 0,
+    "max_tokens": 2048,
+    "max_task_reworks": 1,
+    "max_manager_reworks": 1,
+    "provisional_batch": 1
+  },
+  "chat_template_inspection": "Pinned base tokenizer_config.json template has no enable_thinking variable or think-token insertion in its generation prefix. Existing client chat_template_kwargs enable_thinking=true was not changed; this template ignores that extra variable. llama.cpp startup log reported thinking=1; the captured startup log is retained without interpreting that detector flag as injected think text."
+}

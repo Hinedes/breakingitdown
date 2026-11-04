@@ -1,0 +1,76 @@
+{
+  "remote_root": "/home/iclab/bid-studies/2026-11-01-llama1b/development-primary-verify-2026-11-02",
+  "source_manifest_sha256": "f4e87c40701c449c9b1f6afc35fb7aa99502e2839882257d204a8b6264e72c2a",
+  "tests": "........................................................................ [ 36%]\n........................................................................ [ 73%]\n...................................................                      [100%]\n195 passed in 2.83s",
+  "test_command": [
+    "/home/iclab/bid-studies/2026-11-01-llama1b/test-venv-epoch-10/bin/python",
+    "-m",
+    "pytest",
+    "-q",
+    "-p",
+    "no:cacheprovider",
+    "tests"
+  ],
+  "task": "Create arithmetic.py defining double(value), which returns twice value. Create main.py using from arithmetic import double and print the result of double(21) when run. Create only these two files.",
+  "commands": [
+    {
+      "args": [
+        "init",
+        "Create arithmetic.py defining double(value), which returns twice value. Create main.py using from arithmetic import double and print the result of double(21) when run. Create only these two files."
+      ],
+      "returncode": 0,
+      "stdout": "Initializing project with task: Create arithmetic.py defining double(value), which returns twice value. Create main.py using from arithmetic import double and print the result of double(21) when run. Create only these two files.\nProject initialized. Use 'bid run' to start working.\n",
+      "stderr": ""
+    },
+    {
+      "args": [
+        "run"
+      ],
+      "returncode": 0,
+      "stdout": "Worker 1...\nWorker 1 submitted T1 (normal, s2).\nWorker 2...\nWorker 2 submitted T2 (normal, s4).\nTask completed!\n",
+      "stderr": ""
+    }
+  ],
+  "runtime": {
+    "model_alias": "Qwen3-4B-Instruct-2507-Q8_0",
+    "n_ctx": 65536,
+    "slots": 1
+  },
+  "gpu_loaded": "NVIDIA GeForce RTX 5070 Ti, 9973 MiB, 6023 MiB",
+  "bid_environment": {
+    "BID_MODEL_ENDPOINT": "http://127.0.0.1:8081/v1/chat/completions",
+    "BID_MODEL_NAME": "Qwen3-4B-Instruct-2507-Q8_0",
+    "BID_WORKSPACE": "/home/iclab/bid-studies/2026-11-01-llama1b/development-primary-verify-2026-11-02/workspace",
+    "BID_MAX_TOKENS": "2048",
+    "BID_REQUEST_TIMEOUT": "20",
+    "BID_WORKER_TIMEOUT": "45",
+    "BID_INACTIVITY_TIMEOUT": "30",
+    "BID_REPEAT_ACTION_LIMIT": "3",
+    "BID_PROVISIONAL_BATCH": "1",
+    "BID_MAX_TASK_REWORKS": "1",
+    "BID_MAX_MANAGER_REWORKS": "1",
+    "BID_PROTOCOL_GRAMMAR": "0",
+    "BID_MAX_SEARCHES": "0"
+  },
+  "roles": {
+    "manager": 1,
+    "worker": 4,
+    "reviewer": 2,
+    "manager_reconcile": 3
+  },
+  "todo": "- [x] T1 \u2014 create arithmetic.py with function double(value) that returns twice value\n- [x] T2 \u2014 create main.py with from arithmetic import double and print(double(21))",
+  "ratified_tasks": [
+    "T1",
+    "T2"
+  ],
+  "isolated_artifact_check": {
+    "returncode": 0,
+    "timed_out": false,
+    "wall_s": 0.367,
+    "stdout": "42\n",
+    "stderr": ""
+  },
+  "pass": true,
+  "owned_server_stopped": true,
+  "gpu_after": "NVIDIA GeForce RTX 5070 Ti, 390 MiB, 15606 MiB"
+}

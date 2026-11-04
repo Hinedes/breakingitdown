@@ -1,0 +1,1 @@
+Create hello.txt containing exactly the single line `hello from BID` with one final newline. Create no other project files. One checklist item is sufficient.

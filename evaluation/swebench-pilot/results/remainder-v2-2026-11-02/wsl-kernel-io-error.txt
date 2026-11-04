@@ -1,0 +1,356 @@
+Hyper-V: Disabling IBT because of Hyper-V bug
+PCI: Fatal: No config space access function found
+PCI: System does not support PCI
+device-mapper: core: CONFIG_IMA_DISABLE_HTABLE is disabled. Duplicate IMA measurements will not be recorded in the IMA log.
+misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+weston[327]: memfd_create() called without MFD_EXEC or MFD_NOEXEC_SEAL set
+WSL (299) ERROR: CheckConnection: getaddrinfo() failed: -5
+Exception: 
+Operation canceled @p9io.cpp:258 (AcceptAsync)
+
+misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+Exception: 
+Operation canceled @p9io.cpp:258 (AcceptAsync)
+
+misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+TCP: eth0: Driver has suspect GRO implementation, TCP performance may be compromised.
+Exception: 
+Operation canceled @p9io.cpp:258 (AcceptAsync)
+
+misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+Exception: 
+Operation canceled @p9io.cpp:258 (AcceptAsync)
+
+misc dxg: dxgk: dxgkio_is_feature_enabled: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -2
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+CPU: 4 PID: 6309 Comm: cp Not tainted 6.6.87.2-microsoft-standard-WSL2 #1
+RIP: 0033:0x738903714907
+Code: 10 00 f7 d8 64 89 02 48 c7 c0 ff ff ff ff eb b7 0f 1f 00 f3 0f 1e fa 64 8b 04 25 18 00 00 00 85 c0 75 10 b8 01 00 00 00 0f 05 <48> 3d 00 f0 ff ff 77 51 c3 48 83 ec 28 48 89 54 24 18 48 89 74 24
+RSP: 002b:00007ffcf7f1c498 EFLAGS: 00000246 ORIG_RAX: 0000000000000001
+RAX: ffffffffffffffe5 RBX: 0000000000020000 RCX: 0000738903714907
+RDX: 0000000000020000 RSI: 0000738903588000 RDI: 0000000000000004
+RBP: 0000000000020000 R08: 0000000000000000 R09: 0000000000000000
+R10: 0000000000000022 R11: 0000000000000246 R12: 0000738903588000
+R13: 0000000000000004 R14: 0000000000020000 R15: 0000000000000000
+FS:  000073890384f340 GS:  0000000000000000
+CPU: 6 PID: 6317 Comm: cp Not tainted 6.6.87.2-microsoft-standard-WSL2 #1
+RIP: 0033:0x7aab95514907
+Code: 10 00 f7 d8 64 89 02 48 c7 c0 ff ff ff ff eb b7 0f 1f 00 f3 0f 1e fa 64 8b 04 25 18 00 00 00 85 c0 75 10 b8 01 00 00 00 0f 05 <48> 3d 00 f0 ff ff 77 51 c3 48 83 ec 28 48 89 54 24 18 48 89 74 24
+RSP: 002b:00007ffc561d1468 EFLAGS: 00000246 ORIG_RAX: 0000000000000001
+RAX: ffffffffffffffe5 RBX: 0000000000020000 RCX: 00007aab95514907
+RDX: 0000000000020000 RSI: 00007aab95388000 RDI: 0000000000000004
+RBP: 0000000000020000 R08: 0000000000000000 R09: 0000000000000000
+R10: 0000000000000022 R11: 0000000000000246 R12: 00007aab95388000
+R13: 0000000000000004 R14: 0000000000020000 R15: 0000000000000000
+FS:  00007aab9563d340 GS:  0000000000000000
+WSL (6318 - CaptureCrash) ERROR: ReceiveMessage:253: ExpectedMessage LxMessageResultInt32, but socket crash-dump was closed
+WSL (6318) ERROR: Invalid argument @C:/__w/1/s/src/shared/inc\SocketChannel.h:254 (ReceiveMessage)
+CPU: 1 PID: 6329 Comm: cp Not tainted 6.6.87.2-microsoft-standard-WSL2 #1
+RIP: 0033:0x77a9a6514907
+Code: 10 00 f7 d8 64 89 02 48 c7 c0 ff ff ff ff eb b7 0f 1f 00 f3 0f 1e fa 64 8b 04 25 18 00 00 00 85 c0 75 10 b8 01 00 00 00 0f 05 <48> 3d 00 f0 ff ff 77 51 c3 48 83 ec 28 48 89 54 24 18 48 89 74 24
+RSP: 002b:00007fffc9857dc8 EFLAGS: 00000246 ORIG_RAX: 0000000000000001
+RAX: ffffffffffffffe5 RBX: 0000000000020000 RCX: 000077a9a6514907
+RDX: 0000000000020000 RSI: 000077a9a6666000 RDI: 0000000000000004
+RBP: 0000000000020000 R08: 0000000000000000 R09: 0000000000000000
+R10: 0000000000000022 R11: 0000000000000246 R12: 000077a9a6666000
+R13: 0000000000000004 R14: 0000000000020000 R15: 0000000000000000
+FS:  000077a9a66e6340 GS:  0000000000000000
+CPU: 5 PID: 6337 Comm: cp Not tainted 6.6.87.2-microsoft-standard-WSL2 #1
+RIP: 0033:0x72553b714907
+Code: 10 00 f7 d8 64 89 02 48 c7 c0 ff ff ff ff eb b7 0f 1f 00 f3 0f 1e fa 64 8b 04 25 18 00 00 00 85 c0 75 10 b8 01 00 00 00 0f 05 <48> 3d 00 f0 ff ff 77 51 c3 48 83 ec 28 48 89 54 24 18 48 89 74 24
+RSP: 002b:00007ffc3b3e1b08 EFLAGS: 00000246 ORIG_RAX: 0000000000000001
+RAX: ffffffffffffffe5 RBX: 0000000000020000 RCX: 000072553b714907
+RDX: 0000000000020000 RSI: 000072553b548000 RDI: 0000000000000004
+RBP: 0000000000020000 R08: 0000000000000000 R09: 0000000000000000
+R10: 0000000000000022 R11: 0000000000000246 R12: 000072553b548000
+R13: 0000000000000004 R14: 0000000000020000 R15: 0000000000000000
+FS:  000072553b89f340 GS:  0000000000000000
+WSL (6338 - CaptureCrash) ERROR: ReceiveMessage:253: ExpectedMessage LxMessageResultInt32, but socket crash-dump was closed
+WSL (6338) ERROR: Invalid argument @C:/__w/1/s/src/shared/inc\SocketChannel.h:254 (ReceiveMessage)
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+tmpfs: Bad value for 'uid'
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+misc dxg: dxgk: dxgkio_query_adapter_info: Ioctl failed: -22
+hv_storvsc fd1d2cbd-ce7c-535c-966b-eb5f811c95f0: tag#138 cmd 0x2a status: scsi 0x2 srb 0xa hv 0xc0000001
+hv_storvsc fd1d2cbd-ce7c-535c-966b-eb5f811c95f0: tag#136 cmd 0x2a status: scsi 0x2 srb 0xa hv 0xc0000001
+hv_storvsc fd1d2cbd-ce7c-535c-966b-eb5f811c95f0: tag#140 cmd 0x2a status: scsi 0x2 srb 0x8 hv 0xc0000001
+hv_storvsc fd1d2cbd-ce7c-535c-966b-eb5f811c95f0: tag#139 cmd 0x2a status: scsi 0x2 srb 0x8 hv 0xc0000001
+hv_storvsc fd1d2cbd-ce7c-535c-966b-eb5f811c95f0: tag#141 cmd 0x2a status: scsi 0x2 srb 0x8 hv 0xc0000001
+hv_storvsc fd1d2cbd-ce7c-535c-966b-eb5f811c95f0: tag#148 cmd 0x2a status: scsi 0x2 srb 0x8 hv 0xc0000001
+hv_storvsc fd1d2cbd-ce7c-535c-966b-eb5f811c95f0: tag#147 cmd 0x2a status: scsi 0x2 srb 0x8 hv 0xc0000001
+hv_storvsc fd1d2cbd-ce7c-535c-966b-eb5f811c95f0: tag#146 cmd 0x2a status: scsi 0x2 srb 0x8 hv 0xc0000001
+hv_storvsc fd1d2cbd-ce7c-535c-966b-eb5f811c95f0: tag#145 cmd 0x2a status: scsi 0x2 srb 0x8 hv 0xc0000001
+hv_storvsc fd1d2cbd-ce7c-535c-966b-eb5f811c95f0: tag#144 cmd 0x2a status: scsi 0x2 srb 0x8 hv 0xc0000001
+sd 0:0:0:3: rejecting I/O to offline device
+I/O error, dev sdd, sector 268283664 op 0x1:(WRITE) flags 0xd800 phys_seg 320 prio class 2
+I/O error, dev sdd, sector 453699000 op 0x1:(WRITE) flags 0x0 phys_seg 142 prio class 2
+I/O error, dev sdd, sector 268286224 op 0x1:(WRITE) flags 0xd800 phys_seg 320 prio class 2
+EXT4-fs warning (device sdd): ext4_end_bio:342: I/O error 10 writing to inode 2396624 starting block 56712375)
+I/O error, dev sdd, sector 268288784 op 0x1:(WRITE) flags 0x9800 phys_seg 190 prio class 2
+EXT4-fs warning (device sdd): ext4_end_bio:342: I/O error 10 writing to inode 2396625 starting block 56712377)
+Buffer I/O error on device sdd, logical block 56712375
+Buffer I/O error on device sdd, logical block 56712376
+I/O error, dev sdd, sector 453668896 op 0x1:(WRITE) flags 0x0 phys_seg 1 prio class 2
+Aborting journal on device sdd-8.
+I/O error, dev sdd, sector 268173312 op 0x1:(WRITE) flags 0x9800 phys_seg 1 prio class 2
+I/O error, dev sdd, sector 268173312 op 0x1:(WRITE) flags 0x9800 phys_seg 1 prio class 2
+Buffer I/O error on dev sdd, logical block 33521664, lost sync page write
+JBD2: I/O error when updating journal superblock for sdd-8.
+EXT4-fs warning (device sdd): ext4_end_bio:342: I/O error 10 writing to inode 2396626 starting block 56712387)
+I/O error, dev sdd, sector 0 op 0x1:(WRITE) flags 0x3800 phys_seg 1 prio class 2
+I/O error, dev sdd, sector 0 op 0x1:(WRITE) flags 0x3800 phys_seg 1 prio class 2
+Buffer I/O error on dev sdd, logical block 0, lost sync page write
+EXT4-fs (sdd): I/O error while writing superblock
+Buffer I/O error on device sdd, logical block 56712377
+Buffer I/O error on device sdd, logical block 56712378
+Buffer I/O error on device sdd, logical block 56712379
+Buffer I/O error on device sdd, logical block 56712380
+Buffer I/O error on device sdd, logical block 56712381
+Buffer I/O error on device sdd, logical block 56712382
+Buffer I/O error on device sdd, logical block 56712383
+Buffer I/O error on device sdd, logical block 56712384
+EXT4-fs warning (device sdd): ext4_end_bio:342: I/O error 10 writing to inode 2401610 starting block 56708612)
+EXT4-fs warning (device sdd): ext4_end_bio:342: I/O error 10 writing to inode 2396627 starting block 56712396)
+I/O error, dev sdd, sector 23032 op 0x1:(WRITE) flags 0x3000 phys_seg 1 prio class 2
+EXT4-fs warning (device sdd): ext4_end_bio:342: I/O error 10 writing to inode 2396628 starting block 56712397)
+Buffer I/O error on dev sdd, logical block 2879, lost async page write
+EXT4-fs warning (device sdd): ext4_end_bio:342: I/O error 10 writing to inode 2396629 starting block 56712400)
+Buffer I/O error on dev sdd, logical block 2853, lost async page write
+EXT4-fs warning (device sdd): ext4_end_bio:342: I/O error 10 writing to inode 2396630 starting block 56712402)
+Buffer I/O error on dev sdd, logical block 2804, lost async page write
+EXT4-fs warning (device sdd): ext4_end_bio:342: I/O error 10 writing to inode 2396631 starting block 56712403)
+Buffer I/O error on dev sdd, logical block 2798, lost async page write
+EXT4-fs warning (device sdd): ext4_end_bio:342: I/O error 10 writing to inode 2396632 starting block 56712408)
+Buffer I/O error on dev sdd, logical block 2792, lost async page write
+Buffer I/O error on dev sdd, logical block 2789, lost async page write
+Buffer I/O error on dev sdd, logical block 2742, lost async page write
+Buffer I/O error on dev sdd, logical block 2722, lost async page write
+WSL (1 - init(Ubuntu-22.04)) ERROR: ConfigCreateResolvConfSymlink:1382: symlink(/mnt/wsl/resolv.conf, /etc/resolv.conf) failed 17
+WSL (1 - init(Ubuntu-22.04)) ERROR: ConfigCreateResolvConfSymlink:1382: symlink(/mnt/wsl/resolv.conf, /etc/resolv.conf) failed 17
+WSL (1 - init(Ubuntu-22.04)) ERROR: ConfigCreateResolvConfSymlink:1382: symlink(/mnt/wsl/resolv.conf, /etc/resolv.conf) failed 17

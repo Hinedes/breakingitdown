@@ -1,0 +1,25 @@
+{
+  "benchmark_revision": 2,
+  "contract_change": "This is a new contract, not the original A/B contract.",
+  "task_file": "task.txt",
+  "task_sha256": "971dc0b9c4fd99af543196d668403858bf361612e90627d960e232c63f5564b8",
+  "task_utf8_bytes": 513,
+  "model": {
+    "tag": "bid-qwen3.5:4b-ctx64k",
+    "derived_digest": "c727d70306002e9d13bd0ad52e9da8d890ed532d9a75ffafa21ce2ac9ddec6ca",
+    "base_digest": "2a654d98e6fba55d452b7043684e9b57a947e393bbffa62485a7aac05ee4eefd",
+    "loaded_context": 65536
+  },
+  "contract": {
+    "1": "argus.solve.PhysicallyInvalidError is the exact failure API",
+    "2": "solve_point raises it when no physically valid beam-constrained solution exists",
+    "3": "Valid calls retain the existing ndarray return contract",
+    "4": "Tuple or None return signaling does not satisfy revision 2",
+    "5": "Production callers must not receive an unhandled exception or continue using a fabricated point",
+    "6": "Existing public caller return contracts must remain unchanged",
+    "7": "The existing complete suite must pass",
+    "8": "Regressions for the all-invalid case and affected callers must be added",
+    "physicallyinvaliderror_module": "argus.solve",
+    "physicallyinvaliderror_name": "PhysicallyInvalidError"
+  }
+}

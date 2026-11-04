@@ -1,0 +1,60 @@
+{
+  "at": "2026-11-02",
+  "scope": "user-approved temporary swap=0 test; one Ubuntu start; read-only checks",
+  "config": {
+    "path": "C:\\Users\\user\\.wslconfig",
+    "bytes_before": 34,
+    "sha256_before": "E64FFED8BF9C4402C82A8ED904DDF22F2AFEC80BD0A023556757EC798667C487",
+    "bytes_after": 31,
+    "sha256_after": "E044C9154E05B90BF1A7A9B2C7C4680B68A3952D89316A71CC47FC021ED2FD77",
+    "backup_path": "C:\\Users\\user\\.wslconfig.bak-20261102-233646",
+    "backup_bytes": 34,
+    "backup_sha256": "E64FFED8BF9C4402C82A8ED904DDF22F2AFEC80BD0A023556757EC798667C487",
+    "change": "only the byte sequence 'swap=32GB' replaced with 'swap=0'; BOM, memory=100GB and line endings preserved",
+    "restore_command": "Copy-Item -LiteralPath 'C:\\Users\\user\\.wslconfig.bak-20261102-233646' -Destination 'C:\\Users\\user\\.wslconfig' -Force",
+    "restore_note": "do not restore while C: is still full; 32GB swap is the suspected startup blocker"
+  },
+  "host_free": {
+    "before_bytes": 5834211328,
+    "after_bytes": 5726736384,
+    "total_bytes": 999127248896
+  },
+  "start": {
+    "command": "wsl -d Ubuntu-22.04 -u iclab -- /bin/df -hT / /mnt/c",
+    "result": "SUCCESS",
+    "guest_online": true
+  },
+  "guest": {
+    "kernel": "6.6.87.2-microsoft-standard-WSL2",
+    "root_device": "/dev/sdc",
+    "root_mount": "ext4 rw,relatime,discard,errors=remount-ro,data=ordered",
+    "df_root": {"size": "251G", "used": "170G", "avail": "69G", "use": "72%"},
+    "df_mnt_c": {"size": "931G", "used": "926G", "avail": "5.4G", "use": "100%"},
+    "mem_total": "98Gi",
+    "swap": "0B",
+    "journal": "EXT4-fs (sdc): recovery complete; mounted r/w with ordered data mode",
+    "ext4_errors_this_boot": "none in dmesg (only dxg/p9 warnings)"
+  },
+  "cells": {
+    "source": "runs-export-v2/complete.json contents, not directory counts",
+    "cell_dirs": 24,
+    "checkpoints": 23,
+    "prefix_v2": 4,
+    "new": 19,
+    "completed_true": 23,
+    "resolved": 3,
+    "unresolved": 20,
+    "error_gt0": 0,
+    "infra_gt0": 0,
+    "new_status": {"ok": 11, "error": 8},
+    "incomplete_without_checkpoint": ["django__django-15973--worker"],
+    "prefix_records_intact": true,
+    "note": "3 resolved are the metric-blind django__django-10097 prefix cells; all new cells are genuinely unresolved, not errors"
+  },
+  "actions_not_taken": [
+    "no wsl --shutdown",
+    "no service restart / host reboot",
+    "no fsck / mount / remount / resize / compact / prune / delete",
+    "no model, docker, agent, pilot, grade or inference"
+  ]
+}

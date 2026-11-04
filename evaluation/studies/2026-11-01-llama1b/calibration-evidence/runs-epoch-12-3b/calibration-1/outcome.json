@@ -1,0 +1,41 @@
+{
+  "cohort": "epoch-12-3b",
+  "task_sha256": "ef99386c5d0df9b1d7e345adc5150e13a1e6b7ccbc9203470c6fc40b52f4e6cc",
+  "source_manifest_sha256": "8fac8838121cc1713a103b29ceda4c4bf234940888b7fd83faddc9141a55da39",
+  "generation_seed": 20261104,
+  "seed_application": "LlamaCppBackend payload on every generation; TracedBackend token-preflight payload also includes seed",
+  "model_repository": "bartowski/Llama-3.2-3B-Instruct-GGUF",
+  "model_revision": "5ab33fa94d1d04e903623ae72c95d1696f09f9e8",
+  "model_quantization": "Q8_0 weights; Q8_0 K/V cache",
+  "model_sha256": "b5607b5090a8280063fff2d706bb3408ca6542341b06aab39c3eca0a28575921",
+  "effective_context": 65536,
+  "init": {
+    "status": "success",
+    "state": "s1"
+  },
+  "result": {
+    "status": "error",
+    "reason": "Worker 1 failed",
+    "detail": {
+      "status": "error",
+      "reason": "model request failed: token_cap_prompt",
+      "termination": "error"
+    }
+  },
+  "role_requests": {
+    "manager": 1,
+    "worker": 25
+  },
+  "reviewer_verdicts": 0,
+  "manager_decisions": 0,
+  "worker_sessions": 1,
+  "tokens": 28473,
+  "missing_usage_requests": 0,
+  "request_count": 26,
+  "wall_s": 3.545,
+  "task_files": {},
+  "hidden_check": {
+    "pass": false
+  },
+  "trace_sha256": "95da1235119c2ff8ca41b4912de3c198c75f71005beb66f9cc9f6254ac4675c8"
+}
