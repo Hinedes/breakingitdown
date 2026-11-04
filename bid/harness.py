@@ -564,6 +564,29 @@ def _escalation_evidence(vc_system, tasks, number, base_state, candidate_state, 
     )
 
 
+def _escalated_rework_as_replace(decision, tasks, active, escalated):
+    """Read `# Rework Tn` on the escalated task as the rewrite the prompt asked for.
+
+    The prompt tells the Manager to use # Replace Remaining Plan, but a small model answers with the
+    word the rest of the protocol teaches it (v1 pilot: 3 of 20 BID cells ended on this). Tn keeps its
+    text plus the stated requirement; every other unchecked task is carried over unchanged.
+    """
+    rework = decision.get("rework")
+    if (not rework or rework["task"] != escalated or escalated in active
+            or decision.get("replace") is not None or decision.get("add")
+            or not rework.get("reason", "").strip()):
+        return decision
+    unchecked = [task for task in tasks if task["state"] == "unchecked"]
+    if not any(task["number"] == escalated for task in unchecked):
+        return decision
+    required = " ".join(rework["reason"].split())
+    replace = [
+        f"{task['description']} Required: {required}" if task["number"] == escalated else task["description"]
+        for task in unchecked
+    ]
+    return dict(decision, rework=None, replace=replace)
+
+
 def _simulate_decision(tasks, decision):
     """Hypothetical post-application state. Returns (unchecked, provisional)."""
     states = {task["number"]: task["state"] for task in tasks}
@@ -778,7 +801,8 @@ def _replace_unchecked_tasks(todo_text, descriptions, tasks):
     return "\n".join(kept) + "\n"
 
 
-def _reconcile_batch(vc_system, config, backend, active, todo_text, reviewer_feedback, escalation=None):
+def _reconcile_batch(vc_system, config, backend, active, todo_text, reviewer_feedback, escalation=None,
+                     escalated_task=None):
     """One Manager reconciliation of the current provisional batch."""
     workspace = config["workspace"]
     obs = get_log(workspace)
@@ -794,6 +818,8 @@ def _reconcile_batch(vc_system, config, backend, active, todo_text, reviewer_fee
     for attempt in range(adapter_mod.ManagerReconcileAdapter.RETRY_LIMIT):
         decision, error = adapter.run_once(backend, correction=correction)
         if decision is not None:
+            if escalated_task is not None:
+                decision = _escalated_rework_as_replace(decision, tasks, active, escalated_task)
             validation_error = _validate_reconcile_decision(decision, tasks, active)
             if validation_error is None:
                 break
@@ -1069,6 +1095,7 @@ def _run_project_inner(config, backend=None):
                         vc_system, tasks, number, current_task_base_state, result["state"],
                         rework_counts[number], max_reworks, reviewer_feedback[number],
                     ),
+                    escalated_task=number,
                 )
                 if escalated["status"] in ("error", "done"):
                     return escalated

@@ -647,11 +647,23 @@ class ManagerInitAdapter:
     @staticmethod
     def _todo(text):
         descriptions = []
+        in_fence = False
         for line in text.splitlines():
+            if line.lstrip().startswith("```"):
+                if not descriptions:
+                    return None
+                in_fence = not in_fence
+                continue
             if not line.strip():
                 continue
-            match = re.fullmatch(r"\s*[-*]\s+\[ \]\s+(.+?)\s*", line)
+            match = None if in_fence else re.fullmatch(r"\s*[-*]\s+\[ \]\s+(.+?)\s*", line)
             if not match:
+                # shortcut: a fenced block or indented line under an item is folded into that item
+                # as one line (newlines and indentation are lost); any other stray line still rejects
+                # the plan. Upgrade to multi-line todo entries if tasks need verbatim multi-line content.
+                if descriptions and (in_fence or line[0].isspace()):
+                    descriptions[-1] += " " + line.strip()
+                    continue
                 return None
             description = match.group(1).strip()
             label = re.fullmatch(r"T\d+\b\s*(?:[—–-]\s*)?(.*)", description)
@@ -1189,6 +1201,8 @@ class WorkerAdapter:
         turn_repeat = 0
         last_turn_signature = None
         repeated_turns = 0
+        missing_reads = 0
+        no_progress = 0
         off_read_state = {}  # preserve off-mode full-read behavior
         self._read_delivery_ledger.clear()
 
@@ -1306,6 +1320,8 @@ class WorkerAdapter:
                         return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
                     _log_worker_event(self._vc, "worker parsed command", _command_label(cmd))
                     cmd_tok = self.obs.start("command", task=f"T{self.task_number}", type=cmd["type"])
+                    if cmd["type"] != "READ":
+                        missing_reads = 0
                     if cmd["type"] == "Done":
                         saw_done = True
                         _log_worker_event(self._vc, "worker result", "done")
@@ -1404,10 +1420,15 @@ class WorkerAdapter:
                                             )
                         except ValueError as e:
                             result = str(e)
-                        if read_sig is None:
-                            sig = f"READ {rel}|{result[:50]}"
+                        if result.startswith("file not found:"):
+                            # one signature for every miss: guessing different paths is the same stall
+                            missing_reads += 1
+                            sig = "READ|file not found"
+                            if missing_reads >= 2:
+                                result += "\n" + self._missing_file_hint()
                         else:
-                            sig = read_sig
+                            missing_reads = 0
+                            sig = f"READ {rel}|{result[:50]}" if read_sig is None else read_sig
                         if sig == last_sig:
                             turn_repeat += 1
                         else:
@@ -1697,8 +1718,17 @@ class WorkerAdapter:
                     repeated_state_revisits = 0
             previous_state = current_state
 
+            # A cycle of different errors (A, B, C, A, ...) never repeats the previous turn, so count
+            # consecutive turns that neither changed a file nor learned something new. FIND turns are
+            # neutral: the FIND budget and its closure already bound them.
+            if changed or useful:
+                no_progress = 0
+            elif not any(cmd["type"] == "FIND" for cmd in commands):
+                no_progress += 1
+
             # Soft reset on repeat stall
-            if (turn_repeat >= repeat_limit or repeated_turns >= repeat_limit) and not changed and not useful:
+            if (turn_repeat >= repeat_limit or repeated_turns >= repeat_limit
+                    or no_progress >= 2 * repeat_limit) and not changed and not useful:
                 soft_resets += 1
                 if soft_resets > self.MAX_SOFT_RESETS:
                     return self._worker_result(
@@ -1733,6 +1763,7 @@ class WorkerAdapter:
                 turn_repeat = 0
                 last_turn_signature = None
                 repeated_turns = 0
+                no_progress = 0
                 continue
 
             # Activity marking
@@ -1745,6 +1776,17 @@ class WorkerAdapter:
                 )
 
         return self._worker_result("timeout", reason=f"Worker deadline {worker_timeout}s exceeded")
+
+    def _missing_file_hint(self):
+        names = available_command_names(self.config)
+        if "MAP" in names:
+            locate = "MAP <directory> to list a directory"
+            if not self._find_closed:
+                locate = "FIND <literal> to locate the code, or " + locate
+            return f"Do not guess paths. Use {locate}."
+        if "RUN" in names:
+            return "Do not guess paths. Use RUN ls <directory> to list files."
+        return "Do not guess paths. Use only paths named in the task."
 
     def _write_command(self, path, content):
         if re.search(r"[<>|;&`'\"]", path):

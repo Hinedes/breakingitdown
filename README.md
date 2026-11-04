@@ -241,6 +241,23 @@ injection has not been shown to reliably improve coding-agent pass rates.
 The three modes exist for controlled ablation against the current BID
 baseline; no performance or correctness improvement is claimed.
 
+## Rulebook
+
+A small model follows prompt rules only partly, so every rule BID asks of the Manager or Worker is
+listed in `bid/rules.py` with the way it is enforced:
+
+| Level | Meaning | Evidence required |
+|---|---|---|
+| `prompt` | only the prompt asks | a probe in `evaluation/rule_probes` that measures adherence on the real model, and the prompt phrase still present |
+| `tolerant` | the harness accepts any reasonable form and normalises it | a named regression test |
+| `gate` | the harness refuses, rewrites or bounds the violation | a named regression test |
+
+`tests/test_rules.py` fails when a rule loses its evidence. When a probe shows a prompt rule is
+being broken, the rule is promoted to `tolerant` or `gate` instead of gaining more prompt text.
+`python evaluation/rule_probes/run_probes.py --endpoint ... --model ... --n 20` measures the prompt
+rules against a live llama.cpp endpoint; `evaluation/rule_probes/test_probes.py` proves the graders
+on known-good and known-bad samples first.
+
 ## Workspace protection
 
 BID separates project files from harness control state. Worker access is checked against workspace-relative path rules.
@@ -313,12 +330,14 @@ These values are configurable through environment variables.
 - `bid/todo.py` — canonical task parsing and state transitions
 - `bid/permissions.py` — workspace path and role permissions
 - `bid/protocol.py` — single source for the Worker command protocol
+- `bid/rules.py` — the Manager/Worker rulebook and how each rule is enforced
 - `bid/repo_context.py` — optional file-level repository index, MAP/FIND, READ accounting
 - `bid/search.py` — bounded search, persistent search cache, stored research evidence
 - `bid/observability.py` / `bid/observer.py` — event logging and activity/change observation
 - `bid/model.py` — model backends
 - `prompts/` — Manager and Worker policies
 - `tests/` — automated regression and invariant tests
+- `evaluation/` — evaluation records, the SWE-bench pilot tooling, and rule-following probes
 - `EVIDENCE.md` — implementation/evidence record
 - `EVALUATION.md` — evaluation record
 
